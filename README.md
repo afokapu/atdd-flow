@@ -29,8 +29,10 @@ bun /path/to/atdd-seat/src/seat.ts post T-... \
 ```
 
 The operator sets `repository` and `worktree_root` in `project.yaml`. Role
-templates derive driver paths from that policy; a command-line worktree override
-is available for an operator but should not be used by drivers.
+templates derive driver paths from that policy; when `repository` is present,
+`seat spawn` creates a missing non-main Git worktree on the role's configured
+branch and base. A command-line worktree override is available for an operator
+but should not be used by drivers.
 
 `post`, `receipt`, and `result` first persist a message and only then make a
 best-effort notification through the configured backend. A missed notification

@@ -12,6 +12,7 @@ roles:
   driver:
     address: driver.{name}@{project}
     branch: delivery/{name}
+    base: main
     agent: codex
     worktree: "{worktree_root}/{name}"
 groups:

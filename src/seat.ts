@@ -1,11 +1,11 @@
 #!/usr/bin/env bun
 
-import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 
 type Backend = "tmux" | "herdr" | "tuios";
-type Role = { address: string; branch: string; agent: string; worktree?: string };
+type Role = { address: string; branch: string; agent: string; worktree?: string; base?: string };
 type Group = { role?: string; members?: string[] };
 type Project = {
   schema: string;
@@ -152,6 +152,23 @@ async function run(command: string[], quiet = false) {
   if (!quiet && stdout.trim()) process.stdout.write(stdout);
 }
 
+async function exists(path: string) {
+  try { await stat(path); return true; }
+  catch { return false; }
+}
+
+async function ensureWorktree(config: Project, role: Role, worktree: string, branch: string) {
+  if (!config.repository || worktree === resolve(config.repository) || await exists(worktree)) return;
+  await mkdir(dirname(worktree), { recursive: true });
+  const ref = `refs/heads/${branch}`;
+  const probe = Bun.spawn(["git", "-C", config.repository, "show-ref", "--verify", "--quiet", ref]);
+  const branchExists = await probe.exited === 0;
+  const command = branchExists
+    ? ["git", "-C", config.repository, "worktree", "add", worktree, branch]
+    : ["git", "-C", config.repository, "worktree", "add", "-b", branch, worktree, role.base ?? "HEAD"];
+  await run(command, true);
+}
+
 async function inject(root: string, address: string, message: Message, threadId: string) {
   const target = await seat(root, address);
   const runtime = target.runtime;
@@ -195,7 +212,7 @@ async function init(root: string, name: string) {
     schema: "atdd-seat/project/v1", project: name, backend: "tmux",
     roles: {
       coordinator: { address: "coordinator@{project}", branch: "main", agent: "claude", worktree: "{repository}" },
-      driver: { address: "driver.{name}@{project}", branch: "delivery/{name}", agent: "codex", worktree: "{worktree_root}/{name}" },
+      driver: { address: "driver.{name}@{project}", branch: "delivery/{name}", base: "main", agent: "codex", worktree: "{worktree_root}/{name}" },
     },
   };
   await Promise.all([mkdir(paths(root).seats, { recursive: true }), mkdir(paths(root).threads, { recursive: true })]);
@@ -211,6 +228,7 @@ async function spawn(root: string, roleName: string, name: string, args: string[
   const configuredPath = role.worktree ? fill(role.worktree, { ...values, repository: config.repository ?? "" }) : undefined;
   const worktree = resolve(required(words(args, "--worktree") ?? configuredPath, "--worktree or role worktree template"));
   const branch = words(args, "--branch") ?? fill(role.branch, { project: config.project, name });
+  await ensureWorktree(config, role, worktree, branch);
   const record: Seat = { schema: "atdd-seat/seat/v1", address, role: roleName, project: config.project, worktree, branch, agent: role.agent };
   await atomicYaml(paths(root).seatFile(address), record);
   console.log(address);
