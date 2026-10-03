@@ -111,6 +111,7 @@ test("a replacement agent resumes an outstanding seat and completes its work", a
 
   await run(site, "bind", driver, "--pane", "old-driver-pane", "--backend", "tuios");
   await run(site, "receipt", thread, request, "--from", driver, "--body", "Received; beginning work.");
+  await run(site, "checkpoint", driver, "--status", "blocked", "--summary", "Rate limit reached after receiving the rollout request.", "--next", "Replacement agent should finish the rollout and post the result.");
 
   // The coordinator replaces a rate-limited agent. The address—and therefore
   // its durable thread history and responsibility—does not change.
@@ -118,6 +119,7 @@ test("a replacement agent resumes an outstanding seat and completes its work", a
   const resumedSeat = await run(site, "open", driver);
   expect(resumedSeat).toContain("replacement-driver-pane");
   expect(resumedSeat).toContain(thread);
+  expect(resumedSeat).toContain("Rate limit reached after receiving the rollout request.");
   expect(await readFile(join(site, "threads", thread, `${request}.yaml`), "utf8")).toContain("Finish the rollout after takeover.");
   expect(await run(site, "status")).toContain(`${request}@${driver}`);
 

@@ -27,6 +27,15 @@ type Seat = {
   agent: string;
   runtime?: Runtime;
 };
+type Checkpoint = {
+  schema: string;
+  seat: string;
+  status: "active" | "standby" | "blocked" | "complete";
+  updated_at: string;
+  summary: string;
+  next_action: string;
+  references?: string[];
+};
 type Thread = { schema: string; id: string; subject: string; participants: string[]; state: "open" | "closed"; summary?: string };
 type Kind = "message" | "receipt" | "result";
 type Message = {
@@ -50,6 +59,7 @@ Usage:
   seat project init <project>
   seat spawn <project> <role> <name> [--worktree <path>] [--branch <branch>]
   seat bind <address> --pane <target> [--backend tmux|herdr|tuios]
+  seat checkpoint <address> --summary <text> --next <text> [--status active|standby|blocked|complete] [--references <value,...>]
   seat thread start --with <address,...> --subject <text>
   seat thread add <thread-id> <address>
   seat post <thread-id> --from <address> --to <all|address,...> --body <text> [--expects-result]
@@ -91,6 +101,7 @@ const paths = (root: string) => ({
     return join(root, "work", entry.project, "seats", entry.local);
   },
   seatFile: (address: string) => join(paths(root).seat(address), "seat.yaml"),
+  checkpointFile: (address: string) => join(paths(root).seat(address), "checkpoint.yaml"),
   threads: join(root, "threads"),
   thread: (threadId: string) => join(root, "threads", threadId),
   threadFile: (threadId: string) => join(root, "threads", threadId, "thread.yaml"),
@@ -259,6 +270,22 @@ async function bind(root: string, address: string, args: string[]) {
   console.log(`Bound ${address} to ${record.runtime.backend}:${record.runtime.pane}`);
 }
 
+async function checkpoint(root: string, address: string, args: string[]) {
+  await seat(root, address);
+  const references = words(args, "--references")?.split(",").filter(Boolean);
+  const record: Checkpoint = {
+    schema: "atdd-seat/checkpoint/v1",
+    seat: address,
+    status: (words(args, "--status") ?? "active") as Checkpoint["status"],
+    updated_at: now(),
+    summary: required(words(args, "--summary"), "--summary"),
+    next_action: required(words(args, "--next"), "--next"),
+    ...(references?.length ? { references } : {}),
+  };
+  await atomicYaml(paths(root).checkpointFile(address), record);
+  console.log(`Checkpointed ${address}`);
+}
+
 async function startThread(root: string, args: string[]) {
   const participants = await resolveRecipients(root, required(words(args, "--with"), "--with"), []);
   if (participants.length < 2) throw new Error("A thread needs at least two participants.");
@@ -292,6 +319,8 @@ async function status(root: string) {
 async function openSeat(root: string, address: string) {
   const record = await seat(root, address);
   console.log(yaml.print(record));
+  const checkpointFile = paths(root).checkpointFile(address);
+  if (await exists(checkpointFile)) console.log(yaml.print(await readYaml<Checkpoint>(checkpointFile)));
   const threadIds = await readdir(paths(root).threads);
   for (const threadId of threadIds) {
     const entry = await thread(root, threadId);
@@ -315,6 +344,7 @@ async function main() {
     },
     spawn: () => spawn(root, required(rest[0], "project"), required(rest[1], "role"), required(rest[2], "name"), rest.slice(3)),
     bind: () => bind(root, required(rest[0], "address"), rest.slice(1)),
+    checkpoint: () => checkpoint(root, required(rest[0], "address"), rest.slice(1)),
     thread: async () => {
       const [subcommand, ...tail] = rest;
       if (subcommand === "start") return startThread(root, tail);

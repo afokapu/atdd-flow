@@ -16,7 +16,8 @@ agent-seats/
 │       ├── project.yaml
 │       └── seats/
 │           └── driver.runtime/
-│               └── seat.yaml
+│               ├── seat.yaml
+│               └── checkpoint.yaml
 └── threads/
     └── T-<id>/
         ├── thread.yaml
@@ -52,6 +53,12 @@ The operator sets `repository` and `worktree_root` in `work/<project>/project.ya
 TUIOS is the intended interactive host. A seat binds to a TUIOS pane, and a posted message is queued as a concise instruction to read its durable YAML file. Tmux and Herdr have small compatibility adapters with the same best-effort contract.
 
 The filesystem protocol does not depend on a multiplexer. An agent hosted elsewhere can participate when it has filesystem and shell access and is started with its seat address and the `seat` CLI entry point. Without a host adapter capable of injecting a notification, the seat remains correct and recoverable but has no automatic live wake-up; the host or operator must supply the prompt to inspect the seat.
+
+## Checkpoints
+
+`checkpoint.yaml` is one compact answer to “where is this seat now?” It is not a progress log and is not updated for ordinary commits, messages, or every merge. The current seat holder updates it at meaningful responsibility transitions: accepting or replanning work, becoming blocked, opening or closing a PR when that changes the next action, deployment/approval decisions, and always before a planned handover or rate-limit replacement.
+
+The holder writes it with `seat checkpoint`; a coordinator may write it when assigning or formally taking over a seat. A merge requires an update only when it changes ownership, the remaining work, or the next action. The thread history keeps the detail; the checkpoint stays short enough for a replacement agent to read first.
 
 ## Scope of this first version
 
