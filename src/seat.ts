@@ -31,7 +31,7 @@ type Seat = {
 type Checkpoint = {
   schema: string;
   seat: string;
-  status: "active" | "standby" | "blocked" | "complete";
+  status: "active" | "standby" | "blocked" | "complete" | "unverified";
   updated_at: string;
   summary: string;
   next_action: string;
@@ -61,7 +61,7 @@ Usage:
   seat spawn <project> <role> <name> [--worktree <path>] [--branch <branch>]
   seat bind <address> --pane <target> [--backend tmux|herdr|tuios]
   seat describe <address> --purpose <one-line responsibility>
-  seat checkpoint <address> --summary <text> --next <text> [--status active|standby|blocked|complete] [--references <value,...>]
+  seat checkpoint <address> --summary <text> --next <text> [--status active|standby|blocked|complete|unverified] [--references <value,...>]
   seat thread start --with <address,...> --subject <text>
   seat thread add <thread-id> <address>
   seat post <thread-id> --from <address> --to <all|address,...> --body <text> [--expects-result]

@@ -62,6 +62,8 @@ The filesystem protocol does not depend on a multiplexer. An agent hosted elsewh
 
 The holder writes it with `seat checkpoint`; a coordinator may write it when assigning or formally taking over a seat. A merge requires an update only when it changes ownership, the remaining work, or the next action. The thread history keeps the detail; the checkpoint stays short enough for a replacement agent to read first.
 
+Use `status: unverified` for imported or recovered records until the current host, worktree, and responsibility have been reconciled. Historical handoff text alone is not evidence that a seat is still active.
+
 ## Scope of this first version
 
 The first version handles local filesystems, deterministic addressing, shared threads, receipts/results, status derivation, seat spawning, runtime binding, and simple tmux/Herdr/TUIOS notification adapters. It deliberately does not run a daemon, poll for retries, synchronize across machines, or provide a browser UI.
