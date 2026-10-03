@@ -1,0 +1,21 @@
+schema: atdd-seat/project/v1
+project: resolver-os
+backend: tmux
+repository: /Users/alecfokapu/Github/resolver-os
+worktree_root: /Users/alecfokapu/Github/.worktrees/resolver-os
+roles:
+  coordinator:
+    address: coordinator@{project}
+    branch: main
+    agent: claude
+    worktree: "{repository}"
+  driver:
+    address: driver.{name}@{project}
+    branch: delivery/{name}
+    agent: codex
+    worktree: "{worktree_root}/{name}"
+groups:
+  coordinators@resolver-os:
+    role: coordinator
+  drivers@resolver-os:
+    role: driver

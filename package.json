@@ -1,0 +1,14 @@
+{
+  "name": "@afokapu/atdd-seat",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "seat": "bun run src/seat.ts",
+    "check": "bun run src/seat.ts --help",
+    "test": "bun test"
+  },
+  "engines": {
+    "bun": ">=1.3.0"
+  }
+}
