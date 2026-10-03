@@ -5,7 +5,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 
 type Backend = "tmux" | "herdr" | "tuios";
-type Role = { address: string; branch: string; agent: string; worktree?: string; base?: string };
+type Role = { address: string; branch: string; agent: string; purpose?: string; worktree?: string; base?: string };
 type Group = { role?: string; members?: string[] };
 type Site = { schema: string; site: string; backend: Backend };
 type Project = {
@@ -25,6 +25,7 @@ type Seat = {
   worktree: string;
   branch: string;
   agent: string;
+  purpose?: string;
   runtime?: Runtime;
 };
 type Checkpoint = {
@@ -59,6 +60,7 @@ Usage:
   seat project init <project>
   seat spawn <project> <role> <name> [--worktree <path>] [--branch <branch>]
   seat bind <address> --pane <target> [--backend tmux|herdr|tuios]
+  seat describe <address> --purpose <one-line responsibility>
   seat checkpoint <address> --summary <text> --next <text> [--status active|standby|blocked|complete] [--references <value,...>]
   seat thread start --with <address,...> --subject <text>
   seat thread add <thread-id> <address>
@@ -257,7 +259,8 @@ async function spawn(root: string, projectName: string, roleName: string, name: 
   const worktree = resolve(required(words(args, "--worktree") ?? configuredPath, "--worktree or role worktree template"));
   const branch = words(args, "--branch") ?? fill(role.branch, { project: config.project, name });
   await ensureWorktree(config, role, worktree, branch);
-  const record: Seat = { schema: "atdd-seat/seat/v1", address, role: roleName, project: config.project, worktree, branch, agent: role.agent };
+  const purpose = words(args, "--purpose") ?? (role.purpose ? fill(role.purpose, values) : undefined);
+  const record: Seat = { schema: "atdd-seat/seat/v1", address, role: roleName, project: config.project, worktree, branch, agent: role.agent, ...(purpose ? { purpose } : {}) };
   await atomicYaml(paths(root).seatFile(address), record);
   console.log(address);
 }
@@ -268,6 +271,13 @@ async function bind(root: string, address: string, args: string[]) {
   record.runtime = { pane: required(words(args, "--pane"), "--pane"), backend: (words(args, "--backend") ?? config.backend) as Backend, attached_at: now() };
   await atomicYaml(paths(root).seatFile(address), record);
   console.log(`Bound ${address} to ${record.runtime.backend}:${record.runtime.pane}`);
+}
+
+async function describe(root: string, address: string, args: string[]) {
+  const record = await seat(root, address);
+  record.purpose = required(words(args, "--purpose"), "--purpose");
+  await atomicYaml(paths(root).seatFile(address), record);
+  console.log(`Described ${address}`);
 }
 
 async function checkpoint(root: string, address: string, args: string[]) {
@@ -344,6 +354,7 @@ async function main() {
     },
     spawn: () => spawn(root, required(rest[0], "project"), required(rest[1], "role"), required(rest[2], "name"), rest.slice(3)),
     bind: () => bind(root, required(rest[0], "address"), rest.slice(1)),
+    describe: () => describe(root, required(rest[0], "address"), rest.slice(1)),
     checkpoint: () => checkpoint(root, required(rest[0], "address"), rest.slice(1)),
     thread: async () => {
       const [subcommand, ...tail] = rest;

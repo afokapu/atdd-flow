@@ -37,9 +37,11 @@ test("a request remains outstanding until its linked result exists", async () =>
   await run(site, "project", "init", "demo");
   await run(site, "spawn", "demo", "coordinator", "main", "--worktree", "/tmp/demo-main");
   await run(site, "spawn", "demo", "driver", "runtime", "--worktree", "/tmp/demo-runtime");
+  await run(site, "describe", "driver.runtime@demo", "--purpose", "Own the runtime rollout.");
   await stat(join(site, "site.yaml"));
   await stat(join(site, "work", "demo", "project.yaml"));
   await stat(join(site, "work", "demo", "seats", "driver.runtime", "seat.yaml"));
+  expect(await run(site, "open", "driver.runtime@demo")).toContain("Own the runtime rollout.");
   const thread = await run(site, "thread", "start", "--with", "coordinator@demo,driver.runtime@demo", "--subject", "Runtime rollout");
   const request = await run(site, "post", thread, "--from", "coordinator@demo", "--to", "driver.runtime@demo", "--expects-result", "--body", "Run checks");
 

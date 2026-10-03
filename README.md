@@ -26,6 +26,8 @@ agent-seats/
 
 `work/` is the responsibility view: a project's repository/worktree policy and its seats. `threads/` is the shared communication view, including cross-project threads. Messages are immutable YAML files; a seat's inbox is derived from threads addressed to it, rather than copied into per-seat folders.
 
+Each seat may carry a one-line `purpose`, set with `seat describe <address> --purpose <text>`. It is the human and agent-readable responsibility statement; it does not presume a fixed lane, branch, worktree, or host.
+
 ## Quick start
 
 ```sh
