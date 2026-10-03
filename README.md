@@ -9,7 +9,7 @@ No database, daemon, cloud account, or model-provider SDK is required.
 ## Layout
 
 ```text
-agent-seats/
+workseats/
 ├── site.yaml
 ├── work/
 │   └── resolver-os/
@@ -28,11 +28,15 @@ agent-seats/
 
 Each seat may carry a one-line `purpose`, set with `seat describe <address> --purpose <text>`. It is the human and agent-readable responsibility statement; it does not presume a fixed lane, branch, worktree, or host.
 
+`site.yaml` may also declare address aliases when a project is consolidated or renamed. Aliases resolve at the CLI boundary; threads and checkpoints retain the canonical address, so a legacy name never creates a second seat.
+
+`project.yaml` can describe optional named scopes—such as independent coordinator responsibilities within one repository—and their legacy aliases. A scope is explanatory metadata, not a lane system: it does not impose a branch, worktree, or lifecycle on a seat.
+
 ## Quick start
 
 ```sh
-bun run src/seat.ts init ~/Github/agent-seats
-cd ~/Github/agent-seats
+bun run src/seat.ts init ~/Github/workseats
+cd ~/Github/workseats
 bun /path/to/atdd-seat/src/seat.ts project init resolver-os
 bun /path/to/atdd-seat/src/seat.ts spawn resolver-os coordinator main --worktree /src/resolver-os
 bun /path/to/atdd-seat/src/seat.ts spawn resolver-os driver runtime --worktree /src/resolver-os-runtime

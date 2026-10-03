@@ -128,3 +128,23 @@ test("a replacement agent resumes an outstanding seat and completes its work", a
   await run(site, "result", thread, request, "--from", driver, "--body", "Rollout completed by replacement agent.");
   expect(await run(site, "status")).not.toContain("waiting:");
 });
+
+test("a legacy alias resolves to one canonical seat", async () => {
+  const root = await mkdtemp(join(tmpdir(), "atdd-seat-"));
+  roots.push(root);
+  const site = join(root, "site");
+  await run(root, "init", site);
+  await run(site, "project", "init", "decision-os");
+  await run(site, "spawn", "decision-os", "coordinator", "main", "--worktree", "/tmp/decision-os-main");
+  await writeFile(join(site, "site.yaml"), `schema: atdd-seat/site/v1
+site: site
+backend: tuios
+aliases:
+  coordinator@DOS-jev: coordinator@decision-os
+`);
+
+  await run(site, "checkpoint", "coordinator@DOS-jev", "--status", "unverified", "--summary", "Recovered through the old address.", "--next", "Reconcile current owner.");
+  const opened = await run(site, "open", "coordinator@decision-os");
+  expect(opened).toContain("Recovered through the old address.");
+  expect(opened).toContain("coordinator@decision-os");
+});

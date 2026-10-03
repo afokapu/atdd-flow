@@ -7,7 +7,8 @@ import { randomUUID } from "node:crypto";
 type Backend = "tmux" | "herdr" | "tuios";
 type Role = { address: string; branch: string; agent: string; purpose?: string; worktree?: string; base?: string };
 type Group = { role?: string; members?: string[] };
-type Site = { schema: string; site: string; backend: Backend };
+type Scope = { purpose: string; coordinator: string; umbrella_branch?: string; legacy_aliases?: string[] };
+type Site = { schema: string; site: string; backend: Backend; aliases?: Record<string, string> };
 type Project = {
   schema: string;
   project: string;
@@ -15,6 +16,7 @@ type Project = {
   worktree_root?: string;
   roles: Record<string, Role>;
   groups?: Record<string, Group>;
+  scopes?: Record<string, Scope>;
 };
 type Runtime = { pane?: string; backend?: Backend; attached_at?: string };
 type Seat = {
@@ -133,8 +135,21 @@ async function project(root: string, name: string) {
   return value;
 }
 
+async function canonicalAddress(root: string, address: string) {
+  const aliases = (await site(root)).aliases ?? {};
+  const visited = new Set<string>();
+  let resolved = address;
+  while (aliases[resolved]) {
+    if (visited.has(resolved)) throw new Error(`Address alias cycle: ${address}`);
+    visited.add(resolved);
+    resolved = aliases[resolved];
+  }
+  addressParts(resolved);
+  return resolved;
+}
+
 async function seat(root: string, address: string) {
-  return readYaml<Seat>(paths(root).seatFile(address));
+  return readYaml<Seat>(paths(root).seatFile(await canonicalAddress(root, address)));
 }
 
 async function thread(root: string, threadId: string) {
@@ -162,10 +177,11 @@ async function resolveRecipients(root: string, value: string, participants: stri
   if (value === "all") return participants;
   const requested = value.split(",").filter(Boolean);
   const expanded = await Promise.all(requested.map(async (address) => {
-    const { project: projectName } = addressParts(address);
+    const resolved = await canonicalAddress(root, address);
+    const { project: projectName } = addressParts(resolved);
     const config = await project(root, projectName);
-    const group = config.groups?.[address];
-    if (!group) return [address];
+    const group = config.groups?.[resolved];
+    if (!group) return [resolved];
     if (group.members) return group.members;
     return seatsByRole(root, projectName, required(group.role, `role for group ${address}`));
   }));
@@ -213,7 +229,7 @@ async function inject(root: string, address: string, message: Message, threadId:
 
 async function post(root: string, threadId: string, args: string[], overrides: Partial<Message> = {}) {
   const record = await thread(root, threadId);
-  const from = required(overrides.from ?? words(args, "--from"), "--from");
+  const from = await canonicalAddress(root, required(overrides.from ?? words(args, "--from"), "--from"));
   if (!record.participants.includes(from)) throw new Error(`${from} is not a thread participant.`);
   const toValue = overrides.to ?? words(args, "--to") ?? "all";
   const recipients = Array.isArray(toValue) ? toValue : await resolveRecipients(root, toValue, record.participants);
@@ -266,34 +282,37 @@ async function spawn(root: string, projectName: string, roleName: string, name: 
 }
 
 async function bind(root: string, address: string, args: string[]) {
-  const record = await seat(root, address);
+  const resolved = await canonicalAddress(root, address);
+  const record = await seat(root, resolved);
   const config = await site(root);
   record.runtime = { pane: required(words(args, "--pane"), "--pane"), backend: (words(args, "--backend") ?? config.backend) as Backend, attached_at: now() };
-  await atomicYaml(paths(root).seatFile(address), record);
-  console.log(`Bound ${address} to ${record.runtime.backend}:${record.runtime.pane}`);
+  await atomicYaml(paths(root).seatFile(resolved), record);
+  console.log(`Bound ${resolved} to ${record.runtime.backend}:${record.runtime.pane}`);
 }
 
 async function describe(root: string, address: string, args: string[]) {
-  const record = await seat(root, address);
+  const resolved = await canonicalAddress(root, address);
+  const record = await seat(root, resolved);
   record.purpose = required(words(args, "--purpose"), "--purpose");
-  await atomicYaml(paths(root).seatFile(address), record);
-  console.log(`Described ${address}`);
+  await atomicYaml(paths(root).seatFile(resolved), record);
+  console.log(`Described ${resolved}`);
 }
 
 async function checkpoint(root: string, address: string, args: string[]) {
-  await seat(root, address);
+  const resolved = await canonicalAddress(root, address);
+  await seat(root, resolved);
   const references = words(args, "--references")?.split(",").filter(Boolean);
   const record: Checkpoint = {
     schema: "atdd-seat/checkpoint/v1",
-    seat: address,
+    seat: resolved,
     status: (words(args, "--status") ?? "active") as Checkpoint["status"],
     updated_at: now(),
     summary: required(words(args, "--summary"), "--summary"),
     next_action: required(words(args, "--next"), "--next"),
     ...(references?.length ? { references } : {}),
   };
-  await atomicYaml(paths(root).checkpointFile(address), record);
-  console.log(`Checkpointed ${address}`);
+  await atomicYaml(paths(root).checkpointFile(resolved), record);
+  console.log(`Checkpointed ${resolved}`);
 }
 
 async function startThread(root: string, args: string[]) {
@@ -306,7 +325,8 @@ async function startThread(root: string, args: string[]) {
 
 async function addParticipant(root: string, threadId: string, address: string) {
   const record = await thread(root, threadId);
-  if (!record.participants.includes(address)) record.participants.push(address);
+  const resolved = await canonicalAddress(root, address);
+  if (!record.participants.includes(resolved)) record.participants.push(resolved);
   await atomicYaml(paths(root).threadFile(threadId), record);
 }
 
@@ -327,14 +347,15 @@ async function status(root: string) {
 }
 
 async function openSeat(root: string, address: string) {
-  const record = await seat(root, address);
+  const resolved = await canonicalAddress(root, address);
+  const record = await seat(root, resolved);
   console.log(yaml.print(record));
-  const checkpointFile = paths(root).checkpointFile(address);
+  const checkpointFile = paths(root).checkpointFile(resolved);
   if (await exists(checkpointFile)) console.log(yaml.print(await readYaml<Checkpoint>(checkpointFile)));
   const threadIds = await readdir(paths(root).threads);
   for (const threadId of threadIds) {
     const entry = await thread(root, threadId);
-    if (entry.participants.includes(address)) console.log(`${threadId}  ${entry.state}  ${entry.subject}`);
+    if (entry.participants.includes(resolved)) console.log(`${threadId}  ${entry.state}  ${entry.subject}`);
   }
 }
 
