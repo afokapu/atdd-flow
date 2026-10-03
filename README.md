@@ -2,7 +2,7 @@
 
 `atdd-seat` is a tiny, filesystem-first coordination tool for replaceable coding-agent seats.
 
-The durable protocol is YAML. A site is independent from the code repositories and worktrees it coordinates; a multiplexer is only an optional live-notification adapter.
+The durable protocol is YAML. A site is independent from the code repositories and worktrees it coordinates. TUIOS is the primary live host: it provides the operator's pane layout and queues a file-reading notification when a message arrives.
 
 No database, daemon, cloud account, or model-provider SDK is required.
 
@@ -46,6 +46,12 @@ bun /path/to/atdd-seat/src/seat.ts post T-... \
 The operator sets `repository` and `worktree_root` in `work/<project>/project.yaml`. Role templates derive driver paths from that policy; when `repository` is present, `seat spawn` creates a missing non-main Git worktree on the role's configured branch and base. A command-line worktree override is available for an operator but should not be used by drivers.
 
 `post`, `receipt`, and `result` first persist a message and only then make a best-effort notification through the configured backend. A missed notification cannot lose the message; `status` and a future seat launch can rediscover it.
+
+## Host integration
+
+TUIOS is the intended interactive host. A seat binds to a TUIOS pane, and a posted message is queued as a concise instruction to read its durable YAML file. Tmux and Herdr have small compatibility adapters with the same best-effort contract.
+
+The filesystem protocol does not depend on a multiplexer. An agent hosted elsewhere can participate when it has filesystem and shell access and is started with its seat address and the `seat` CLI entry point. Without a host adapter capable of injecting a notification, the seat remains correct and recoverable but has no automatic live wake-up; the host or operator must supply the prompt to inspect the seat.
 
 ## Scope of this first version
 
