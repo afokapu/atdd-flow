@@ -261,8 +261,14 @@ async function status(root: string) {
   for (const threadId of threadIds) {
     const record = await thread(root, threadId);
     const all = await messages(root, threadId);
-    const pending = all.filter((message) => message.expects_result && !all.some((reply) => reply.kind === "result" && reply.in_reply_to === message.id));
-    console.log(`${threadId}  ${record.state}  ${record.subject}${pending.length ? `  waiting:${pending.map((message) => message.id).join(",")}` : ""}`);
+    const pending = all.flatMap((message) => {
+      if (!message.expects_result) return [];
+      const responders = message.to === "all" ? record.participants.filter((address) => address !== message.from) : message.to;
+      return responders
+        .filter((address) => !all.some((reply) => reply.kind === "result" && reply.in_reply_to === message.id && reply.from === address))
+        .map((address) => `${message.id}@${address}`);
+    });
+    console.log(`${threadId}  ${record.state}  ${record.subject}${pending.length ? `  waiting:${pending.join(",")}` : ""}`);
   }
 }
 

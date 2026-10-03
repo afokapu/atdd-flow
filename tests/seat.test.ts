@@ -74,3 +74,20 @@ roles:
   await stat(join(root, "worktrees", "runtime", ".git"));
   expect(await git(join(root, "worktrees", "runtime"), "branch", "--show-current")).toBe("delivery/runtime");
 });
+
+test("a broadcast request remains open until every targeted participant replies", async () => {
+  const root = await mkdtemp(join(tmpdir(), "atdd-seat-"));
+  roots.push(root);
+  const project = join(root, "demo");
+  await run(root, "init", project);
+  await run(project, "spawn", "coordinator", "main", "--worktree", "/tmp/demo-main");
+  await run(project, "spawn", "driver", "one", "--worktree", "/tmp/demo-one");
+  await run(project, "spawn", "driver", "two", "--worktree", "/tmp/demo-two");
+  const thread = await run(project, "thread", "start", "--with", "coordinator@demo,driver.one@demo,driver.two@demo", "--subject", "Fan out");
+  const request = await run(project, "post", thread, "--from", "coordinator@demo", "--to", "all", "--expects-result", "--body", "Report status");
+
+  await run(project, "result", thread, request, "--from", "driver.one@demo", "--body", "One complete");
+  expect(await run(project, "status")).toContain(`${request}@driver.two@demo`);
+  await run(project, "result", thread, request, "--from", "driver.two@demo", "--body", "Two complete");
+  expect(await run(project, "status")).not.toContain("waiting:");
+});
