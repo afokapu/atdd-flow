@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -89,5 +89,32 @@ test("a broadcast request remains open until every targeted participant replies"
   await run(project, "result", thread, request, "--from", "driver.one@demo", "--body", "One complete");
   expect(await run(project, "status")).toContain(`${request}@driver.two@demo`);
   await run(project, "result", thread, request, "--from", "driver.two@demo", "--body", "Two complete");
+  expect(await run(project, "status")).not.toContain("waiting:");
+});
+
+test("a replacement agent resumes an outstanding seat and completes its work", async () => {
+  const root = await mkdtemp(join(tmpdir(), "atdd-seat-"));
+  roots.push(root);
+  const project = join(root, "demo");
+  await run(root, "init", project);
+  await run(project, "spawn", "coordinator", "main", "--worktree", "/tmp/demo-main");
+  await run(project, "spawn", "driver", "runtime", "--worktree", "/tmp/demo-runtime");
+  const driver = "driver.runtime@demo";
+  const thread = await run(project, "thread", "start", "--with", `coordinator@demo,${driver}`, "--subject", "Takeover test");
+  const request = await run(project, "post", thread, "--from", "coordinator@demo", "--to", driver, "--expects-result", "--body", "Finish the rollout after takeover.");
+
+  await run(project, "bind", driver, "--pane", "old-driver-pane", "--backend", "tuios");
+  await run(project, "receipt", thread, request, "--from", driver, "--body", "Received; beginning work.");
+
+  // The coordinator replaces a rate-limited agent. The address—and therefore
+  // its durable thread history and responsibility—does not change.
+  await run(project, "bind", driver, "--pane", "replacement-driver-pane", "--backend", "tuios");
+  const resumedSeat = await run(project, "open", driver);
+  expect(resumedSeat).toContain("replacement-driver-pane");
+  expect(resumedSeat).toContain(thread);
+  expect(await readFile(join(project, "threads", thread, `${request}.yaml`), "utf8")).toContain("Finish the rollout after takeover.");
+  expect(await run(project, "status")).toContain(`${request}@${driver}`);
+
+  await run(project, "result", thread, request, "--from", driver, "--body", "Rollout completed by replacement agent.");
   expect(await run(project, "status")).not.toContain("waiting:");
 });
