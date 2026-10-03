@@ -30,18 +30,19 @@ test("four repository lanes complete local and cross-coordinator threads", async
     }));
 
     await seat(root, "init", site);
-    const roles = Object.fromEntries(repositories.flatMap(({ name }) => [
-      [`coordinator-${name}`, { address: `coordinator@${name}`, branch: "main", agent: "simulated" }],
-      [`driver-${name}`, { address: `driver.{name}@${name}`, branch: "delivery/{name}", agent: "simulated" }],
-    ]));
-    await writeFile(join(site, "project.yaml"), Bun.YAML.stringify({ schema: "atdd-seat/project/v1", project: "site", backend: "tmux", roles }));
+    await Promise.all(repositories.map(({ name }) => seat(site, "project", "init", name)));
 
     for (const { name, repository } of repositories) {
-      await seat(site, "spawn", `coordinator-${name}`, "main", "--worktree", repository);
+      const roles = {
+        coordinator: { address: `coordinator@${name}`, branch: "main", agent: "simulated" },
+        driver: { address: `driver.{name}@${name}`, branch: "delivery/{name}", agent: "simulated" },
+      };
+      await writeFile(join(site, "work", name, "project.yaml"), Bun.YAML.stringify({ schema: "atdd-seat/project/v1", project: name, roles }));
+      await seat(site, "spawn", name, "coordinator", "main", "--worktree", repository);
       for (const driver of ["one", "two", "three", "four"]) {
         const worktree = join(root, "worktrees", name, driver);
         await git(repository, "worktree", "add", "-b", `delivery/${driver}`, worktree, "main");
-        await seat(site, "spawn", `driver-${name}`, driver, "--worktree", worktree);
+        await seat(site, "spawn", name, "driver", driver, "--worktree", worktree);
       }
     }
 

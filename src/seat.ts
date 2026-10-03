@@ -7,10 +7,10 @@ import { randomUUID } from "node:crypto";
 type Backend = "tmux" | "herdr" | "tuios";
 type Role = { address: string; branch: string; agent: string; worktree?: string; base?: string };
 type Group = { role?: string; members?: string[] };
+type Site = { schema: string; site: string; backend: Backend };
 type Project = {
   schema: string;
   project: string;
-  backend: Backend;
   repository?: string;
   worktree_root?: string;
   roles: Record<string, Role>;
@@ -27,14 +27,7 @@ type Seat = {
   agent: string;
   runtime?: Runtime;
 };
-type Thread = {
-  schema: string;
-  id: string;
-  subject: string;
-  participants: string[];
-  state: "open" | "closed";
-  summary?: string;
-};
+type Thread = { schema: string; id: string; subject: string; participants: string[]; state: "open" | "closed"; summary?: string };
 type Kind = "message" | "receipt" | "result";
 type Message = {
   schema: string;
@@ -50,9 +43,12 @@ type Message = {
 
 const usage = `atdd-seat — filesystem-first agent seats
 
+Run commands from a site directory containing site.yaml.
+
 Usage:
-  seat init <project>
-  seat spawn <role> <name> [--worktree <path>] [--branch <branch>]
+  seat init <site>
+  seat project init <project>
+  seat spawn <project> <role> <name> [--worktree <path>] [--branch <branch>]
   seat bind <address> --pane <target> [--backend tmux|herdr|tuios]
   seat thread start --with <address,...> --subject <text>
   seat thread add <thread-id> <address>
@@ -60,9 +56,7 @@ Usage:
   seat receipt <thread-id> <message-id> --from <address> [--body <text>]
   seat result <thread-id> <message-id> --from <address> --body <text>
   seat status
-  seat open <address>
-
-Run commands from a project directory containing project.yaml.`;
+  seat open <address>`;
 
 const now = () => new Date().toISOString();
 const id = (prefix: "T" | "M") => `${prefix}-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`;
@@ -71,8 +65,8 @@ const words = (args: string[], flag: string) => {
   return index < 0 ? undefined : args[index + 1];
 };
 const has = (args: string[], flag: string) => args.includes(flag);
-const required = (value: string | undefined, label: string) => {
-  if (!value) throw new Error(`Missing ${label}.`);
+const required = <T>(value: T | undefined, label: string) => {
+  if (value === undefined || value === "") throw new Error(`Missing ${label}.`);
   return value;
 };
 const yaml = {
@@ -80,12 +74,24 @@ const yaml = {
   print: (value: unknown) => Bun.YAML.stringify(value),
 };
 
+function addressParts(address: string) {
+  const marker = address.lastIndexOf("@");
+  if (marker < 1 || marker === address.length - 1) throw new Error(`Address must use local@project form: ${address}`);
+  return { local: address.slice(0, marker), project: address.slice(marker + 1) };
+}
+
 const paths = (root: string) => ({
-  config: join(root, "project.yaml"),
-  seats: join(root, "seats"),
+  site: join(root, "site.yaml"),
+  work: join(root, "work"),
+  project: (name: string) => join(root, "work", name),
+  projectFile: (name: string) => join(root, "work", name, "project.yaml"),
+  seats: (name: string) => join(root, "work", name, "seats"),
+  seat: (address: string) => {
+    const entry = addressParts(address);
+    return join(root, "work", entry.project, "seats", entry.local);
+  },
+  seatFile: (address: string) => join(paths(root).seat(address), "seat.yaml"),
   threads: join(root, "threads"),
-  seat: (address: string) => join(root, "seats", address),
-  seatFile: (address: string) => join(root, "seats", address, "seat.yaml"),
   thread: (threadId: string) => join(root, "threads", threadId),
   threadFile: (threadId: string) => join(root, "threads", threadId, "thread.yaml"),
   message: (threadId: string, messageId: string) => join(root, "threads", threadId, `${messageId}.yaml`),
@@ -102,8 +108,14 @@ async function readYaml<T>(file: string): Promise<T> {
   return yaml.parse<T>(await readFile(file, "utf8"));
 }
 
-async function project(root: string) {
-  const value = await readYaml<Project>(paths(root).config);
+async function site(root: string) {
+  const value = await readYaml<Site>(paths(root).site);
+  if (value.schema !== "atdd-seat/site/v1") throw new Error("Unsupported site schema.");
+  return value;
+}
+
+async function project(root: string, name: string) {
+  const value = await readYaml<Project>(paths(root).projectFile(name));
   if (value.schema !== "atdd-seat/project/v1") throw new Error("Unsupported project schema.");
   return value;
 }
@@ -126,21 +138,23 @@ function fill(template: string, values: Record<string, string>) {
   return template.replace(/\{(project|name|worktree_root|repository)\}/g, (_, key) => values[key]);
 }
 
-async function seatsByRole(root: string, role: string) {
-  const addresses = await readdir(paths(root).seats);
-  const all = await Promise.all(addresses.map((address) => seat(root, address)));
+async function seatsByRole(root: string, projectName: string, role: string) {
+  const folder = paths(root).seats(projectName);
+  const locals = await readdir(folder);
+  const all = await Promise.all(locals.map((local) => seat(root, `${local}@${projectName}`)));
   return all.filter((entry) => entry.role === role).map((entry) => entry.address);
 }
 
 async function resolveRecipients(root: string, value: string, participants: string[]) {
   if (value === "all") return participants;
-  const config = await project(root);
   const requested = value.split(",").filter(Boolean);
   const expanded = await Promise.all(requested.map(async (address) => {
+    const { project: projectName } = addressParts(address);
+    const config = await project(root, projectName);
     const group = config.groups?.[address];
     if (!group) return [address];
     if (group.members) return group.members;
-    return seatsByRole(root, required(group.role, `role for group ${address}`));
+    return seatsByRole(root, projectName, required(group.role, `role for group ${address}`));
   }));
   return [...new Set(expanded.flat())];
 }
@@ -192,37 +206,40 @@ async function post(root: string, threadId: string, args: string[], overrides: P
   const recipients = Array.isArray(toValue) ? toValue : await resolveRecipients(root, toValue, record.participants);
   if (recipients.some((address) => !record.participants.includes(address))) throw new Error("Recipients must be thread participants.");
   const message: Message = {
-    schema: "atdd-seat/message/v1",
-    id: id("M"),
-    from,
-    to: toValue === "all" ? "all" : recipients,
+    schema: "atdd-seat/message/v1", id: id("M"), from, to: toValue === "all" ? "all" : recipients,
     kind: overrides.kind ?? "message",
     ...(overrides.in_reply_to ? { in_reply_to: overrides.in_reply_to } : {}),
     ...(overrides.expects_result || has(args, "--expects-result") ? { expects_result: true } : {}),
-    created_at: now(),
-    body: required(overrides.body ?? words(args, "--body"), "--body"),
+    created_at: now(), body: required(overrides.body ?? words(args, "--body"), "--body"),
   };
   await atomicYaml(paths(root).message(threadId, message.id), message);
   await Promise.all(recipients.filter((address) => address !== from).map((address) => inject(root, address, message, threadId)));
   console.log(message.id);
 }
 
+const defaultRoles = (): Record<string, Role> => ({
+  coordinator: { address: "coordinator@{project}", branch: "main", agent: "claude", worktree: "{repository}" },
+  driver: { address: "driver.{name}@{project}", branch: "delivery/{name}", base: "main", agent: "codex", worktree: "{worktree_root}/{name}" },
+});
+
 async function init(root: string, name: string) {
-  const config: Project = {
-    schema: "atdd-seat/project/v1", project: name, backend: "tmux",
-    roles: {
-      coordinator: { address: "coordinator@{project}", branch: "main", agent: "claude", worktree: "{repository}" },
-      driver: { address: "driver.{name}@{project}", branch: "delivery/{name}", base: "main", agent: "codex", worktree: "{worktree_root}/{name}" },
-    },
-  };
-  await Promise.all([mkdir(paths(root).seats, { recursive: true }), mkdir(paths(root).threads, { recursive: true })]);
-  await atomicYaml(paths(root).config, config);
+  const config: Site = { schema: "atdd-seat/site/v1", site: name, backend: "tmux" };
+  await Promise.all([mkdir(paths(root).work, { recursive: true }), mkdir(paths(root).threads, { recursive: true })]);
+  await atomicYaml(paths(root).site, config);
   console.log(`Initialized ${root}`);
 }
 
-async function spawn(root: string, roleName: string, name: string, args: string[]) {
-  const config = await project(root);
-  const role = required(config.roles[roleName], `role ${roleName}`) as Role;
+async function initProject(root: string, name: string) {
+  await site(root);
+  const config: Project = { schema: "atdd-seat/project/v1", project: name, roles: defaultRoles() };
+  await mkdir(paths(root).seats(name), { recursive: true });
+  await atomicYaml(paths(root).projectFile(name), config);
+  console.log(`Initialized project ${name}`);
+}
+
+async function spawn(root: string, projectName: string, roleName: string, name: string, args: string[]) {
+  const config = await project(root, projectName);
+  const role = required(config.roles[roleName], `role ${roleName}`);
   const values = { project: config.project, name, worktree_root: config.worktree_root ?? "" };
   const address = fill(role.address, values);
   const configuredPath = role.worktree ? fill(role.worktree, { ...values, repository: config.repository ?? "" }) : undefined;
@@ -236,7 +253,7 @@ async function spawn(root: string, roleName: string, name: string, args: string[
 
 async function bind(root: string, address: string, args: string[]) {
   const record = await seat(root, address);
-  const config = await project(root);
+  const config = await site(root);
   record.runtime = { pane: required(words(args, "--pane"), "--pane"), backend: (words(args, "--backend") ?? config.backend) as Backend, attached_at: now() };
   await atomicYaml(paths(root).seatFile(address), record);
   console.log(`Bound ${address} to ${record.runtime.backend}:${record.runtime.pane}`);
@@ -289,12 +306,16 @@ async function main() {
   const root = resolve(process.cwd());
   const commands: Record<string, () => Promise<void>> = {
     init: () => {
-      const folder = resolve(required(rest[0], "project directory"));
+      const folder = resolve(required(rest[0], "site directory"));
       return init(folder, basename(folder));
     },
-    spawn: () => spawn(root, required(rest[0], "role"), required(rest[1], "name"), rest.slice(2)),
+    project: async () => {
+      if (rest[0] === "init") return initProject(root, required(rest[1], "project"));
+      throw new Error("Use `seat project init <project>`.");
+    },
+    spawn: () => spawn(root, required(rest[0], "project"), required(rest[1], "role"), required(rest[2], "name"), rest.slice(3)),
     bind: () => bind(root, required(rest[0], "address"), rest.slice(1)),
-    "thread": async () => {
+    thread: async () => {
       const [subcommand, ...tail] = rest;
       if (subcommand === "start") return startThread(root, tail);
       if (subcommand === "add") return addParticipant(root, required(tail[0], "thread id"), required(tail[1], "address"));

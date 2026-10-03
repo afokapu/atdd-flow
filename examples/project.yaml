@@ -1,6 +1,5 @@
 schema: atdd-seat/project/v1
 project: resolver-os
-backend: tmux
 repository: /Users/alecfokapu/Github/resolver-os
 worktree_root: /Users/alecfokapu/Github/.worktrees/resolver-os
 roles:

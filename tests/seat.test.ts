@@ -31,34 +31,38 @@ async function git(cwd: string, ...args: string[]) {
 test("a request remains outstanding until its linked result exists", async () => {
   const root = await mkdtemp(join(tmpdir(), "atdd-seat-"));
   roots.push(root);
-  const project = join(root, "demo");
+  const site = join(root, "site");
 
-  await run(root, "init", project);
-  await run(project, "spawn", "coordinator", "main", "--worktree", "/tmp/demo-main");
-  await run(project, "spawn", "driver", "runtime", "--worktree", "/tmp/demo-runtime");
-  const thread = await run(project, "thread", "start", "--with", "coordinator@demo,driver.runtime@demo", "--subject", "Runtime rollout");
-  const request = await run(project, "post", thread, "--from", "coordinator@demo", "--to", "driver.runtime@demo", "--expects-result", "--body", "Run checks");
+  await run(root, "init", site);
+  await run(site, "project", "init", "demo");
+  await run(site, "spawn", "demo", "coordinator", "main", "--worktree", "/tmp/demo-main");
+  await run(site, "spawn", "demo", "driver", "runtime", "--worktree", "/tmp/demo-runtime");
+  await stat(join(site, "site.yaml"));
+  await stat(join(site, "work", "demo", "project.yaml"));
+  await stat(join(site, "work", "demo", "seats", "driver.runtime", "seat.yaml"));
+  const thread = await run(site, "thread", "start", "--with", "coordinator@demo,driver.runtime@demo", "--subject", "Runtime rollout");
+  const request = await run(site, "post", thread, "--from", "coordinator@demo", "--to", "driver.runtime@demo", "--expects-result", "--body", "Run checks");
 
-  await run(project, "receipt", thread, request, "--from", "driver.runtime@demo");
-  expect(await run(project, "status")).toContain(`waiting:${request}`);
+  await run(site, "receipt", thread, request, "--from", "driver.runtime@demo");
+  expect(await run(site, "status")).toContain(`waiting:${request}`);
 
-  await run(project, "result", thread, request, "--from", "driver.runtime@demo", "--body", "Checks pass");
-  expect(await run(project, "status")).not.toContain("waiting:");
+  await run(site, "result", thread, request, "--from", "driver.runtime@demo", "--body", "Checks pass");
+  expect(await run(site, "status")).not.toContain("waiting:");
 });
 
 test("a configured driver worktree is created on its declared branch", async () => {
   const root = await mkdtemp(join(tmpdir(), "atdd-seat-"));
   roots.push(root);
   const repository = join(root, "repository");
-  const project = join(root, "state");
+  const site = join(root, "site");
   await git(root, "init", "-b", "main", repository);
   await git(repository, "config", "user.email", "test@example.test");
   await git(repository, "config", "user.name", "Test");
   await git(repository, "commit", "--allow-empty", "-m", "initial");
-  await run(root, "init", project);
-  await writeFile(join(project, "project.yaml"), `schema: atdd-seat/project/v1
+  await run(root, "init", site);
+  await run(site, "project", "init", "demo");
+  await writeFile(join(site, "work", "demo", "project.yaml"), `schema: atdd-seat/project/v1
 project: demo
-backend: tmux
 repository: ${repository}
 worktree_root: ${join(root, "worktrees")}
 roles:
@@ -70,7 +74,7 @@ roles:
     worktree: "{worktree_root}/{name}"
 `);
 
-  await run(project, "spawn", "driver", "runtime");
+  await run(site, "spawn", "demo", "driver", "runtime");
   await stat(join(root, "worktrees", "runtime", ".git"));
   expect(await git(join(root, "worktrees", "runtime"), "branch", "--show-current")).toBe("delivery/runtime");
 });
@@ -78,43 +82,45 @@ roles:
 test("a broadcast request remains open until every targeted participant replies", async () => {
   const root = await mkdtemp(join(tmpdir(), "atdd-seat-"));
   roots.push(root);
-  const project = join(root, "demo");
-  await run(root, "init", project);
-  await run(project, "spawn", "coordinator", "main", "--worktree", "/tmp/demo-main");
-  await run(project, "spawn", "driver", "one", "--worktree", "/tmp/demo-one");
-  await run(project, "spawn", "driver", "two", "--worktree", "/tmp/demo-two");
-  const thread = await run(project, "thread", "start", "--with", "coordinator@demo,driver.one@demo,driver.two@demo", "--subject", "Fan out");
-  const request = await run(project, "post", thread, "--from", "coordinator@demo", "--to", "all", "--expects-result", "--body", "Report status");
+  const site = join(root, "site");
+  await run(root, "init", site);
+  await run(site, "project", "init", "demo");
+  await run(site, "spawn", "demo", "coordinator", "main", "--worktree", "/tmp/demo-main");
+  await run(site, "spawn", "demo", "driver", "one", "--worktree", "/tmp/demo-one");
+  await run(site, "spawn", "demo", "driver", "two", "--worktree", "/tmp/demo-two");
+  const thread = await run(site, "thread", "start", "--with", "coordinator@demo,driver.one@demo,driver.two@demo", "--subject", "Fan out");
+  const request = await run(site, "post", thread, "--from", "coordinator@demo", "--to", "all", "--expects-result", "--body", "Report status");
 
-  await run(project, "result", thread, request, "--from", "driver.one@demo", "--body", "One complete");
-  expect(await run(project, "status")).toContain(`${request}@driver.two@demo`);
-  await run(project, "result", thread, request, "--from", "driver.two@demo", "--body", "Two complete");
-  expect(await run(project, "status")).not.toContain("waiting:");
+  await run(site, "result", thread, request, "--from", "driver.one@demo", "--body", "One complete");
+  expect(await run(site, "status")).toContain(`${request}@driver.two@demo`);
+  await run(site, "result", thread, request, "--from", "driver.two@demo", "--body", "Two complete");
+  expect(await run(site, "status")).not.toContain("waiting:");
 });
 
 test("a replacement agent resumes an outstanding seat and completes its work", async () => {
   const root = await mkdtemp(join(tmpdir(), "atdd-seat-"));
   roots.push(root);
-  const project = join(root, "demo");
-  await run(root, "init", project);
-  await run(project, "spawn", "coordinator", "main", "--worktree", "/tmp/demo-main");
-  await run(project, "spawn", "driver", "runtime", "--worktree", "/tmp/demo-runtime");
+  const site = join(root, "site");
+  await run(root, "init", site);
+  await run(site, "project", "init", "demo");
+  await run(site, "spawn", "demo", "coordinator", "main", "--worktree", "/tmp/demo-main");
+  await run(site, "spawn", "demo", "driver", "runtime", "--worktree", "/tmp/demo-runtime");
   const driver = "driver.runtime@demo";
-  const thread = await run(project, "thread", "start", "--with", `coordinator@demo,${driver}`, "--subject", "Takeover test");
-  const request = await run(project, "post", thread, "--from", "coordinator@demo", "--to", driver, "--expects-result", "--body", "Finish the rollout after takeover.");
+  const thread = await run(site, "thread", "start", "--with", `coordinator@demo,${driver}`, "--subject", "Takeover test");
+  const request = await run(site, "post", thread, "--from", "coordinator@demo", "--to", driver, "--expects-result", "--body", "Finish the rollout after takeover.");
 
-  await run(project, "bind", driver, "--pane", "old-driver-pane", "--backend", "tuios");
-  await run(project, "receipt", thread, request, "--from", driver, "--body", "Received; beginning work.");
+  await run(site, "bind", driver, "--pane", "old-driver-pane", "--backend", "tuios");
+  await run(site, "receipt", thread, request, "--from", driver, "--body", "Received; beginning work.");
 
   // The coordinator replaces a rate-limited agent. The address—and therefore
   // its durable thread history and responsibility—does not change.
-  await run(project, "bind", driver, "--pane", "replacement-driver-pane", "--backend", "tuios");
-  const resumedSeat = await run(project, "open", driver);
+  await run(site, "bind", driver, "--pane", "replacement-driver-pane", "--backend", "tuios");
+  const resumedSeat = await run(site, "open", driver);
   expect(resumedSeat).toContain("replacement-driver-pane");
   expect(resumedSeat).toContain(thread);
-  expect(await readFile(join(project, "threads", thread, `${request}.yaml`), "utf8")).toContain("Finish the rollout after takeover.");
-  expect(await run(project, "status")).toContain(`${request}@${driver}`);
+  expect(await readFile(join(site, "threads", thread, `${request}.yaml`), "utf8")).toContain("Finish the rollout after takeover.");
+  expect(await run(site, "status")).toContain(`${request}@${driver}`);
 
-  await run(project, "result", thread, request, "--from", driver, "--body", "Rollout completed by replacement agent.");
-  expect(await run(project, "status")).not.toContain("waiting:");
+  await run(site, "result", thread, request, "--from", driver, "--body", "Rollout completed by replacement agent.");
+  expect(await run(site, "status")).not.toContain("waiting:");
 });
