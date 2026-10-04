@@ -179,6 +179,8 @@ async function transition(root: string, projectName: string, id: string, next: T
   if (next === "done") {
     if (actor !== task.coordinator) throw new Error(`Only ${task.coordinator} may complete task ${id}.`);
     if (!allProofs(task)) throw new Error(`Task ${id} is missing completion proof.`);
+    const { assertAcceptedBehavioralReview } = await import("./reviews");
+    await assertAcceptedBehavioralReview(root, projectName, id, task);
     if (retire) await retireAssignee(root, projectName, id, task);
   }
   task.status = next;
