@@ -21,6 +21,13 @@ async function run(cwd: string, ...args: string[]) {
   return stdout.trim();
 }
 
+async function fail(cwd: string, ...args: string[]) {
+  const child = Bun.spawn([process.execPath, cli, ...args], { cwd, stdout: "pipe", stderr: "pipe" });
+  const [stdout, stderr, exitCode] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+  expect(exitCode).not.toBe(0);
+  return `${stdout}${stderr}`;
+}
+
 async function git(cwd: string, ...args: string[]) {
   const child = Bun.spawn(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
   const [stdout, stderr, exitCode] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
@@ -147,4 +154,36 @@ aliases:
   const opened = await run(site, "open", "coordinator@decision-os");
   expect(opened).toContain("Recovered through the old address.");
   expect(opened).toContain("coordinator@decision-os");
+});
+
+test("a coordinator unlocks dependent tasks only after reviewing their proof", async () => {
+  const root = await mkdtemp(join(tmpdir(), "atdd-seat-"));
+  roots.push(root);
+  const site = join(root, "site");
+  await run(root, "init", site);
+  await run(site, "project", "init", "demo");
+  await run(site, "spawn", "demo", "coordinator", "main", "--worktree", "/tmp/demo-main");
+  await run(site, "spawn", "demo", "driver", "plan", "--worktree", "/tmp/demo-plan");
+  await run(site, "spawn", "demo", "driver", "api", "--worktree", "/tmp/demo-api");
+  const coordinator = "coordinator@demo";
+  const planner = "driver.plan@demo";
+  const api = "driver.api@demo";
+
+  await run(site, "task", "add", "demo", "W-plan", "--title", "Write the plan", "--coordinator", coordinator, "--assignee", planner, "--body", "A rich task body with implementation context.", "--done-when", "Plan is published.");
+  await run(site, "task", "add", "demo", "W-api", "--title", "Build the API", "--coordinator", coordinator, "--assignee", api, "--depends-on", "W-plan", "--done-when", "API checks pass.");
+  expect(await run(site, "task", "list", "demo")).toContain("W-api  todo  proof:0/1  Build the API  waiting:W-plan");
+  expect(await fail(site, "task", "start", "demo", "W-api", "--by", api)).toContain("waiting on: W-plan");
+
+  await run(site, "task", "start", "demo", "W-plan", "--by", planner);
+  expect(await fail(site, "task", "review", "demo", "W-plan", "--by", planner)).toContain("missing proof");
+  await run(site, "task", "prove", "demo", "W-plan", "--by", planner, "--item", "1", "--proof", "https://example.test/plan-report");
+  await run(site, "task", "review", "demo", "W-plan", "--by", planner);
+  expect(await run(site, "task", "open", "demo", "W-plan")).toContain("status: review");
+  await run(site, "task", "done", "demo", "W-plan", "--by", coordinator);
+
+  await run(site, "task", "start", "demo", "W-api", "--by", api);
+  await run(site, "task", "prove", "demo", "W-api", "--by", api, "--item", "1", "--proof", "CI run 42: passed");
+  await run(site, "task", "review", "demo", "W-api", "--by", api);
+  await run(site, "task", "return", "demo", "W-api", "--by", coordinator);
+  expect(await run(site, "task", "open", "demo", "W-api")).toContain("status: in_progress");
 });

@@ -14,10 +14,12 @@ workseats/
 ├── work/
 │   └── resolver-os/
 │       ├── project.yaml
-│       └── seats/
+│       ├── seats/
 │           └── driver.runtime/
 │               ├── seat.yaml
 │               └── checkpoint.yaml
+│       └── tasks/
+│           └── W-runtime-rollout.yaml
 └── threads/
     └── T-<id>/
         ├── thread.yaml
@@ -31,6 +33,32 @@ Each seat may carry a one-line `purpose`, set with `seat describe <address> --pu
 `site.yaml` may also declare address aliases when a project is consolidated or renamed. Aliases resolve at the CLI boundary; threads and checkpoints retain the canonical address, so a legacy name never creates a second seat.
 
 `project.yaml` can describe optional named scopes—such as independent coordinator responsibilities within one repository—and their legacy aliases. A scope is explanatory metadata, not a lane system: it does not impose a branch, worktree, or lifecycle on a seat.
+
+## Tasks
+
+A task is a project-level YAML file, independent of seats and threads. It names its coordinator and optional assignee; a seat's task view is derived from those references. Tasks move through four deliberately small states:
+
+```text
+todo → in_progress → review → done
+```
+
+The driver starts a task, fills the proof beside each `done_when` criterion, and submits it for review. Only its coordinator can mark it done; a review can instead be returned to `in_progress`. Dependencies are task-local: a task starts only after every `depends_on` task is done. Tasks without unfinished dependencies are parallel-ready.
+
+```sh
+bun /path/to/atdd-seat/src/seat.ts task add resolver-os W-runtime \
+  --title 'Complete runtime rollout' \
+  --coordinator coordinator@resolver-os \
+  --assignee driver.runtime@resolver-os \
+  --body 'Deliver the bounded runtime rollout.' \
+  --done-when 'Required checks pass' \
+  --done-when 'Coordinator accepts the result'
+bun /path/to/atdd-seat/src/seat.ts task start resolver-os W-runtime --by driver.runtime@resolver-os
+bun /path/to/atdd-seat/src/seat.ts task prove resolver-os W-runtime --by driver.runtime@resolver-os --item 1 --proof 'CI run 42: passed'
+bun /path/to/atdd-seat/src/seat.ts task review resolver-os W-runtime --by driver.runtime@resolver-os
+bun /path/to/atdd-seat/src/seat.ts task done resolver-os W-runtime --by coordinator@resolver-os
+```
+
+An item is effectively checked when its `proof` is present. Proof is a short durable reference—a PR, CI run, report, commit range, deployment, or thread message—not a new evidence database. The task body carries the full brief and can point to its source document. A thread may optionally link a task, but one is not created automatically for every task.
 
 ## Quick start
 
@@ -70,4 +98,4 @@ Use `status: unverified` for imported or recovered records until the current hos
 
 ## Scope of this first version
 
-The first version handles local filesystems, deterministic addressing, shared threads, receipts/results, status derivation, seat spawning, runtime binding, and simple tmux/Herdr/TUIOS notification adapters. It deliberately does not run a daemon, poll for retries, synchronize across machines, or provide a browser UI.
+The first version handles local filesystems, deterministic addressing, project tasks and dependencies, shared threads, receipts/results, status derivation, seat spawning, runtime binding, and simple tmux/Herdr/TUIOS notification adapters. It deliberately does not run a daemon, poll for retries, synchronize across machines, or provide a browser UI.

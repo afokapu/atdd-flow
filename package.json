@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "seat": "bun run src/seat.ts",
+    "work": "bun run src/cli.ts",
     "check": "bun run src/seat.ts --help",
     "test": "bun test"
   },
