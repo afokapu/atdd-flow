@@ -137,6 +137,10 @@ profiles: [planner, coder, tester, traceability, security, workflow]
 
 ATDD Bun remains the sole owner of `AGENTS.md` and `CLAUDE.md`. Its managed instruction block selects the `workflow` registry, which points to this package's lifecycle convention. That convention teaches drivers and coordinators to use the durable seat, task, thread, proof, review, handoff, and safe-retirement protocol; it does not create another agent file or a separate skill loader.
 
+The convention begins by requiring an agent to run `atdd-workflow --help` before workflow action
+(`bunx atdd-workflow --help` when only the repository-local executable is available). Help output is
+the installed-version command authority, so agents do not invent syntax or rely on stale instructions.
+
 ## Releases
 
 Every package change merged to `main` runs tests, selects the next patch version, publishes `@afokapu/atdd-workflow` with provenance, commits that version, and tags it.

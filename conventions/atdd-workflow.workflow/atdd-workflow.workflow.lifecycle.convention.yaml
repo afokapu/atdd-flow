@@ -24,6 +24,11 @@ content:
     Use the coordination records as the durable source of truth. A live agent or multiplexer is
     replaceable and never substitutes for the records.
   normative_text: |
+    Before taking workflow action in a repository, run `atdd-workflow --help` to discover the
+    commands and current syntax available in the installed CLI. If the executable is project-local
+    and not on PATH, run `bunx atdd-workflow --help`. Treat that help output as the command authority:
+    do not invent flags, infer command forms from memory, or rely on an older agent's instructions.
+
     Start from the current seat, checkpoint, assigned tasks, and relevant thread records. A replacement
     agent resumes from those records; it does not depend on a conversation with its predecessor.
 
