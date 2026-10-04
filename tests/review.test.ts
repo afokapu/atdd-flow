@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { assertAcceptedBehavioralReview, behavioralReviewRequired, recordBehavioralReview } from "../src/reviews";
-import { done } from "../src/tasks";
+import { done, seatTasks } from "../src/tasks";
 
 async function git(cwd: string, ...args: string[]) {
   const child = Bun.spawn(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
@@ -82,7 +82,7 @@ function history(head: string, decision: "APPROVE" | "RETURN" | "ESCALATE") {
         },
       },
       reviewer: { address: "reviewer.delivery@demo", model: "economy" },
-      convention: { rule_id: "atdd-bun.review.behavioral-reconciliation", path: "/package/convention.yaml" },
+      convention: { rule_id: "atdd-bun.review.behavioral-reconciliation", path: "conventions/atdd-bun.review/atdd-bun.review.behavioral-reconciliation.convention.yaml", package_version: "0.10.test" },
       input: {
         task: { title: "Deliver behavior", done_when: [{ text: "Behavior works", proof: "CI run 42" }] },
         plan_artifacts: [],
@@ -157,6 +157,17 @@ test("only APPROVE on the current clean delivery satisfies completion", async ()
 
     await writeFile(join(repository, "delivery.txt"), "changed after review\n");
     await expect(assertAcceptedBehavioralReview(root, "demo", "delivery", task)).rejects.toThrow("clean committed delivery");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("behavioral review history is never enumerated as a task", async () => {
+  const { root, head } = await fixture();
+  try {
+    await writeFile(join(root, "work", "demo", "tasks", "delivery.reviews.yaml"), Bun.YAML.stringify(history(head, "APPROVE")));
+    const tasks = await seatTasks(root, "demo", "driver.delivery@demo");
+    expect(tasks.map((entry) => entry.id)).toEqual(["delivery"]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
