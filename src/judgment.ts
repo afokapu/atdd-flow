@@ -3,7 +3,7 @@ import { execFile as execute } from "node:child_process";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
 import { choice, TypeSafeClient } from "@typesafe-ai/sdk";
-import { type ModelCandidate, paths, project as readProject, readYaml, required, runOutput, seat as readSeat } from "./core";
+import { type ModelCandidate, paths, readYaml, required } from "./core";
 import { type Task } from "./tasks";
 
 type ChoiceAnswer = { choice: string; confidence: number };
@@ -17,25 +17,31 @@ export type FocusJudgment = "REQUIRED" | "USEFUL_BUT_NOT_REQUIRED" | "SPECULATIV
 export type FocusResponse = { available: true; model?: string; judgment: FocusJudgment; confidence: number } | Unavailable;
 export type ScoutInput = { goal: string; candidates: string[]; question?: string };
 export type FocusInput = { title: string; body?: string; doneWhen: string[]; proposedAction: string };
-export type ReviewRoute = "CONFORMANCE" | "ADVERSARIAL";
-export type ReviewInput = {
+export type ReviewClass = "LOCAL" | "ASSEMBLED" | "JOURNEY" | "SYSTEM";
+export type ProofBoundary = "LOCAL_ACCEPTANCE" | "ASSEMBLED_API_RUNTIME" | "INTERLOCKING_ROUTE" | "TRAIN" | "USER_JOURNEY";
+export type ReviewRoutingInput = {
   title: string;
   body?: string;
   source?: string;
-  changedFiles?: string[];
   doneWhen: Array<{ text: string; proof?: string }>;
+  changedFiles?: string[];
+  planArtifacts?: string[];
+  criticalCategories?: string[];
 };
-export type ReviewSignals = {
-  specification: "CLOSED" | "QUESTIONABLE";
-  evidence: "DIRECT" | "INDIRECT_OR_INCOMPLETE";
-  escapeRisk: "LOCAL" | "CROSS_BOUNDARY_OR_HIGH_CONSEQUENCE";
+export type ReviewRoutingSignals = {
+  behaviorEffect: "BEHAVIOR_AFFECTING" | "BEHAVIOR_PRESERVING";
+  proofBoundary: ProofBoundary;
+  crossesMultiplePaths: boolean;
+  consequence: "ORDINARY" | "HIGH_CONSEQUENCE";
+  reconciliation: "SINGLE_PATH" | "MULTI_PATH_SYSTEM";
+  runtimeObservation: "AVAILABLE" | "NOT_AVAILABLE";
 };
-export type ReviewResponse = {
+export type ReviewRoutingResponse = {
   available: true;
   model?: string;
-  route: ReviewRoute;
+  classification: ReviewClass;
   confidence: number;
-  signals: ReviewSignals;
+  signals: ReviewRoutingSignals;
 } | Unavailable;
 export type ModelSelectionInput = {
   seat: { address: string; role: string; purpose?: string };
@@ -48,7 +54,11 @@ export type ModelSelectionInput = {
     blocker?: string;
   }>;
   candidates: ModelCandidate[];
-  reviewRoute?: ReviewRoute;
+  reviewRouting?: {
+    classification: ReviewClass;
+    confidence: number;
+    signals: ReviewRoutingSignals;
+  };
 };
 export type ModelSelectionResponse = {
   available: true;
@@ -166,96 +176,121 @@ export async function focusTask(root: string, project: string, taskId: string, p
 }
 
 
-const reviewConfidenceFloor = 0.75;
+const reviewRoutingConfidenceFloor = 0.75;
 const modelSelectionConfidenceFloor = 0.75;
 
-export async function reviewCheck(input: ReviewInput, options: JudgmentOptions = {}): Promise<ReviewResponse> {
+export async function routeBehavioralReview(input: ReviewRoutingInput, options: JudgmentOptions = {}): Promise<ReviewRoutingResponse> {
   const judge = await client(options);
-  if (!judge) return unavailable("Jev credentials are not configured; use adversarial review conservatively.");
+  if (!judge) return unavailable("Jev credentials are not configured; route final review conservatively as SYSTEM.");
   const questions = {
-    specification: choice({
-      question: "Are the stated done_when criteria sufficiently closed to judge the intended behavior without inventing missing requirements?",
+    classification: choice({
+      question: "What is the required complexity of the final behavioral reconciliation?",
       task_title: input.title,
       task_body: input.body ?? null,
-      done_when: input.doneWhen.map((item) => item.text),
-    }, {
-      CLOSED: "The criteria define observable required behavior clearly enough for a bounded conformance review.",
-      QUESTIONABLE: "Material behavior, assumptions, or success conditions appear underspecified or ambiguous.",
-    }),
-    evidence: choice({
-      question: "Does the supplied proof directly demonstrate the stated done_when behavior?",
+      source: input.source ?? null,
       done_when: input.doneWhen,
-      source: input.source ?? null,
+      changed_files: input.changedFiles ?? [],
+      plan_artifacts: input.planArtifacts ?? [],
+      critical_categories: input.criticalCategories ?? ["authorization", "destructive mutation", "persistence", "financial effect", "security"],
     }, {
-      DIRECT: "The proof is concrete and directly tied to each stated criterion.",
-      INDIRECT_OR_INCOMPLETE: "The proof is missing, indirect, overly generic, or does not clearly demonstrate the criterion.",
+      LOCAL: "One local acceptance or similarly narrow behavioral path is sufficient.",
+      ASSEMBLED: "The behavior must be reconciled at an assembled API/runtime or interlocking boundary.",
+      JOURNEY: "The user-visible or train/journey behavior must be exercised end to end.",
+      SYSTEM: "The delivery crosses multiple paths, boundaries, journeys, trains, or high-consequence system behavior and needs system-level reconciliation.",
     }),
-    escape_risk: choice({
-      question: "Could correctness materially depend on behavior outside the local stated criteria?",
+    behavior_effect: choice({
+      question: "Is the delivery externally behavior-affecting or intended to preserve behavior?",
       task_title: input.title,
       task_body: input.body ?? null,
-      source: input.source ?? null,
-      changed_files: input.changedFiles ?? [],
       done_when: input.doneWhen.map((item) => item.text),
+      changed_files: input.changedFiles ?? [],
     }, {
-      LOCAL: "The change appears local and low-consequence; the stated criteria plausibly bound the important correctness surface.",
-      CROSS_BOUNDARY_OR_HIGH_CONSEQUENCE: "The task appears to cross contracts, persistence, authorization, money, concurrency, public APIs, irreversible side effects, or another consequential boundary.",
+      BEHAVIOR_AFFECTING: "The delivery intentionally changes externally observable behavior.",
+      BEHAVIOR_PRESERVING: "The delivery is intended to preserve externally observable behavior while changing structure or implementation.",
+    }),
+    proof_boundary: choice({
+      question: "What is the highest relevant executable proof boundary for this delivery?",
+      source: input.source ?? null,
+      done_when: input.doneWhen,
+      plan_artifacts: input.planArtifacts ?? [],
+    }, {
+      LOCAL_ACCEPTANCE: "A local acceptance/unit behavioral boundary is the highest relevant proof.",
+      ASSEMBLED_API_RUNTIME: "An assembled API or runtime boundary is required.",
+      INTERLOCKING_ROUTE: "An interlocking route is the highest relevant proof boundary.",
+      TRAIN: "A train-level boundary is required.",
+      USER_JOURNEY: "A user journey or equivalent end-to-end boundary is required.",
+    }),
+    cross_paths: choice({
+      question: "Does the delivery cross multiple wagons, trains, routes, journeys, or equivalent behavioral paths?",
+      plan_artifacts: input.planArtifacts ?? [],
+      changed_files: input.changedFiles ?? [],
+    }, {
+      SINGLE: "The delivery stays within one relevant behavioral path.",
+      MULTIPLE: "The delivery crosses multiple relevant behavioral paths or ownership boundaries.",
+    }),
+    consequence: choice({
+      question: "Does the delivery affect a high-consequence domain or configured critical category?",
+      task_title: input.title,
+      task_body: input.body ?? null,
+      changed_files: input.changedFiles ?? [],
+      critical_categories: input.criticalCategories ?? ["authorization", "destructive mutation", "persistence", "financial effect", "security"],
+    }, {
+      ORDINARY: "No high-consequence or configured critical category is materially involved.",
+      HIGH_CONSEQUENCE: "A high-consequence or configured critical category is materially involved.",
+    }),
+    reconciliation: choice({
+      question: "Is the final review primarily a single-path reconciliation or a multi-path/system reconciliation?",
+      plan_artifacts: input.planArtifacts ?? [],
+      changed_files: input.changedFiles ?? [],
+    }, {
+      SINGLE_PATH: "One behavioral path can be reconciled against intent.",
+      MULTI_PATH_SYSTEM: "Several paths or system interactions must be reconciled together.",
+    }),
+    runtime: choice({
+      question: "Is direct runtime observation available from the declared plan, harness, or executable proof?",
+      done_when: input.doneWhen,
+      plan_artifacts: input.planArtifacts ?? [],
+    }, {
+      AVAILABLE: "The declared plan or harness exposes a runtime boundary the reviewer can exercise directly.",
+      NOT_AVAILABLE: "No direct runtime observation is declared or available from the supplied context.",
     }),
   };
   try {
     const response = await judge.systemOne({ state: { task: input }, questions });
-    const specification = response.answers.specification;
-    const evidence = response.answers.evidence;
-    const escapeRisk = response.answers.escape_risk;
-    const signals: ReviewSignals = {
-      specification: specification?.choice === "CLOSED" ? "CLOSED" : "QUESTIONABLE",
-      evidence: evidence?.choice === "DIRECT" ? "DIRECT" : "INDIRECT_OR_INCOMPLETE",
-      escapeRisk: escapeRisk?.choice === "LOCAL" ? "LOCAL" : "CROSS_BOUNDARY_OR_HIGH_CONSEQUENCE",
+    const classificationAnswer = response.answers.classification;
+    const behavior = response.answers.behavior_effect;
+    const boundary = response.answers.proof_boundary;
+    const crossPaths = response.answers.cross_paths;
+    const consequence = response.answers.consequence;
+    const reconciliation = response.answers.reconciliation;
+    const runtime = response.answers.runtime;
+    const classifications = ["LOCAL", "ASSEMBLED", "JOURNEY", "SYSTEM"] as const;
+    const boundaries = ["LOCAL_ACCEPTANCE", "ASSEMBLED_API_RUNTIME", "INTERLOCKING_ROUTE", "TRAIN", "USER_JOURNEY"] as const;
+    const confidence = Math.min(
+      classificationAnswer?.confidence ?? 0,
+      behavior?.confidence ?? 0,
+      boundary?.confidence ?? 0,
+      crossPaths?.confidence ?? 0,
+      consequence?.confidence ?? 0,
+      reconciliation?.confidence ?? 0,
+      runtime?.confidence ?? 0,
+    );
+    const rawClassification = classifications.includes(classificationAnswer?.choice as ReviewClass)
+      ? classificationAnswer!.choice as ReviewClass
+      : "SYSTEM";
+    const classification = confidence >= reviewRoutingConfidenceFloor ? rawClassification : "SYSTEM";
+    const signals: ReviewRoutingSignals = {
+      behaviorEffect: behavior?.choice === "BEHAVIOR_PRESERVING" ? "BEHAVIOR_PRESERVING" : "BEHAVIOR_AFFECTING",
+      proofBoundary: boundaries.includes(boundary?.choice as ProofBoundary) ? boundary!.choice as ProofBoundary : "USER_JOURNEY",
+      crossesMultiplePaths: crossPaths?.choice === "MULTIPLE",
+      consequence: consequence?.choice === "ORDINARY" ? "ORDINARY" : "HIGH_CONSEQUENCE",
+      reconciliation: reconciliation?.choice === "SINGLE_PATH" ? "SINGLE_PATH" : "MULTI_PATH_SYSTEM",
+      runtimeObservation: runtime?.choice === "AVAILABLE" ? "AVAILABLE" : "NOT_AVAILABLE",
     };
-    const confidence = Math.min(specification?.confidence ?? 0, evidence?.confidence ?? 0, escapeRisk?.confidence ?? 0);
-    const route: ReviewRoute = signals.specification === "CLOSED"
-      && signals.evidence === "DIRECT"
-      && signals.escapeRisk === "LOCAL"
-      && confidence >= reviewConfidenceFloor
-      ? "CONFORMANCE"
-      : "ADVERSARIAL";
-    return { available: true, ...(response.model ? { model: response.model } : {}), route, confidence, signals };
+    return { available: true, ...(response.model ? { model: response.model } : {}), classification, confidence, signals };
   } catch (error) {
-    return unavailable(`Review check unavailable: ${(error as Error).message}`);
+    return unavailable(`Behavioral review routing unavailable: ${(error as Error).message}`);
   }
-}
-
-export async function reviewTask(root: string, project: string, taskId: string, options: JudgmentOptions = {}) {
-  const task = await readYaml<Task>(paths(root).taskFile(project, taskId));
-  if (task.schema !== "atdd-workflow/task/v1") throw new Error(`Unsupported task schema: ${taskId}`);
-  let changedFiles: string[] | undefined;
-  if (task.assignee) {
-    try {
-      const owner = await readSeat(root, task.assignee);
-      const config = await readProject(root, project);
-      const role = config.roles[owner.role];
-      const base = role?.base ?? config.roles.coordinator?.branch ?? "main";
-      const outputs = await Promise.allSettled([
-        runOutput(["git", "diff", "--name-only", `${base}...HEAD`], owner.worktree),
-        runOutput(["git", "diff", "--name-only"], owner.worktree),
-        runOutput(["git", "diff", "--name-only", "--cached"], owner.worktree),
-        runOutput(["git", "ls-files", "--others", "--exclude-standard"], owner.worktree),
-      ]);
-      changedFiles = [...new Set(outputs.flatMap((output) => output.status === "fulfilled"
-        ? output.value.split("\n").map((entry) => entry.trim()).filter(Boolean)
-        : []
-      ))].slice(0, 100);
-    } catch {
-      changedFiles = undefined;
-    }
-  }
-  return reviewCheck({
-    title: task.title,
-    ...(task.body ? { body: task.body } : {}),
-    ...(task.source ? { source: task.source } : {}),
-    ...(changedFiles?.length ? { changedFiles } : {}),
-    doneWhen: task.done_when,
-  }, options);
 }
 
 export async function selectModel(input: ModelSelectionInput, options: JudgmentOptions = {}): Promise<ModelSelectionResponse> {
@@ -270,10 +305,10 @@ export async function selectModel(input: ModelSelectionInput, options: JudgmentO
   const questions = {
     model: choice({
       question: "Which listed model is the weakest candidate sufficient to complete the seat's current work reliably?",
-      policy: "Prefer later/weaker candidates whenever they are sufficient. Escalate only for residual ambiguity, cross-system reasoning, adversarial review, high-consequence decisions, or other work that genuinely requires stronger reasoning.",
+      policy: "Prefer later/weaker candidates whenever they are sufficient. Use review routing complexity, cross-system scope, high-consequence flags, and residual uncertainty to justify stronger candidates; do not treat role names as capability requirements.",
       seat: input.seat,
       tasks: input.tasks,
-      review_route: input.reviewRoute ?? null,
+      review_routing: input.reviewRouting ?? null,
       candidates: candidates.map((entry, index) => ({ id: entry.id, rank: index + 1, description: entry.description ?? null })),
     }, criteria),
   };
