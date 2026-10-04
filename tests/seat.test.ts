@@ -79,6 +79,9 @@ test("an operator can initialize a standalone Desk Git repository", async () => 
   expect(config).toContain("executables:");
   expect(config).toContain("claude: claude");
   expect(config).toContain("kimi: kimi");
+  const models = await readFile(join(coordination, "models.yaml"), "utf8");
+  expect(models).toContain("atdd-workflow/models/v1");
+  expect(models.indexOf("id: claude")).toBeLessThan(models.indexOf("id: codex"));
 });
 
 test("a legacy coordination registry upgrades to a Desk without changing its aliases", async () => {
@@ -262,6 +265,10 @@ test("host adapters discover native addresses from host-provided environment", (
   expect(launchCommand({ application: "tuios", placement: "etdd-os", name: "driver.runtime@etdd", worktree: "/worktrees/runtime", agent: "codex", root: "/coordination", seat: "driver.runtime@etdd" })).toEqual([
     "tuios", "new-window", "driver.runtime@etdd", "-s", "etdd-os", "--cwd", "/worktrees/runtime", "--no-focus", "--print-id", "--",
     "/usr/bin/env", "ATDD_WORKFLOW_ROOT=/coordination", "ATDD_WORKFLOW_SEAT=driver.runtime@etdd", "codex",
+  ]);
+  expect(launchCommand({ application: "tuios", placement: "etdd-os", name: "coordinator@etdd", worktree: "/work", agent: "claude", args: ["--model", "sonnet"], root: "/coordination", seat: "coordinator@etdd" })).toEqual([
+    "tuios", "new-window", "coordinator@etdd", "-s", "etdd-os", "--cwd", "/work", "--no-focus", "--print-id", "--",
+    "/usr/bin/env", "ATDD_WORKFLOW_ROOT=/coordination", "ATDD_WORKFLOW_SEAT=coordinator@etdd", "claude", "--model", "sonnet",
   ]);
   expect(launchNotice("driver.runtime@etdd")).toContain("Read your durable seat and assigned task");
   expect(launchNotice("driver.runtime@etdd")).toContain("Continue assigned in_progress work until it is review-ready or explicitly blocked.");
@@ -454,4 +461,18 @@ test("a task can preserve an exact source body through the canonical amend comma
   const task = await run(site, "task", "open", "demo", "W-source");
   expect(task).toContain("body: Exact source wording.");
   expect(task).toContain("repo@sha:docs/program.adoc#row-42");
+});
+
+
+test("new project roles leave model allocation to the Desk portfolio", async () => {
+  const root = await mkdtemp(join(tmpdir(), "atdd-workflow-"));
+  roots.push(root);
+  const site = join(root, "site");
+  await run(root, "init", site);
+  await run(site, "project", "init", "demo");
+  const project = await readFile(join(site, "work", "demo", "project.yaml"), "utf8");
+  expect(project).not.toContain("agent:");
+  await run(site, "spawn", "demo", "driver", "runtime", "--worktree", "/tmp/demo-runtime");
+  const seat = await readFile(join(site, "work", "demo", "seats", "driver.runtime", "seat.yaml"), "utf8");
+  expect(seat).not.toContain("agent:");
 });
