@@ -3,7 +3,7 @@ import { execFile as execute } from "node:child_process";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
 import { choice, TypeSafeClient } from "@typesafe-ai/sdk";
-import { paths, readYaml, required } from "./core";
+import { type ModelCandidate, paths, readYaml, required } from "./core";
 import { type Task } from "./tasks";
 
 type ChoiceAnswer = { choice: string; confidence: number };
@@ -17,6 +17,44 @@ export type FocusJudgment = "REQUIRED" | "USEFUL_BUT_NOT_REQUIRED" | "SPECULATIV
 export type FocusResponse = { available: true; model?: string; judgment: FocusJudgment; confidence: number } | Unavailable;
 export type ScoutInput = { goal: string; candidates: string[]; question?: string };
 export type FocusInput = { title: string; body?: string; doneWhen: string[]; proposedAction: string };
+export type ReviewRoute = "CONFORMANCE" | "ADVERSARIAL";
+export type ReviewInput = {
+  title: string;
+  body?: string;
+  source?: string;
+  doneWhen: Array<{ text: string; proof?: string }>;
+};
+export type ReviewSignals = {
+  specification: "CLOSED" | "QUESTIONABLE";
+  evidence: "DIRECT" | "INDIRECT_OR_INCOMPLETE";
+  escapeRisk: "LOCAL" | "CROSS_BOUNDARY_OR_HIGH_CONSEQUENCE";
+};
+export type ReviewResponse = {
+  available: true;
+  model?: string;
+  route: ReviewRoute;
+  confidence: number;
+  signals: ReviewSignals;
+} | Unavailable;
+export type ModelSelectionInput = {
+  seat: { address: string; role: string; purpose?: string };
+  tasks: Array<{
+    id: string;
+    title: string;
+    status: string;
+    body?: string;
+    doneWhen: string[];
+    blocker?: string;
+  }>;
+  candidates: ModelCandidate[];
+  reviewRoute?: ReviewRoute;
+};
+export type ModelSelectionResponse = {
+  available: true;
+  model?: string;
+  selected_model: string;
+  confidence: number;
+} | Unavailable;
 export type JudgmentOptions = { client?: JudgmentClient; credential?: Credential };
 
 const excerptLimit = 6_000;
@@ -124,4 +162,109 @@ export async function focusTask(root: string, project: string, taskId: string, p
     doneWhen: task.done_when.map((item) => item.text),
     proposedAction: required(proposedAction, "--action"),
   }, options);
+}
+
+
+const reviewConfidenceFloor = 0.75;
+
+export async function reviewCheck(input: ReviewInput, options: JudgmentOptions = {}): Promise<ReviewResponse> {
+  const judge = await client(options);
+  if (!judge) return unavailable("Jev credentials are not configured; use adversarial review conservatively.");
+  const questions = {
+    specification: choice({
+      question: "Are the stated done_when criteria sufficiently closed to judge the intended behavior without inventing missing requirements?",
+      task_title: input.title,
+      task_body: input.body ?? null,
+      done_when: input.doneWhen.map((item) => item.text),
+    }, {
+      CLOSED: "The criteria define observable required behavior clearly enough for a bounded conformance review.",
+      QUESTIONABLE: "Material behavior, assumptions, or success conditions appear underspecified or ambiguous.",
+    }),
+    evidence: choice({
+      question: "Does the supplied proof directly demonstrate the stated done_when behavior?",
+      done_when: input.doneWhen,
+      source: input.source ?? null,
+    }, {
+      DIRECT: "The proof is concrete and directly tied to each stated criterion.",
+      INDIRECT_OR_INCOMPLETE: "The proof is missing, indirect, overly generic, or does not clearly demonstrate the criterion.",
+    }),
+    escape_risk: choice({
+      question: "Could correctness materially depend on behavior outside the local stated criteria?",
+      task_title: input.title,
+      task_body: input.body ?? null,
+      source: input.source ?? null,
+      done_when: input.doneWhen.map((item) => item.text),
+    }, {
+      LOCAL: "The change appears local and low-consequence; the stated criteria plausibly bound the important correctness surface.",
+      CROSS_BOUNDARY_OR_HIGH_CONSEQUENCE: "The task appears to cross contracts, persistence, authorization, money, concurrency, public APIs, irreversible side effects, or another consequential boundary.",
+    }),
+  };
+  try {
+    const response = await judge.systemOne({ state: { task: input }, questions });
+    const specification = response.answers.specification;
+    const evidence = response.answers.evidence;
+    const escapeRisk = response.answers.escape_risk;
+    const signals: ReviewSignals = {
+      specification: specification?.choice === "CLOSED" ? "CLOSED" : "QUESTIONABLE",
+      evidence: evidence?.choice === "DIRECT" ? "DIRECT" : "INDIRECT_OR_INCOMPLETE",
+      escapeRisk: escapeRisk?.choice === "LOCAL" ? "LOCAL" : "CROSS_BOUNDARY_OR_HIGH_CONSEQUENCE",
+    };
+    const confidence = Math.min(specification?.confidence ?? 0, evidence?.confidence ?? 0, escapeRisk?.confidence ?? 0);
+    const route: ReviewRoute = signals.specification === "CLOSED"
+      && signals.evidence === "DIRECT"
+      && signals.escapeRisk === "LOCAL"
+      && confidence >= reviewConfidenceFloor
+      ? "CONFORMANCE"
+      : "ADVERSARIAL";
+    return { available: true, ...(response.model ? { model: response.model } : {}), route, confidence, signals };
+  } catch (error) {
+    return unavailable(`Review check unavailable: ${(error as Error).message}`);
+  }
+}
+
+export async function reviewTask(root: string, project: string, taskId: string, options: JudgmentOptions = {}) {
+  const task = await readYaml<Task>(paths(root).taskFile(project, taskId));
+  if (task.schema !== "atdd-workflow/task/v1") throw new Error(`Unsupported task schema: ${taskId}`);
+  return reviewCheck({
+    title: task.title,
+    ...(task.body ? { body: task.body } : {}),
+    ...(task.source ? { source: task.source } : {}),
+    doneWhen: task.done_when,
+  }, options);
+}
+
+export async function selectModel(input: ModelSelectionInput, options: JudgmentOptions = {}): Promise<ModelSelectionResponse> {
+  const candidates = input.candidates.filter((entry) => entry.enabled !== false);
+  if (!candidates.length) return unavailable("No enabled model candidates were supplied.");
+  if (candidates.length === 1) return { available: true, selected_model: candidates[0]!.id, confidence: 1 };
+  const judge = await client(options);
+  if (!judge) return unavailable("Jev credentials are not configured; use the strongest available model.");
+  const criteria = Object.fromEntries(candidates.map((entry, index) => [entry.id,
+    `Rank ${index + 1} of ${candidates.length}, ordered strongest to weakest. Select this only when it is the weakest listed model that can reliably complete the current responsibility.${entry.description ? ` ${entry.description}` : ""}`,
+  ]));
+  const questions = {
+    model: choice({
+      question: "Which listed model is the weakest candidate sufficient to complete the seat's current work reliably?",
+      policy: "Prefer later/weaker candidates whenever they are sufficient. Escalate only for residual ambiguity, cross-system reasoning, adversarial review, high-consequence decisions, or other work that genuinely requires stronger reasoning.",
+      seat: input.seat,
+      tasks: input.tasks,
+      review_route: input.reviewRoute ?? null,
+      candidates: candidates.map((entry, index) => ({ id: entry.id, rank: index + 1, description: entry.description ?? null })),
+    }, criteria),
+  };
+  try {
+    const response = await judge.systemOne({ state: input, questions });
+    const answer = response.answers.model;
+    if (!answer || !candidates.some((entry) => entry.id === answer.choice)) {
+      return unavailable("Jev returned a model outside the configured portfolio; use the strongest available model.");
+    }
+    return {
+      available: true,
+      ...(response.model ? { model: response.model } : {}),
+      selected_model: answer.choice,
+      confidence: answer.confidence ?? 0,
+    };
+  } catch (error) {
+    return unavailable(`Model selection unavailable: ${(error as Error).message}`);
+  }
 }
