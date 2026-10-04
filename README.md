@@ -115,7 +115,7 @@ The coordinator assigns; the driver implements, proves each criterion, and submi
 ```sh
 atdd-workflow task add resolver-os runtime-rollout --title 'Complete runtime rollout' \
   --coordinator coordinator@resolver-os --assignee driver.runtime@resolver-os \
-  --done-when 'Checks pass' --done-when 'Review accepted'
+  --done-when 'Checks pass'
 atdd-workflow task start resolver-os runtime-rollout --by driver.runtime@resolver-os
 atdd-workflow task prove resolver-os runtime-rollout --by driver.runtime@resolver-os --item 1 --proof 'CI run 42'
 atdd-workflow task review resolver-os runtime-rollout --by driver.runtime@resolver-os
