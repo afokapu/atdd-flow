@@ -167,6 +167,7 @@ export async function focusTask(root: string, project: string, taskId: string, p
 
 
 const reviewConfidenceFloor = 0.75;
+const modelSelectionConfidenceFloor = 0.75;
 
 export async function reviewCheck(input: ReviewInput, options: JudgmentOptions = {}): Promise<ReviewResponse> {
   const judge = await client(options);
@@ -273,6 +274,9 @@ export async function selectModel(input: ModelSelectionInput, options: JudgmentO
     const answer = response.answers.model;
     if (!answer || !candidates.some((entry) => entry.id === answer.choice)) {
       return unavailable("Jev returned a model outside the configured portfolio; use the strongest available model.");
+    }
+    if ((answer.confidence ?? 0) < modelSelectionConfidenceFloor) {
+      return unavailable("Jev model selection confidence is low; use the strongest available model.");
     }
     return {
       available: true,
