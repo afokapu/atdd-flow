@@ -360,6 +360,25 @@ test("a coordinator unlocks dependent tasks only after reviewing their proof", a
   expect(await run(site, "task", "open", "demo", "W-api")).toContain("status: in_progress");
 });
 
+test("status gives an operator one view of seats, tasks, and threads", async () => {
+  const root = await mkdtemp(join(tmpdir(), "atdd-workflow-"));
+  roots.push(root);
+  const site = join(root, "site");
+  await run(root, "init", site);
+  await run(site, "project", "init", "demo");
+  await run(site, "spawn", "demo", "coordinator", "main", "--worktree", "/tmp/demo-main");
+  await run(site, "spawn", "demo", "driver", "runtime", "--worktree", "/tmp/demo-runtime");
+  await run(site, "task", "add", "demo", "W-runtime", "--title", "Run runtime work", "--coordinator", "coordinator@demo", "--assignee", "driver.runtime@demo", "--done-when", "Coordinator accepts evidence.");
+  await run(site, "thread", "start", "--with", "coordinator@demo,driver.runtime@demo", "--subject", "Runtime handoff");
+  const output = await run(site, "status");
+  expect(output).toContain("SEATS");
+  expect(output).toContain("driver.runtime@demo");
+  expect(output).toContain("TASKS");
+  expect(output).toContain("demo/W-runtime  todo");
+  expect(output).toContain("THREADS");
+  expect(output).toContain("Runtime handoff");
+});
+
 test("a task can preserve an exact source body through the canonical amend command", async () => {
   const root = await mkdtemp(join(tmpdir(), "atdd-workflow-"));
   roots.push(root);

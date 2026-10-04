@@ -2,9 +2,10 @@
 
 import { basename, resolve } from "node:path";
 import { init, initProject, spawn, bind, useApplication, attach, launch, describe, checkpoint, openSeat } from "./seats";
-import { addParticipant, post, receipt, result, startThread, status } from "./threads";
+import { addParticipant, post, receipt, result, startThread } from "./threads";
 import * as tasks from "./tasks";
 import { required } from "./core";
+import { status } from "./overview";
 
 const usage = `atdd-workflow — filesystem-first agent seats and tasks
 

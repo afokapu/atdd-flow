@@ -61,7 +61,10 @@ test("four repository lanes complete local and cross-coordinator threads", async
 
     const status = await seat(site, "status");
     expect(status).not.toContain("waiting:");
-    expect(status.split("\n")).toHaveLength(5);
+    expect(status).toContain("SEATS");
+    expect(status).toContain("TASKS");
+    expect(status).toContain("THREADS");
+    expect(status.split("\n").filter((line) => line.startsWith("T-"))).toHaveLength(5);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

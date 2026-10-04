@@ -84,6 +84,10 @@ atdd-workflow status
 atdd-workflow --root ~/Github/private-work-coordination status
 ```
 
+`status` is the operator overview: it prints every seat with its checkpoint state,
+every task across projects with its assignee, proof and unmet dependencies, then
+the open threads and outstanding results.
+
 ## Use from a code repository
 
 Install the CLI once as a development dependency in each coordinated code repository. Every agent working from that checkout then uses the same version; individual agents do not install their own copy.
