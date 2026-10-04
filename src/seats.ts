@@ -72,7 +72,10 @@ export async function spawn(root: string, projectName: string, roleName: string,
   const branch = words(args, "--branch") ?? fill(role.branch, { project: config.project, name });
   await ensureWorktree(config, role, worktree, branch);
   const purpose = words(args, "--purpose") ?? (role.purpose ? fill(role.purpose, entries) : undefined);
-  const legacyAgent = words(args, "--agent") ?? role.agent;
+  const portfolio = await modelPortfolio(root);
+  const requestedAgent = words(args, "--agent");
+  if (portfolio && requestedAgent) throw new Error("--agent is a legacy pin and cannot be used when models.yaml owns model allocation.");
+  const legacyAgent = portfolio ? undefined : requestedAgent ?? role.agent;
   const record: Seat = {
     schema: "atdd-workflow/seat/v2", address, role: roleName, project: config.project, worktree, branch,
     ...(legacyAgent ? { agent: legacyAgent } : {}), ...(purpose ? { purpose } : {}),
