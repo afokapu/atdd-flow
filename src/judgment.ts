@@ -3,7 +3,7 @@ import { execFile as execute } from "node:child_process";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
 import { choice, TypeSafeClient } from "@typesafe-ai/sdk";
-import { type ModelCandidate, paths, readYaml, required } from "./core";
+import { type ModelCandidate, paths, project as readProject, readYaml, required, runOutput, seat as readSeat } from "./core";
 import { type Task } from "./tasks";
 
 type ChoiceAnswer = { choice: string; confidence: number };
@@ -22,6 +22,7 @@ export type ReviewInput = {
   title: string;
   body?: string;
   source?: string;
+  changedFiles?: string[];
   doneWhen: Array<{ text: string; proof?: string }>;
 };
 export type ReviewSignals = {
@@ -193,6 +194,7 @@ export async function reviewCheck(input: ReviewInput, options: JudgmentOptions =
       task_title: input.title,
       task_body: input.body ?? null,
       source: input.source ?? null,
+      changed_files: input.changedFiles ?? [],
       done_when: input.doneWhen.map((item) => item.text),
     }, {
       LOCAL: "The change appears local and low-consequence; the stated criteria plausibly bound the important correctness surface.",
@@ -225,10 +227,24 @@ export async function reviewCheck(input: ReviewInput, options: JudgmentOptions =
 export async function reviewTask(root: string, project: string, taskId: string, options: JudgmentOptions = {}) {
   const task = await readYaml<Task>(paths(root).taskFile(project, taskId));
   if (task.schema !== "atdd-workflow/task/v1") throw new Error(`Unsupported task schema: ${taskId}`);
+  let changedFiles: string[] | undefined;
+  if (task.assignee) {
+    try {
+      const owner = await readSeat(root, task.assignee);
+      const config = await readProject(root, project);
+      const role = config.roles[owner.role];
+      const base = role?.base ?? config.roles.coordinator?.branch ?? "main";
+      const output = await runOutput(["git", "diff", "--name-only", `${base}...HEAD`], owner.worktree);
+      changedFiles = output.split("\n").map((entry) => entry.trim()).filter(Boolean).slice(0, 100);
+    } catch {
+      changedFiles = undefined;
+    }
+  }
   return reviewCheck({
     title: task.title,
     ...(task.body ? { body: task.body } : {}),
     ...(task.source ? { source: task.source } : {}),
+    ...(changedFiles?.length ? { changedFiles } : {}),
     doneWhen: task.done_when,
   }, options);
 }
