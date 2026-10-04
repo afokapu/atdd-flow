@@ -43,7 +43,7 @@ Usage:
   atdd-workflow status [project <project>|task <project> <task-id>|seat <address>|thread <thread-id>] [--all]
   atdd-workflow scout --goal <text> --path <file> [--path <file> ...] [--question <text>]
   atdd-workflow focus-check <project> <task-id> --action <proposed action>
-  atdd-workflow behavioral-review launch <project> <task-id> --by <coordinator> --application <application> --placement <native-container-address>
+  atdd-workflow behavioral-review launch <project> <task-id> --by <coordinator> --application <application> --placement <native-container-address> [--gate <reference> ...]
   atdd-workflow behavioral-review record <project> <task-id> --by <reviewer-address> --file <result-yaml>
   atdd-workflow behavioral-review open <project> <task-id>
   atdd-workflow open <address>
