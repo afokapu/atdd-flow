@@ -1,6 +1,6 @@
 {
   "name": "@afokapu/atdd-workflow",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "description": "Filesystem-first Desk registry for projects, seats, tasks, threads, and handoffs.",
   "type": "module",
   "bin": {
