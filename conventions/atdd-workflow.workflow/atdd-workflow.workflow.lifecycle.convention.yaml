@@ -39,6 +39,15 @@ terms:
     A task state reached only after required implementation and verification are complete, every
     done_when criterion carries proof, the task has been moved to review, and the coordinator has
     received the result.
+- term_id: model_portfolio
+  text: >-
+    The models.yaml list of launchable model candidates, ordered strongest to weakest. Seats do not
+    normally own a model; Jev selects the weakest available candidate sufficient for the current work.
+- term_id: adversarial_review
+  text: >-
+    A review posture used when specification closure, proof directness, boundary risk, or judgment
+    confidence leaves material residual uncertainty. It challenges shared assumptions rather than
+    merely checking conformance.
 content:
   summary: >-
     Use coordination records as the durable source of truth. Drivers implement the smallest effective
@@ -97,12 +106,21 @@ content:
     Use `atdd-workflow scout` only when repository scope is genuinely unclear or candidate files are
     numerous. Use `atdd-workflow focus-check` only before a likely scope expansion such as a new
     dependency, generalized abstraction, persistent schema, architecture change, adjacent refactor, or
-    unrelated defect. These read-only Jev judgments are optional: when unavailable, uncertain, or too
-    expensive, use repository evidence and prefer the smaller reversible solution.
+    unrelated defect. Use `atdd-workflow review-check` to distinguish bounded conformance review from
+    adversarial review when a task is ready for coordinator review. These read-only Jev judgments advise
+    the workflow; they do not own correctness or completion.
+
+    New seats do not pin a model. The Desk's models.yaml is ordered strongest to weakest, and each launch
+    asks Jev for the weakest available model sufficient for the seat's current active work. Review posture
+    is part of that selection context. If Jev model selection is unavailable, use the strongest available
+    configured model. A legacy Desk without models.yaml may continue to use its pinned seat agent.
 
     A driver records proof for every done_when criterion, moves the completed task to review, and sends
-    its coordinator a result. A coordinator reviews proof, returns inadequate work to in_progress, and
-    alone may mark a reviewed task done.
+    its coordinator a result. A coordinator uses conformance review when the specification is closed,
+    proof is direct, risk is local, and Jev is sufficiently confident. Otherwise use adversarial review:
+    assume acceptance, tests, implementation, and proof may agree around a bad assumption and look for
+    omitted correctness behavior. The coordinator returns inadequate work to in_progress and alone may
+    mark a reviewed task done.
 
     A driver seat may own more than one task. A coordinator uses
     `atdd-workflow task done <project> <task> --by <coordinator> --retire-assignee` only when every
@@ -128,8 +146,8 @@ content:
   - A driver may continue independent work while waiting for a boundary decision.
   - A task may be completed normally without retiring its assignee when that driver still has work.
   - A live host may notify an agent to inspect its seat, but it never owns the durable state.
-  - An optional scouting or focus helper may advise an agent, but it never owns task state, proof,
-    correctness, or completion authority.
+  - An optional Jev scouting, focus, review, or model-selection judgment may advise execution, but it
+    never owns task state, proof, correctness, or completion authority.
 metadata:
   aliases:
   - ATDD-WORKFLOW-LIFECYCLE
