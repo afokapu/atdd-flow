@@ -46,7 +46,7 @@ async function seats(root: string, project: string): Promise<ListedSeat[]> {
 
 async function tasks(root: string, project: string): Promise<ListedTask[]> {
   const folder = paths(root).tasks(project);
-  const entries = await Promise.all((await names(folder)).filter((file) => file.endsWith(".yaml")).map(async (file) => ({
+  const entries = await Promise.all((await names(folder)).filter((file) => file.endsWith(".yaml") && !file.endsWith(".reviews.yaml")).map(async (file) => ({
     project,
     id: file.slice(0, -5),
     task: await readYaml<Task>(`${folder}/${file}`),
