@@ -2,7 +2,7 @@ import { mkdir, readdir } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { discoverAddress, launchedAddress, launchCommand, notify } from "./adapters";
 import {
-  type Checkpoint, type Project, type Role, type Seat, atomicYaml, canonicalAddress,
+  type Checkpoint, type Desk, type Project, type Role, type Seat, atomicYaml, canonicalAddress,
   desk, exists, fill, migrateDesk, now, paths, project, readYaml, required, run, runOutput, seat, words, yaml,
 } from "./core";
 
@@ -11,8 +11,15 @@ const defaultRoles = (): Record<string, Role> => ({
   driver: { address: "driver.{name}@{project}", branch: "delivery/{name}", base: "main", agent: "codex", worktree: "{worktree_root}/{name}" },
 });
 
+const defaultExecutables = () => ({ claude: "claude", codex: "codex", pi: "pi", kimi: "kimi" });
+
+/** Resolve the seat's named agent through the Desk-wide executable registry. */
+export function resolveExecutable(config: Desk, agent: string) {
+  return config.executables?.[agent] ?? agent;
+}
+
 export async function init(root: string, name: string, args: string[]) {
-  const config = { schema: "atdd-workflow/desk/v1" as const, desk: name, application: "tuios" };
+  const config = { schema: "atdd-workflow/desk/v1" as const, desk: name, application: "tuios", executables: defaultExecutables() };
   await Promise.all([mkdir(paths(root).work, { recursive: true }), mkdir(paths(root).threads, { recursive: true })]);
   await atomicYaml(paths(root).desk, config);
   if (args.includes("--git") && !await exists(join(root, ".git"))) await run(["git", "init", "--initial-branch=main", root]);
@@ -93,11 +100,12 @@ export const launchNotice = (address: string) => `SYSTEM: you are ${address}. Re
 export async function launch(root: string, address: string, args: string[]) {
   const resolved = await canonicalAddress(root, address);
   const record = await seat(root, resolved);
+  const config = await desk(root);
   const application = required(words(args, "--application"), "--application");
   const placement = required(words(args, "--placement"), "--placement");
   const output = await runOutput(launchCommand({
     application, placement, name: resolved, worktree: record.worktree,
-    agent: record.agent, root, seat: resolved,
+    agent: resolveExecutable(config, record.agent), root, seat: resolved,
   }));
   const nativeAddress = launchedAddress(application, placement, output);
   await bind(root, resolved, ["--application", application, "--address", nativeAddress]);

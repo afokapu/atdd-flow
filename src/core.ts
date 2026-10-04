@@ -10,7 +10,14 @@ export type Scope = { purpose: string; coordinator: string; umbrella_branch?: st
  * The Desk is the durable registry for a workflow: projects, seats, tasks,
  * threads, and their handoff records all resolve from this root.
  */
-export type Desk = { schema: "atdd-workflow/desk/v1"; desk: string; application: string; aliases?: Record<string, string> };
+export type Desk = {
+  schema: "atdd-workflow/desk/v1";
+  desk: string;
+  application: string;
+  /** Named commands available to every seat launched from this Desk. */
+  executables?: Record<string, string>;
+  aliases?: Record<string, string>;
+};
 type LegacyCoordination = { schema: "atdd-workflow/coordination/v2"; site: string; application: string; aliases?: Record<string, string> };
 export type Project = {
   schema: string;

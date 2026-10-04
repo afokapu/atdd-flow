@@ -3,7 +3,7 @@ import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { discoverAddress, launchCommand, launchedAddress, notificationCommand } from "../src/adapters";
-import { launchNotice } from "../src/seats";
+import { launchNotice, resolveExecutable } from "../src/seats";
 
 const roots: string[] = [];
 const cli = join(import.meta.dir, "..", "src", "cli.ts");
@@ -76,6 +76,9 @@ test("an operator can initialize a standalone Desk Git repository", async () => 
   const config = await readFile(join(coordination, "desk.yaml"), "utf8");
   expect(config).toContain("atdd-workflow/desk/v1");
   expect(config).toContain("application: tuios");
+  expect(config).toContain("executables:");
+  expect(config).toContain("claude: claude");
+  expect(config).toContain("kimi: kimi");
 });
 
 test("a legacy coordination registry upgrades to a Desk without changing its aliases", async () => {
@@ -264,6 +267,16 @@ test("host adapters discover native addresses from host-provided environment", (
   expect(launchNotice("driver.runtime@etdd")).toContain("Continue assigned in_progress work until it is review-ready or explicitly blocked.");
   expect(launchedAddress("tuios", "etdd-os", "window-7\n")).toBe("etdd-os/window-7");
   expect(() => launchCommand({ application: "herdr", placement: "w1", name: "driver", worktree: "/work", agent: "codex", root: "/coordination", seat: "driver@demo" })).toThrow("No deterministic launch adapter");
+});
+
+test("a Desk executable declaration resolves a named seat agent for every launch", () => {
+  expect(resolveExecutable({ schema: "atdd-workflow/desk/v1", desk: "site", application: "tuios", executables: {
+    claude: "claude",
+    codex: "/opt/homebrew/bin/codex",
+    pi: "pi",
+    kimi: "kimi",
+  } }, "codex")).toBe("/opt/homebrew/bin/codex");
+  expect(resolveExecutable({ schema: "atdd-workflow/desk/v1", desk: "legacy", application: "tuios" }, "custom-agent")).toBe("custom-agent");
 });
 
 test("a host-attached replacement preserves its durable work and wakes the current native address", async () => {

@@ -37,6 +37,27 @@ export ATDD_WORKFLOW_ROOT="$HOME/Github/desk"
 
 Use `--root "$HOME/Github/desk"` for one-off commands. Keeping the Desk separate avoids code-branch conflicts and permits cross-repository work.
 
+### Declare launch executables once
+
+`desk.yaml` owns the executable names that every seat may use. Give each name
+an absolute command path when the host does not guarantee a shared `PATH`:
+
+```yaml
+schema: atdd-workflow/desk/v1
+desk: desk
+application: tuios
+executables:
+  claude: /Users/you/.local/bin/claude
+  codex: /opt/homebrew/bin/codex
+  pi: /opt/homebrew/bin/pi
+  kimi: /Users/you/.kimi-code/bin/kimi
+```
+
+A seat's `agent` is the executable name, such as `claude` or `codex`.
+Every `atdd-workflow launch` resolves that name through this Desk-wide map
+before creating its host window. Older Desks without `executables` continue
+to treat `agent` as a literal command.
+
 ## Configure worktrees and seats
 
 Create a project, then set its policy in `work/<project>/project.yaml`:
