@@ -47,6 +47,7 @@ export type LaunchRequest = {
   worktree: string;
   agent: string;
   args?: string[];
+  environment?: Record<string, string>;
   root: string;
   seat: string;
 };
@@ -57,6 +58,7 @@ export function launchCommand(request: LaunchRequest): string[] {
     "/usr/bin/env",
     `ATDD_WORKFLOW_ROOT=${request.root}`,
     `ATDD_WORKFLOW_SEAT=${request.seat}`,
+    ...Object.entries(request.environment ?? {}).map(([key, value]) => `${key}=${value}`),
     request.agent,
     ...(request.args ?? []),
   ];
