@@ -93,16 +93,23 @@ atdd-workflow status
 atdd-workflow --root ~/Github/desk status
 ```
 
-`status` is the operator briefing: a compact Desk dashboard that puts blocked,
-unassigned, review-ready, unreconciled, and waiting work first; it then shows
-workstream progress, active tasks, and the next useful commands. For a complete,
-line-by-line audit of seats, tasks, proof, dependencies, threads, and outstanding
-results, use `atdd-workflow status --all`.
+`status` is the operator briefing. It has a deliberate scope grammar rather
+than ambiguous positional identifiers:
 
-To focus an operator briefing on a single workstream, use
-`atdd-workflow status --project decision-os`. It includes only that project's
-seats and tasks, plus threads that include one of its seats or link one of its
-tasks. Add `--all` for that project's complete audit.
+```sh
+atdd-workflow status                                  # whole Desk
+atdd-workflow status project decision-os              # project briefing
+atdd-workflow status task decision-os c1-w2b          # task dossier
+atdd-workflow status seat driver.custody-trail@decision-os
+atdd-workflow status thread T-mutt8upr-ea27d3e9
+```
+
+The Desk and project briefings put blocked, unassigned, review-ready,
+unreconciled, and waiting work first, then show workstream progress, active
+tasks, and ready work. Task, seat, and thread status commands present their
+assignment or participation, durable handoff context, evidence, dependencies,
+and next action. For a complete line-by-line audit, use
+`atdd-workflow status --all` or `atdd-workflow status project decision-os --all`.
 
 Every item in the briefing leads to an inspectable record: use
 `atdd-workflow task open <project> <task-id>`, `atdd-workflow open <seat-address>`,

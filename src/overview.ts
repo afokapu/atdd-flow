@@ -1,13 +1,12 @@
 import { readdir } from "node:fs/promises";
-import { desk, exists, paths, readYaml, type Checkpoint, type Seat } from "./core";
+import { canonicalAddress, desk, exists, paths, readYaml, type Checkpoint, type Seat } from "./core";
 import { type Task, type TaskStatus } from "./tasks";
 import { type Message, type Thread } from "./threads";
 
 type ListedTask = { project: string; id: string; task: Task; waiting: string[] };
 type ListedSeat = { project: string; record: Seat; checkpoint?: Checkpoint };
-type ListedThread = { record: Thread; pending: string[] };
+type ListedThread = { record: Thread; messages: Message[]; pending: string[] };
 type Attention = { project?: string; id: string; label: string; state: string; detail: string; command: string; priority: number };
-type StatusOptions = { all: boolean; project?: string };
 
 const terminalWidth = () => Math.max(72, Math.min(process.stdout.columns || 100, 120));
 const useColor = Boolean(process.stdout.isTTY && !process.env.NO_COLOR && process.env.TERM !== "dumb");
@@ -65,17 +64,17 @@ async function threads(root: string): Promise<ListedThread[]> {
     const threadFile = paths(root).threadFile(id);
     if (!await exists(threadFile)) return undefined;
     const record = await readYaml<Thread>(threadFile);
-    const all = await Promise.all((await names(paths(root).thread(id)))
+    const messages = await Promise.all((await names(paths(root).thread(id)))
       .filter((file) => file.startsWith("M-") && file.endsWith(".yaml"))
       .map((file) => readYaml<Message>(`${paths(root).thread(id)}/${file}`)));
-    const pending = all.flatMap((message) => {
+    const pending = messages.flatMap((message) => {
       if (!message.expects_result) return [];
       const recipients = message.to === "all" ? record.participants.filter((address) => address !== message.from) : message.to;
       return recipients
-        .filter((address) => !all.some((reply) => reply.kind === "result" && reply.in_reply_to === message.id && reply.from === address))
+        .filter((address) => !messages.some((reply) => reply.kind === "result" && reply.in_reply_to === message.id && reply.from === address))
         .map((address) => `${message.id}@${address}`);
     });
-    return { record, pending };
+    return { record, messages, pending };
   }))).filter((entry): entry is ListedThread => Boolean(entry));
 }
 
@@ -85,6 +84,14 @@ function rule(title: string, suffix = "") {
   console.log(`${muted("─".repeat(2))}${strong(text)}${muted("─".repeat(Math.max(2, width - text.length - 2)))}`);
 }
 
+function header(title: string, deskName: string, facts: string, application: string) {
+  const width = terminalWidth();
+  console.log(`${muted("╭─")} ${strong(title)} ${muted("─".repeat(Math.max(2, width - deskName.length - title.length - 9)))} ${strong(deskName)} ${muted("─╮")}`);
+  console.log(`${muted("│")}  ${facts.padEnd(width - 4)}${muted("│")}`);
+  console.log(`${muted("│")}  ${muted(`application: ${application}`.padEnd(width - 4))}${muted("│")}`);
+  console.log(`${muted("╰")}${muted("─".repeat(width - 2))}${muted("╯")}`);
+}
+
 function bar(done: number, total: number, width = 16) {
   const filled = total ? Math.round((done / total) * width) : 0;
   return `${paint("█".repeat(filled), 36)}${muted("░".repeat(width - filled))}`;
@@ -92,6 +99,12 @@ function bar(done: number, total: number, width = 16) {
 
 function stateName(status: TaskStatus) {
   return ({ todo: "READY", in_progress: "ACTIVE", review: "REVIEW", done: "DONE" } as Record<TaskStatus, string>)[status];
+}
+
+function taskPhase(entry: ListedTask) {
+  if (entry.task.blocker) return "BLOCKED";
+  if (entry.waiting.length) return "WAITING";
+  return stateName(entry.task.status);
 }
 
 function attentionForTask(entry: ListedTask, checkpointBySeat: Map<string, Checkpoint | undefined>): Attention | undefined {
@@ -226,12 +239,8 @@ async function dashboard(root: string, requestedProject?: string) {
   ].sort((left, right) => left.priority - right.priority || left.label.localeCompare(right.label));
   const openThreads = threadList.filter((entry) => entry.record.state === "open").length;
   const facts = `${projectList.length} workstreams${dot}${allSeats.length} seats${dot}${allTasks.length} tasks${dot}${openThreads} live threads`;
-  const width = terminalWidth();
   const title = requestedProject ? `DESK / ${requestedProject}` : "DESK";
-  console.log(`${muted("╭─")} ${strong(title)} ${muted("─".repeat(Math.max(2, width - record.desk.length - title.length - 9)))} ${strong(record.desk)} ${muted("─╮")}`);
-  console.log(`${muted("│")}  ${facts.padEnd(width - 4)}${muted("│")}`);
-  console.log(`${muted("│")}  ${muted(`application: ${record.application}`.padEnd(width - 4))}${muted("│")}`);
-  console.log(`${muted("╰")}${muted("─".repeat(width - 2))}${muted("╯")}`);
+  header(title, record.desk, facts, record.application);
   console.log("");
   printAttention(attention);
   console.log("");
@@ -242,6 +251,98 @@ async function dashboard(root: string, requestedProject?: string) {
   printReady(allTasks);
   console.log("");
   printNext(attention, allTasks);
+}
+
+async function taskDashboard(root: string, projectName: string, taskId: string) {
+  await selectedProjects(root, projectName);
+  const entry = (await tasks(root, projectName)).find((item) => item.id === taskId);
+  if (!entry) throw new Error(`Task does not exist in ${projectName}: ${taskId}`);
+  const record = await desk(root);
+  const threadList = (await threads(root)).filter((item) => item.record.task === `${projectName}/${taskId}`);
+  const proof = `${entry.task.done_when.filter((item) => item.proof).length}/${entry.task.done_when.length} proof`;
+  header(`TASK / ${projectName}/${taskId}`, record.desk, `${taskPhase(entry)}${dot}${proof}`, record.application);
+  console.log(`\n  ${strong(entry.task.title)}`);
+  rule("OWNERSHIP");
+  console.log(`  coordinator  ${entry.task.coordinator}`);
+  console.log(`  assignee     ${entry.task.assignee ?? muted("unassigned")}`);
+  rule("DEPENDENCIES", String((entry.task.depends_on ?? []).length));
+  if (!entry.task.depends_on?.length) console.log(`  ${muted("Independent; it may proceed in parallel.")}`);
+  for (const dependency of entry.task.depends_on ?? []) console.log(`  ${entry.waiting.includes(dependency) ? tone("○", "WAITING") : tone("✓", "DONE")} ${dependency}${entry.waiting.includes(dependency) ? `  ${tone("WAITING", "WAITING")}` : ""}`);
+  rule("DEFINITION OF DONE", proof);
+  for (const [index, item] of entry.task.done_when.entries()) {
+    const mark = item.proof ? tone("✓", "DONE") : muted("○");
+    console.log(`  ${mark} ${index + 1}. ${item.text}${item.proof ? `\n      ${muted(item.proof)}` : ""}`);
+  }
+  rule("CONTEXT");
+  console.log(`  source  ${entry.task.source ?? muted("none")}`);
+  console.log(`  brief   ${entry.task.body ? truncate(entry.task.body.replace(/\s+/g, " "), terminalWidth() - 10) : muted("none")}`);
+  if (entry.task.blocker) console.log(`  ${tone("blocker", "BLOCKED")} ${truncate(entry.task.blocker, terminalWidth() - 12)}`);
+  rule("RELATED THREADS", String(threadList.length));
+  if (!threadList.length) console.log(`  ${muted("No thread links directly to this task.")}`);
+  for (const thread of threadList) console.log(`  ${thread.record.id}  ${thread.record.subject}${thread.pending.length ? `  ${tone(`${thread.pending.length} waiting`, "WAITING")}` : ""}`);
+  rule("NEXT");
+  console.log(`  ${entry.task.status === "review" ? `Coordinator: review and complete with \`atdd-workflow task done ${projectName} ${taskId} --by ${entry.task.coordinator}\`.` : entry.task.blocker ? "Resolve the recorded blocker before changing state." : entry.waiting.length ? "Complete the unmet dependencies first." : entry.task.assignee ? `Driver: start with \`atdd-workflow task start ${projectName} ${taskId} --by ${entry.task.assignee}\`.` : "Coordinator: assign a driver before this task can start."}`);
+}
+
+async function seatDashboard(root: string, address: string) {
+  const record = await desk(root);
+  const resolved = await canonicalAddress(root, address);
+  const projectList = await projectNames(root);
+  const allSeats = (await Promise.all(projectList.map((project) => seats(root, project)))).flat();
+  const entry = allSeats.find((item) => item.record.address === resolved);
+  if (!entry) throw new Error(`Seat does not exist in this Desk: ${address}`);
+  const owned = (await tasks(root, entry.project)).filter((item) => item.task.assignee === resolved || item.task.coordinator === resolved);
+  const threadList = (await threads(root)).filter((item) => item.record.participants.includes(resolved));
+  const checkpoint = entry.checkpoint;
+  header(`SEAT / ${resolved}`, record.desk, `${entry.record.role}${dot}${entry.record.agent}${dot}${checkpoint?.status ?? "unverified"}`, record.application);
+  console.log(`\n  ${entry.record.purpose ?? muted("No responsibility statement recorded.")}`);
+  rule("CHECKPOINT", checkpoint?.status ?? "UNVERIFIED");
+  if (!checkpoint) console.log(`  ${muted("No checkpoint has been written for this seat.")}`);
+  if (checkpoint) {
+    console.log(`  ${truncate(checkpoint.summary, terminalWidth() - 4)}`);
+    console.log(`  ${muted(`next: ${truncate(checkpoint.next_action, terminalWidth() - 10)}`)}`);
+  }
+  rule("WORK");
+  console.log(`  branch    ${entry.record.branch}`);
+  console.log(`  worktree  ${entry.record.worktree}`);
+  if (entry.record.retired) console.log(`  ${tone("retired", "DONE")} ${entry.record.retired.summary}`);
+  rule("RUNTIME");
+  const runtime = entry.record.runtime;
+  if (!runtime) console.log(`  ${muted("No live application is currently attached.")}`);
+  for (const [application, nativeAddress] of Object.entries(runtime?.addresses ?? {})) console.log(`  ${application}${application === runtime?.application ? " *" : "  "} ${nativeAddress}`);
+  rule("RESPONSIBILITIES", String(owned.length));
+  if (!owned.length) console.log(`  ${muted("No task currently names this seat.")}`);
+  for (const task of owned.slice(0, 6)) console.log(`  ${tone("●", taskPhase(task))} ${task.id}  ${taskPhase(task)}${task.task.assignee === resolved ? "  owner" : "  coordinator"}`);
+  rule("THREADS", String(threadList.length));
+  if (!threadList.length) console.log(`  ${muted("No thread includes this seat.")}`);
+  for (const thread of threadList.slice(0, 6)) console.log(`  ${thread.record.id}  ${truncate(thread.record.subject, terminalWidth() - 32)}${thread.pending.some((item) => item.endsWith(`@${resolved}`)) ? `  ${tone("REPLY", "WAITING")}` : ""}`);
+  rule("NEXT");
+  console.log(`  ${checkpoint?.next_action ?? "Attach a host or record a checkpoint before assigning new work."}`);
+}
+
+async function threadDashboard(root: string, threadId: string) {
+  const record = await desk(root);
+  const entry = (await threads(root)).find((item) => item.record.id === threadId);
+  if (!entry) throw new Error(`Thread does not exist in this Desk: ${threadId}`);
+  header(`THREAD / ${threadId}`, record.desk, `${entry.record.state}${dot}${entry.record.participants.length} participants${dot}${entry.pending.length} results waiting`, record.application);
+  console.log(`\n  ${strong(entry.record.subject)}`);
+  rule("PARTICIPANTS", String(entry.record.participants.length));
+  for (const participant of entry.record.participants) console.log(`  ${participant}`);
+  rule("LINK");
+  console.log(`  task  ${entry.record.task ?? muted("none")}`);
+  console.log(`  summary  ${entry.record.summary ?? muted("none")}`);
+  rule("CONVERSATION", String(entry.messages.length));
+  if (!entry.messages.length) console.log(`  ${muted("No messages have been posted yet.")}`);
+  for (const message of entry.messages.slice(-8)) {
+    const recipient = message.to === "all" ? "all" : message.to.join(", ");
+    console.log(`  ${tone(message.kind.toUpperCase(), message.kind === "result" ? "DONE" : message.kind === "receipt" ? "ACTIVE" : "WAITING")}  ${message.from} → ${recipient}  ${muted(message.created_at.slice(0, 16).replace("T", " "))}`);
+    console.log(`    ${truncate(message.body.replace(/\s+/g, " "), terminalWidth() - 4)}`);
+  }
+  rule("WAITING", String(entry.pending.length));
+  if (!entry.pending.length) console.log(`  ${tone("✓", "DONE")} ${muted("No requested result is outstanding.")}`);
+  for (const pending of entry.pending) console.log(`  ${tone("○", "WAITING")} ${pending}`);
+  rule("NEXT");
+  console.log(`  ${entry.pending.length ? "The named recipient(s) should post a result against the outstanding message." : "This thread has no outstanding result obligation."}`);
 }
 
 async function printSeats(root: string, projectName: string) {
@@ -269,12 +370,13 @@ async function audit(root: string, requestedProject?: string) {
 }
 
 export async function status(root: string, args: string[] = []) {
-  const projectIndex = args.indexOf("--project");
-  const project = projectIndex < 0 ? undefined : args[projectIndex + 1];
-  if (projectIndex >= 0 && !project) throw new Error("Missing project name after --project.");
-  const allowed = new Set(["--all", "--project", project]);
-  if (args.some((argument) => !allowed.has(argument))) throw new Error("Use `atdd-workflow status [--project <project>] [--all]`.");
-  const options: StatusOptions = { all: args.includes("--all"), ...(project ? { project } : {}) };
-  if (options.all) return audit(root, options.project);
-  return dashboard(root, options.project);
+  const all = args.includes("--all");
+  const [scope, ...values] = args.filter((argument) => argument !== "--all");
+  if (args.some((argument) => argument.startsWith("-") && argument !== "--all")) throw new Error("Use `atdd-workflow status [project|task|seat|thread] ... [--all]`.");
+  if (!scope) return all ? audit(root) : dashboard(root);
+  if (scope === "project" && values.length === 1) return all ? audit(root, values[0]) : dashboard(root, values[0]);
+  if (scope === "task" && values.length === 2) return taskDashboard(root, values[0], values[1]);
+  if (scope === "seat" && values.length === 1) return seatDashboard(root, values[0]);
+  if (scope === "thread" && values.length === 1) return threadDashboard(root, values[0]);
+  throw new Error("Use `atdd-workflow status [project <project>|task <project> <task-id>|seat <address>|thread <thread-id>] [--all]`.");
 }
