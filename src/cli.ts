@@ -17,7 +17,7 @@ Usage:
   atdd-workflow init <desk-directory> [--git]
   atdd-workflow desk migrate
   atdd-workflow project init <project>
-  atdd-workflow spawn <project> <role> <name> [--worktree <path>] [--branch <branch>] [--agent <executable>]
+  atdd-workflow spawn <project> <role> <name> [--worktree <path>] [--branch <branch>] [--agent <legacy-executable>]
   atdd-workflow bind <address> [--application <application>] --address <native-address>
   atdd-workflow attach <address> [--application <application>]
   atdd-workflow launch <address> --application <application> --placement <native-container-address>
