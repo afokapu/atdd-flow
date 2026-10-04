@@ -11,7 +11,7 @@ const defaultRoles = (): Record<string, Role> => ({
 });
 
 export async function init(root: string, name: string) {
-  const config = { schema: "atdd-seat/site/v1", site: name, backend: "tmux" as Backend };
+  const config = { schema: "atdd-workflow/site/v1", site: name, backend: "tmux" as Backend };
   await Promise.all([mkdir(paths(root).work, { recursive: true }), mkdir(paths(root).threads, { recursive: true })]);
   await atomicYaml(paths(root).site, config);
   console.log(`Initialized ${root}`);
@@ -19,7 +19,7 @@ export async function init(root: string, name: string) {
 
 export async function initProject(root: string, name: string) {
   await site(root);
-  const config: Project = { schema: "atdd-seat/project/v1", project: name, roles: defaultRoles() };
+  const config: Project = { schema: "atdd-workflow/project/v1", project: name, roles: defaultRoles() };
   await mkdir(paths(root).seats(name), { recursive: true });
   await atomicYaml(paths(root).projectFile(name), config);
   console.log(`Initialized project ${name}`);
@@ -47,7 +47,7 @@ export async function spawn(root: string, projectName: string, roleName: string,
   const branch = words(args, "--branch") ?? fill(role.branch, { project: config.project, name });
   await ensureWorktree(config, role, worktree, branch);
   const purpose = words(args, "--purpose") ?? (role.purpose ? fill(role.purpose, entries) : undefined);
-  const record: Seat = { schema: "atdd-seat/seat/v1", address, role: roleName, project: config.project, worktree, branch, agent: role.agent, ...(purpose ? { purpose } : {}) };
+  const record: Seat = { schema: "atdd-workflow/seat/v1", address, role: roleName, project: config.project, worktree, branch, agent: role.agent, ...(purpose ? { purpose } : {}) };
   await atomicYaml(paths(root).seatFile(address), record);
   console.log(address);
 }
@@ -74,7 +74,7 @@ export async function checkpoint(root: string, address: string, args: string[]) 
   await seat(root, resolved);
   const references = words(args, "--references")?.split(",").filter(Boolean);
   const record: Checkpoint = {
-    schema: "atdd-seat/checkpoint/v1", seat: resolved,
+    schema: "atdd-workflow/checkpoint/v1", seat: resolved,
     status: (words(args, "--status") ?? "active") as Checkpoint["status"], updated_at: now(),
     summary: required(words(args, "--summary"), "--summary"), next_action: required(words(args, "--next"), "--next"),
     ...(references?.length ? { references } : {}),

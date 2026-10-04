@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const roots: string[] = [];
-const cli = join(import.meta.dir, "..", "src", "seat.ts");
+const cli = join(import.meta.dir, "..", "src", "cli.ts");
 
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
@@ -36,7 +36,7 @@ async function git(cwd: string, ...args: string[]) {
 }
 
 test("a request remains outstanding until its linked result exists", async () => {
-  const root = await mkdtemp(join(tmpdir(), "atdd-seat-"));
+  const root = await mkdtemp(join(tmpdir(), "atdd-workflow-"));
   roots.push(root);
   const site = join(root, "site");
 
@@ -45,7 +45,7 @@ test("a request remains outstanding until its linked result exists", async () =>
   await run(site, "spawn", "demo", "coordinator", "main", "--worktree", "/tmp/demo-main");
   await run(site, "spawn", "demo", "driver", "runtime", "--worktree", "/tmp/demo-runtime");
   await run(site, "describe", "driver.runtime@demo", "--purpose", "Own the runtime rollout.");
-  await stat(join(site, "site.yaml"));
+  await stat(join(site, "workflow.yaml"));
   await stat(join(site, "work", "demo", "project.yaml"));
   await stat(join(site, "work", "demo", "seats", "driver.runtime", "seat.yaml"));
   expect(await run(site, "open", "driver.runtime@demo")).toContain("Own the runtime rollout.");
@@ -60,7 +60,7 @@ test("a request remains outstanding until its linked result exists", async () =>
 });
 
 test("a configured driver worktree is created on its declared branch", async () => {
-  const root = await mkdtemp(join(tmpdir(), "atdd-seat-"));
+  const root = await mkdtemp(join(tmpdir(), "atdd-workflow-"));
   roots.push(root);
   const repository = join(root, "repository");
   const site = join(root, "site");
@@ -70,7 +70,7 @@ test("a configured driver worktree is created on its declared branch", async () 
   await git(repository, "commit", "--allow-empty", "-m", "initial");
   await run(root, "init", site);
   await run(site, "project", "init", "demo");
-  await writeFile(join(site, "work", "demo", "project.yaml"), `schema: atdd-seat/project/v1
+  await writeFile(join(site, "work", "demo", "project.yaml"), `schema: atdd-workflow/project/v1
 project: demo
 repository: ${repository}
 worktree_root: ${join(root, "worktrees")}
@@ -89,7 +89,7 @@ roles:
 });
 
 test("a broadcast request remains open until every targeted participant replies", async () => {
-  const root = await mkdtemp(join(tmpdir(), "atdd-seat-"));
+  const root = await mkdtemp(join(tmpdir(), "atdd-workflow-"));
   roots.push(root);
   const site = join(root, "site");
   await run(root, "init", site);
@@ -107,7 +107,7 @@ test("a broadcast request remains open until every targeted participant replies"
 });
 
 test("a replacement agent resumes an outstanding seat and completes its work", async () => {
-  const root = await mkdtemp(join(tmpdir(), "atdd-seat-"));
+  const root = await mkdtemp(join(tmpdir(), "atdd-workflow-"));
   roots.push(root);
   const site = join(root, "site");
   await run(root, "init", site);
@@ -137,13 +137,13 @@ test("a replacement agent resumes an outstanding seat and completes its work", a
 });
 
 test("a legacy alias resolves to one canonical seat", async () => {
-  const root = await mkdtemp(join(tmpdir(), "atdd-seat-"));
+  const root = await mkdtemp(join(tmpdir(), "atdd-workflow-"));
   roots.push(root);
   const site = join(root, "site");
   await run(root, "init", site);
   await run(site, "project", "init", "decision-os");
   await run(site, "spawn", "decision-os", "coordinator", "main", "--worktree", "/tmp/decision-os-main");
-  await writeFile(join(site, "site.yaml"), `schema: atdd-seat/site/v1
+  await writeFile(join(site, "workflow.yaml"), `schema: atdd-workflow/site/v1
 site: site
 backend: tuios
 aliases:
@@ -157,7 +157,7 @@ aliases:
 });
 
 test("a coordinator unlocks dependent tasks only after reviewing their proof", async () => {
-  const root = await mkdtemp(join(tmpdir(), "atdd-seat-"));
+  const root = await mkdtemp(join(tmpdir(), "atdd-workflow-"));
   roots.push(root);
   const site = join(root, "site");
   await run(root, "init", site);

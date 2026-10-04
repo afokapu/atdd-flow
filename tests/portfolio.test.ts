@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const cli = join(import.meta.dir, "..", "src", "seat.ts");
+const cli = join(import.meta.dir, "..", "src", "cli.ts");
 
 async function exec(cwd: string, command: string[], expected = 0) {
   const child = Bun.spawn(command, { cwd, stdout: "pipe", stderr: "pipe" });
@@ -16,7 +16,7 @@ const seat = (cwd: string, ...args: string[]) => exec(cwd, [process.execPath, cl
 const git = (cwd: string, ...args: string[]) => exec(cwd, ["git", ...args]);
 
 test("four repository lanes complete local and cross-coordinator threads", async () => {
-  const root = await mkdtemp(join(tmpdir(), "atdd-seat-portfolio-"));
+  const root = await mkdtemp(join(tmpdir(), "atdd-workflow-portfolio-"));
   try {
     const site = join(root, "site");
     const names = ["alpha", "bravo", "charlie", "delta"];
@@ -37,7 +37,7 @@ test("four repository lanes complete local and cross-coordinator threads", async
         coordinator: { address: `coordinator@${name}`, branch: "main", agent: "simulated" },
         driver: { address: `driver.{name}@${name}`, branch: "delivery/{name}", agent: "simulated" },
       };
-      await writeFile(join(site, "work", name, "project.yaml"), Bun.YAML.stringify({ schema: "atdd-seat/project/v1", project: name, roles }));
+      await writeFile(join(site, "work", name, "project.yaml"), Bun.YAML.stringify({ schema: "atdd-workflow/project/v1", project: name, roles }));
       await seat(site, "spawn", name, "coordinator", "main", "--worktree", repository);
       for (const driver of ["one", "two", "three", "four"]) {
         const worktree = join(root, "worktrees", name, driver);

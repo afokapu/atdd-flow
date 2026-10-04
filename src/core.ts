@@ -67,7 +67,7 @@ export function taskId(value: string) {
 }
 
 export const paths = (root: string) => ({
-  site: join(root, "site.yaml"),
+  site: join(root, "workflow.yaml"),
   work: join(root, "work"),
   project: (name: string) => join(root, "work", name),
   projectFile: (name: string) => join(root, "work", name, "project.yaml"),
@@ -104,13 +104,13 @@ export async function exists(path: string) {
 
 export async function site(root: string) {
   const value = await readYaml<Site>(paths(root).site);
-  if (value.schema !== "atdd-seat/site/v1") throw new Error("Unsupported site schema.");
+  if (value.schema !== "atdd-workflow/site/v1") throw new Error("Unsupported workflow schema.");
   return value;
 }
 
 export async function project(root: string, name: string) {
   const value = await readYaml<Project>(paths(root).projectFile(name));
-  if (value.schema !== "atdd-seat/project/v1") throw new Error("Unsupported project schema.");
+  if (value.schema !== "atdd-workflow/project/v1") throw new Error("Unsupported project schema.");
   return value;
 }
 

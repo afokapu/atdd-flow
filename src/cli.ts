@@ -8,28 +8,28 @@ import { required } from "./core";
 
 const usage = `atdd-workflow — filesystem-first agent seats and tasks
 
-Run commands from a site directory containing site.yaml.
+Run commands from a workflow directory containing workflow.yaml.
 
 Usage:
-  seat init <site>
-  seat project init <project>
-  seat spawn <project> <role> <name> [--worktree <path>] [--branch <branch>]
-  seat bind <address> --pane <target> [--backend tmux|herdr|tuios]
-  seat describe <address> --purpose <one-line responsibility>
-  seat checkpoint <address> --summary <text> --next <text> [--status active|standby|blocked|complete|unverified]
-  seat task add <project> <task-id> --title <text> --coordinator <address> [--assignee <address>] --done-when <text> [--done-when <text> ...]
-  seat task start|review|done|return <project> <task-id> --by <address>
-  seat task prove <project> <task-id> --by <address> --item <number> --proof <reference>
-  seat task block <project> <task-id> --by <address> --reason <text>
-  seat task list <project> [--coordinator <address>] [--assignee <address>]
-  seat task open <project> <task-id>
-  seat thread start --with <address,...> --subject <text> [--task <project/task-id>]
-  seat thread add <thread-id> <address>
-  seat post <thread-id> --from <address> --to <all|address,...> --body <text> [--expects-result]
-  seat receipt <thread-id> <message-id> --from <address> [--body <text>]
-  seat result <thread-id> <message-id> --from <address> --body <text>
-  seat status
-  seat open <address>`;
+  atdd-workflow init <workflow-directory>
+  atdd-workflow project init <project>
+  atdd-workflow spawn <project> <role> <name> [--worktree <path>] [--branch <branch>]
+  atdd-workflow bind <address> --pane <target> [--backend tmux|herdr|tuios]
+  atdd-workflow describe <address> --purpose <one-line responsibility>
+  atdd-workflow checkpoint <address> --summary <text> --next <text> [--status active|standby|blocked|complete|unverified]
+  atdd-workflow task add <project> <task-id> --title <text> --coordinator <address> [--assignee <address>] --done-when <text> [--done-when <text> ...]
+  atdd-workflow task start|review|done|return <project> <task-id> --by <address>
+  atdd-workflow task prove <project> <task-id> --by <address> --item <number> --proof <reference>
+  atdd-workflow task block <project> <task-id> --by <address> --reason <text>
+  atdd-workflow task list <project> [--coordinator <address>] [--assignee <address>]
+  atdd-workflow task open <project> <task-id>
+  atdd-workflow thread start --with <address,...> --subject <text> [--task <project/task-id>]
+  atdd-workflow thread add <thread-id> <address>
+  atdd-workflow post <thread-id> --from <address> --to <all|address,...> --body <text> [--expects-result]
+  atdd-workflow receipt <thread-id> <message-id> --from <address> [--body <text>]
+  atdd-workflow result <thread-id> <message-id> --from <address> --body <text>
+  atdd-workflow status
+  atdd-workflow open <address>`;
 
 async function main() {
   const args = process.argv.slice(2);
@@ -40,7 +40,7 @@ async function main() {
     init: () => init(resolve(required(rest[0], "site directory")), basename(required(rest[0], "site directory"))),
     project: async () => {
       if (rest[0] === "init") return initProject(root, required(rest[1], "project"));
-      throw new Error("Use `seat project init <project>`.");
+      throw new Error("Use `atdd-workflow project init <project>`.");
     },
     spawn: () => spawn(root, required(rest[0], "project"), required(rest[1], "role"), required(rest[2], "name"), rest.slice(3)),
     bind: () => bind(root, required(rest[0], "address"), rest.slice(1)),
@@ -57,13 +57,13 @@ async function main() {
       if (subcommand === "block") return tasks.block(root, required(projectName, "project"), required(taskId, "task id"), tail);
       if (subcommand === "list") return tasks.list(root, required(projectName, "project"), rest.slice(2));
       if (subcommand === "open") return tasks.open(root, required(projectName, "project"), required(taskId, "task id"));
-      throw new Error("Use `seat task add|start|prove|review|return|done|block|list|open`.");
+      throw new Error("Use `atdd-workflow task add|start|prove|review|return|done|block|list|open`.");
     },
     thread: async () => {
       const [subcommand, ...tail] = rest;
       if (subcommand === "start") return startThread(root, tail);
       if (subcommand === "add") return addParticipant(root, required(tail[0], "thread id"), required(tail[1], "address"));
-      throw new Error("Use `seat thread start` or `seat thread add`.");
+      throw new Error("Use `atdd-workflow thread start` or `atdd-workflow thread add`.");
     },
     post: () => post(root, required(rest[0], "thread id"), rest.slice(1)),
     receipt: () => receipt(root, required(rest[0], "thread id"), required(rest[1], "message id"), rest.slice(2)),
@@ -76,4 +76,4 @@ async function main() {
   await action();
 }
 
-main().catch((error) => { console.error(`seat: ${(error as Error).message}`); process.exit(1); });
+main().catch((error) => { console.error(`atdd-workflow: ${(error as Error).message}`); process.exit(1); });

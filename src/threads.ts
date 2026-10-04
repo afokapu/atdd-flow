@@ -74,7 +74,7 @@ async function post(root: string, threadId: string, args: string[], overrides: P
   const recipients = Array.isArray(toValue) ? toValue : await resolveRecipients(root, toValue, record.participants);
   if (recipients.some((address) => !record.participants.includes(address))) throw new Error("Recipients must be thread participants.");
   const message: Message = {
-    schema: "atdd-seat/message/v1", id: id("M"), from, to: toValue === "all" ? "all" : recipients,
+    schema: "atdd-workflow/message/v1", id: id("M"), from, to: toValue === "all" ? "all" : recipients,
     kind: overrides.kind ?? "message",
     ...(overrides.in_reply_to ? { in_reply_to: overrides.in_reply_to } : {}),
     ...(overrides.expects_result || has(args, "--expects-result") ? { expects_result: true } : {}),
@@ -89,7 +89,7 @@ export async function startThread(root: string, args: string[]) {
   const participants = await resolveRecipients(root, required(words(args, "--with"), "--with"), []);
   if (participants.length < 2) throw new Error("A thread needs at least two participants.");
   const record: Thread = {
-    schema: "atdd-seat/thread/v1", id: id("T"), participants,
+    schema: "atdd-workflow/thread/v1", id: id("T"), participants,
     subject: required(words(args, "--subject"), "--subject"), state: "open",
     ...(words(args, "--task") ? { task: words(args, "--task") } : {}),
   };

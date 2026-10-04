@@ -1,4 +1,4 @@
-schema: atdd-seat/project/v1
+schema: atdd-workflow/project/v1
 project: resolver-os
 repository: /Users/alecfokapu/Github/resolver-os
 worktree_root: /Users/alecfokapu/Github/.worktrees/resolver-os

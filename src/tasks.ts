@@ -6,7 +6,7 @@ import {
 export type TaskStatus = "todo" | "in_progress" | "review" | "done";
 export type DoneWhen = { text: string; proof?: string };
 export type Task = {
-  schema: "atdd-seat/task/v1";
+  schema: "atdd-workflow/task/v1";
   title: string;
   status: TaskStatus;
   coordinator: string;
@@ -29,7 +29,7 @@ const transitions: Record<TaskStatus, TaskStatus[]> = {
 
 async function readTask(root: string, projectName: string, id: string) {
   const record = await readYaml<Task>(paths(root).taskFile(projectName, id));
-  if (record.schema !== "atdd-seat/task/v1") throw new Error(`Unsupported task schema: ${id}`);
+  if (record.schema !== "atdd-workflow/task/v1") throw new Error(`Unsupported task schema: ${id}`);
   return record;
 }
 
@@ -65,7 +65,7 @@ export async function add(root: string, projectName: string, id: string, args: s
   if (!doneWhen.length) throw new Error("A task needs at least one --done-when criterion.");
   const dependsOn = words(args, "--depends-on")?.split(",").filter(Boolean).map(taskId);
   const task: Task = {
-    schema: "atdd-seat/task/v1",
+    schema: "atdd-workflow/task/v1",
     title: required(words(args, "--title"), "--title"),
     status: "todo",
     coordinator,
