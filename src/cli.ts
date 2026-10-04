@@ -8,10 +8,10 @@ import { required } from "./core";
 
 const usage = `atdd-workflow — filesystem-first agent seats and tasks
 
-Run commands from a workflow directory containing workflow.yaml.
+Run commands from a coordination repository containing coordination.yaml.
 
 Usage:
-  atdd-workflow init <workflow-directory>
+  atdd-workflow init <coordination-directory> [--git]
   atdd-workflow project init <project>
   atdd-workflow spawn <project> <role> <name> [--worktree <path>] [--branch <branch>]
   atdd-workflow bind <address> --pane <target> [--backend tmux|herdr|tuios]
@@ -29,15 +29,22 @@ Usage:
   atdd-workflow receipt <thread-id> <message-id> --from <address> [--body <text>]
   atdd-workflow result <thread-id> <message-id> --from <address> --body <text>
   atdd-workflow status
-  atdd-workflow open <address>`;
+  atdd-workflow open <address>
+
+Global:
+  atdd-workflow --root <coordination-directory> <command>
+  ATDD_WORKFLOW_ROOT=<coordination-directory> atdd-workflow <command>`;
 
 async function main() {
-  const args = process.argv.slice(2);
-  if (!args.length || args.includes("--help") || args.includes("-h")) return console.log(usage);
+  const original = process.argv.slice(2);
+  if (!original.length || original.includes("--help") || original.includes("-h")) return console.log(usage);
+  const rootIndex = original.indexOf("--root");
+  const rootOverride = rootIndex < 0 ? process.env.ATDD_WORKFLOW_ROOT : required(original[rootIndex + 1], "--root");
+  const args = rootIndex < 0 ? original : original.filter((_, index) => index !== rootIndex && index !== rootIndex + 1);
   const [command, ...rest] = args;
-  const root = resolve(process.cwd());
+  const root = resolve(rootOverride ?? process.cwd());
   const commands: Record<string, () => Promise<void>> = {
-    init: () => init(resolve(required(rest[0], "site directory")), basename(required(rest[0], "site directory"))),
+    init: () => init(resolve(required(rest[0], "coordination directory")), basename(required(rest[0], "coordination directory")), rest.slice(1)),
     project: async () => {
       if (rest[0] === "init") return initProject(root, required(rest[1], "project"));
       throw new Error("Use `atdd-workflow project init <project>`.");

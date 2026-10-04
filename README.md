@@ -1,6 +1,6 @@
 # ATDD Workflow
 
-`atdd-workflow` is a tiny, filesystem-first coordination tool for replaceable coding-agent seats and tasks.
+`atdd-workflow` is a tiny, filesystem-first coordination tool for replaceable coding-agent seats and tasks. Its durable data lives in a private coordination repository, separate from the code repositories it coordinates.
 
 The durable protocol is YAML. A site is independent from the code repositories and worktrees it coordinates. TUIOS is the primary live host: it provides the operator's pane layout and queues a file-reading notification when a message arrives.
 
@@ -9,8 +9,8 @@ No database, daemon, cloud account, or model-provider SDK is required.
 ## Layout
 
 ```text
-workflow-state/
-├── workflow.yaml
+private-work-coordination/
+├── coordination.yaml
 ├── work/
 │   └── resolver-os/
 │       ├── project.yaml
@@ -30,7 +30,7 @@ workflow-state/
 
 Each seat may carry a one-line `purpose`, set with `atdd-workflow describe <address> --purpose <text>`. It is the human and agent-readable responsibility statement; it does not presume a fixed lane, branch, worktree, or host.
 
-`workflow.yaml` may also declare address aliases when a project is consolidated or renamed. Aliases resolve at the CLI boundary; threads and checkpoints retain the canonical address, so a legacy name never creates a second seat.
+`coordination.yaml` may also declare address aliases when a project is consolidated or renamed. Aliases resolve at the CLI boundary; threads and checkpoints retain the canonical address, so a legacy name never creates a second seat.
 
 `project.yaml` can describe optional named scopes—such as independent coordinator responsibilities within one repository—and their legacy aliases. A scope is explanatory metadata, not a lane system: it does not impose a branch, worktree, or lifecycle on a seat.
 
@@ -60,11 +60,46 @@ atdd-workflow task done resolver-os W-runtime --by coordinator@resolver-os
 
 An item is effectively checked when its `proof` is present. Proof is a short durable reference—a PR, CI run, report, commit range, deployment, or thread message—not a new evidence database. The task body carries the full brief and can point to its source document. A thread may optionally link a task, but one is not created automatically for every task.
 
-## Quick start
+## Bootstrap a coordination repository
+
+The operator creates this repository once—not a coordinator or driver during ordinary work. Give it a name that describes its trust boundary, not the tool: for example, `private-work-coordination` or `client-a-coordination`. Start with one repository for projects that need to coordinate together. Create another only for a different operator, access boundary, or retention policy; cross-repository threads are deliberately not a v1 feature.
 
 ```sh
-atdd-workflow init ~/Github/workflow-state
-cd ~/Github/workflow-state
+atdd-workflow init ~/Github/private-work-coordination --git
+cd ~/Github/private-work-coordination
+git add . && git commit -m 'chore: initialize coordination repository'
+gh repo create afokapu/private-work-coordination --private --source . --remote origin --push
+```
+
+The Git repository is the local and remote history. The tool writes YAML; Git records, syncs, and restores it. Agents do not create or choose the repository. The operator supplies its path through the host configuration or each agent's launch environment:
+
+```sh
+export ATDD_WORKFLOW_ROOT="$HOME/Github/private-work-coordination"
+atdd-workflow status
+# Equivalent for a one-off invocation:
+atdd-workflow --root ~/Github/private-work-coordination status
+```
+
+## Use from a code repository
+
+Install the CLI once as a development dependency in each coordinated code repository. Every agent working from that checkout then uses the same version; individual agents do not install their own copy.
+
+```sh
+bun add -d @afokapu/atdd-workflow
+bunx atdd-workflow --root ~/Github/private-work-coordination status
+```
+
+Your TUIOS, tmux, Herdr, ChatGPT Desktop, or Claude launch arrangement should set `ATDD_WORKFLOW_ROOT` and the seat address. The multiplexer is optional; the root path is the durable entry point.
+
+## Releases
+
+Every package change merged to `main` runs tests, selects the next patch version, publishes `@afokapu/atdd-workflow`, commits that version, and tags it. Because the source repository is private, npm provenance is not available for this package.
+
+For the first release, add a granular read-and-write npm access token as the private GitHub Actions secret `NPM_TOKEN`, then run the **Publish** workflow manually. After the first release, configure npm trusted publishing for `afokapu/atdd-workflow` with GitHub repository `afokapu/atdd-workflow`, workflow filename `publish.yml`, and permission to run `npm publish`; set the repository variable `NPM_PUBLISH_ENABLED=true`, then remove `NPM_TOKEN`. Subsequent releases use short-lived GitHub OIDC credentials. Until either setting exists, the release job is deliberately skipped.
+
+## First project
+
+```sh
 atdd-workflow project init resolver-os
 atdd-workflow spawn resolver-os coordinator main --worktree /src/resolver-os
 atdd-workflow spawn resolver-os driver runtime --worktree /src/resolver-os-runtime

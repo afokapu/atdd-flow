@@ -45,7 +45,7 @@ test("a request remains outstanding until its linked result exists", async () =>
   await run(site, "spawn", "demo", "coordinator", "main", "--worktree", "/tmp/demo-main");
   await run(site, "spawn", "demo", "driver", "runtime", "--worktree", "/tmp/demo-runtime");
   await run(site, "describe", "driver.runtime@demo", "--purpose", "Own the runtime rollout.");
-  await stat(join(site, "workflow.yaml"));
+  await stat(join(site, "coordination.yaml"));
   await stat(join(site, "work", "demo", "project.yaml"));
   await stat(join(site, "work", "demo", "seats", "driver.runtime", "seat.yaml"));
   expect(await run(site, "open", "driver.runtime@demo")).toContain("Own the runtime rollout.");
@@ -57,6 +57,17 @@ test("a request remains outstanding until its linked result exists", async () =>
 
   await run(site, "result", thread, request, "--from", "driver.runtime@demo", "--body", "Checks pass");
   expect(await run(site, "status")).not.toContain("waiting:");
+});
+
+test("an operator can initialize a standalone coordination Git repository", async () => {
+  const root = await mkdtemp(join(tmpdir(), "atdd-workflow-"));
+  roots.push(root);
+  const coordination = join(root, "private-work-coordination");
+
+  await run(root, "init", coordination, "--git");
+
+  await stat(join(coordination, ".git"));
+  expect(await readFile(join(coordination, "coordination.yaml"), "utf8")).toContain("atdd-workflow/coordination/v1");
 });
 
 test("a configured driver worktree is created on its declared branch", async () => {
@@ -143,7 +154,7 @@ test("a legacy alias resolves to one canonical seat", async () => {
   await run(root, "init", site);
   await run(site, "project", "init", "decision-os");
   await run(site, "spawn", "decision-os", "coordinator", "main", "--worktree", "/tmp/decision-os-main");
-  await writeFile(join(site, "workflow.yaml"), `schema: atdd-workflow/site/v1
+  await writeFile(join(site, "coordination.yaml"), `schema: atdd-workflow/coordination/v1
 site: site
 backend: tuios
 aliases:

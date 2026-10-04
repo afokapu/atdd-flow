@@ -1,5 +1,5 @@
 import { mkdir, readdir } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import {
   type Backend, type Checkpoint, type Project, type Role, type Seat, atomicYaml, canonicalAddress,
   exists, fill, now, paths, project, readYaml, required, run, seat, site, words, yaml,
@@ -10,10 +10,11 @@ const defaultRoles = (): Record<string, Role> => ({
   driver: { address: "driver.{name}@{project}", branch: "delivery/{name}", base: "main", agent: "codex", worktree: "{worktree_root}/{name}" },
 });
 
-export async function init(root: string, name: string) {
-  const config = { schema: "atdd-workflow/site/v1", site: name, backend: "tmux" as Backend };
+export async function init(root: string, name: string, args: string[]) {
+  const config = { schema: "atdd-workflow/coordination/v1", site: name, backend: "tmux" as Backend };
   await Promise.all([mkdir(paths(root).work, { recursive: true }), mkdir(paths(root).threads, { recursive: true })]);
   await atomicYaml(paths(root).site, config);
+  if (args.includes("--git") && !await exists(join(root, ".git"))) await run(["git", "init", "--initial-branch=main", root]);
   console.log(`Initialized ${root}`);
 }
 

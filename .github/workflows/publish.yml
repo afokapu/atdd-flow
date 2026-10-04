@@ -1,0 +1,66 @@
+# Publishes @afokapu/atdd-workflow from main with npm trusted publishing.
+# The package is public so any coordinator or driver can install the same CLI.
+name: Publish
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - src/**
+      - examples/**
+      - package.json
+      - README.md
+      - LICENSE
+      - .github/workflows/publish.yml
+  workflow_dispatch:
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  publish:
+    if: ${{ secrets.NPM_TOKEN != '' || vars.NPM_PUBLISH_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: oven-sh/setup-bun@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - run: bun test
+      - name: Compute next version
+        id: version
+        run: |
+          name=$(node -p "require('./package.json').name")
+          local=$(node -p "require('./package.json').version")
+          registry=$(npm view "$name" version 2>/dev/null || echo "0.0.0")
+          tagged=$(git tag --list 'v*' --sort=-v:refname | head -1 | sed 's/^v//')
+          published=$(printf '%s\n%s\n' "$registry" "${tagged:-0.0.0}" | sort -V | tail -1)
+          next=$(LOCAL="$local" PUBLISHED="$published" node -e '
+            const [l, p] = [process.env.LOCAL, process.env.PUBLISHED].map(v => v.split("-")[0].split(".").map(Number));
+            const gt = l[0] - p[0] || l[1] - p[1] || l[2] - p[2];
+            console.log(gt > 0 ? l.join(".") : [p[0], p[1], p[2] + 1].join("."));
+          ')
+          echo "next=$next" >> "$GITHUB_OUTPUT"
+      - run: npm version "${{ steps.version.outputs.next }}" --no-git-tag-version --allow-same-version
+      - run: npm pack --dry-run
+      # The source repository is private, so npm cannot generate provenance.
+      # `NPM_TOKEN` is needed only for the first release; later releases use OIDC.
+      - run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Commit and tag release
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add package.json
+          git commit -m "chore: release v${{ steps.version.outputs.next }}" || true
+          git tag "v${{ steps.version.outputs.next }}"
+          git push origin HEAD:main "v${{ steps.version.outputs.next }}"
