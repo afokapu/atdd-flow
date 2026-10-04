@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { launchedAddress, launchCommand, notify } from "./adapters";
 import {
   type Seat, atomicYaml, canonicalAddress, desk, exists, id, modelPortfolio, now, paths, project,
-  readYaml, required, runOutput, seat, words, yaml,
+  readYaml, required, runOutput, seat, values, words, yaml,
 } from "./core";
 import {
   type JudgmentOptions, type ReviewRoutingResponse, routeBehavioralReview, selectModel,
@@ -239,7 +239,6 @@ export async function launchBehavioralReview(
   if (!task.done_when.every((entry) => Boolean(entry.proof))) throw new Error(`Task ${taskId} is missing delivery proof.`);
 
   const owner = await ownerForTask(root, task);
-  const conventionSource = await convention(owner.worktree);
 
   let gateOutput: string;
   try {
@@ -248,6 +247,7 @@ export async function launchBehavioralReview(
     throw new Error(`Deterministic ATDD Bun gates are red; do not invoke the semantic reviewer: ${(error as Error).message}`);
   }
 
+  const conventionSource = await convention(owner.worktree);
   const routed = await route(root, projectName, taskId, task, owner, options);
   const config = await desk(root);
   const portfolio = await modelPortfolio(root);
@@ -310,7 +310,7 @@ export async function launchBehavioralReview(
         done_when: task.done_when,
       },
       plan_artifacts: routed.plans,
-      deterministic_gates: [`atdd-bun: PASS${gateOutput ? ` — ${gateOutput.slice(0, 500)}` : ""}`],
+      deterministic_gates: [`atdd-bun: PASS${gateOutput ? ` — ${gateOutput.slice(0, 500)}` : ""}`, ...values(args, "--gate")],
       executable_proof: task.done_when.flatMap((entry) => entry.proof ? [entry.proof] : []),
       runtime: { worktree: owner.worktree, branch: owner.branch, head },
       implementation: {
