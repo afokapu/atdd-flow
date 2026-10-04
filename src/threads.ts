@@ -1,7 +1,8 @@
 import { readdir } from "node:fs/promises";
+import { notify } from "./adapters";
 import {
-  type Backend, atomicYaml, canonicalAddress, has, id, now, paths, project, readYaml,
-  required, run, seat, words,
+  atomicYaml, canonicalAddress, has, id, now, paths, project, readYaml,
+  required, seat, words,
 } from "./core";
 
 export type Thread = { schema: string; id: string; subject: string; participants: string[]; state: "open" | "closed"; summary?: string; task?: string };
@@ -63,15 +64,12 @@ async function resolveRecipients(root: string, value: string, participants: stri
 async function inject(root: string, address: string, message: Message, threadId: string) {
   const target = await seat(root, address);
   const runtime = target.runtime;
-  if (!runtime?.pane || !runtime.backend) return;
+  if (!runtime) return;
+  const nativeAddress = runtime.addresses[runtime.application];
+  if (!nativeAddress) return;
   const file = paths(root).message(threadId, message.id);
   const notice = `SYSTEM: new thread mail ${message.id} from ${message.from}. Read ${file}`;
-  const commands: Record<Backend, string[]> = {
-    tmux: ["tmux", "send-keys", "-t", runtime.pane, notice, "Enter"],
-    herdr: ["herdr", "agent", "send", runtime.pane, notice],
-    tuios: ["tuios", "queue", ...(runtime.session ? ["-s", runtime.session] : []), "-w", runtime.pane, notice],
-  };
-  try { await run(commands[runtime.backend], true); }
+  try { await notify(runtime.application, nativeAddress, notice); }
   catch (error) { console.warn(`Notification for ${address} was not delivered: ${(error as Error).message}`); }
 }
 

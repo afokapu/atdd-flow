@@ -2,7 +2,7 @@
 
 `atdd-workflow` is a tiny, filesystem-first coordination tool for replaceable coding-agent seats and tasks. Its durable data lives in a private coordination repository, separate from the code repositories it coordinates.
 
-The durable protocol is YAML. A site is independent from the code repositories and worktrees it coordinates. TUIOS is the primary live host: it provides the operator's pane layout and queues a file-reading notification when a message arrives.
+The durable protocol is YAML. A site is independent from the code repositories and worktrees it coordinates. TUIOS is the primary live application: it provides the operator's pane layout and queues a file-reading notification when a message arrives.
 
 No database, daemon, cloud account, or model-provider SDK is required.
 
@@ -43,6 +43,8 @@ todo → in_progress → review → done
 ```
 
 The driver starts a task, fills the proof beside each `done_when` criterion, and submits it for review. Only its coordinator can mark it done; a review can instead be returned to `in_progress`. Dependencies are task-local: a task starts only after every `depends_on` task is done. Tasks without unfinished dependencies are parallel-ready.
+
+When a driver has no remaining unfinished tasks, its coordinator may make housekeeping the final layer of completion with `task done --retire-assignee`. Workflow delegates this to `atdd-bun worktree finish --delete-branch` in that driver's worktree. ATDD Bun verifies that the linked worktree is clean and its branch is merged, removes the worktree, and deletes the local branch; any failure leaves the task in review and checkpoints the seat as blocked. Remote branches are intentionally retained because ATDD Bun's finish operation does not delete them.
 
 ```sh
 atdd-workflow task add resolver-os W-runtime \
@@ -89,7 +91,18 @@ bun add -d @afokapu/atdd-workflow
 bunx atdd-workflow --root ~/Github/private-work-coordination status
 ```
 
-Your TUIOS, tmux, Herdr, ChatGPT Desktop, or Claude launch arrangement should set `ATDD_WORKFLOW_ROOT` and the seat address. The multiplexer is optional; the root path is the durable entry point.
+Your TUIOS, tmux, Herdr, ChatGPT Desktop, or Claude launch arrangement should set `ATDD_WORKFLOW_ROOT` and the seat address. A live application is optional; the root path is the durable entry point.
+
+## ATDD Bun profile
+
+When the code repository also uses ATDD Bun, add the optional `workflow` profile after both packages are installed:
+
+```yaml
+# atdd-bun.yaml
+profiles: [planner, coder, tester, traceability, security, workflow]
+```
+
+ATDD Bun remains the sole owner of `AGENTS.md` and `CLAUDE.md`. Its managed instruction block selects the `workflow` registry, which points to this package's lifecycle convention. That convention teaches drivers and coordinators to use the durable seat, task, thread, proof, review, handoff, and safe-retirement protocol; it does not create another agent file or a separate skill loader.
 
 ## Releases
 
@@ -115,11 +128,52 @@ atdd-workflow post T-... \
 
 The operator sets `repository` and `worktree_root` in `work/<project>/project.yaml`. Role templates derive driver paths from that policy; when `repository` is present, `atdd-workflow spawn` creates a missing non-main Git worktree on the role's configured branch and base. A command-line worktree override is available for an operator but should not be used by drivers.
 
-`post`, `receipt`, and `result` first persist a message and only then make a best-effort notification through the configured backend. A missed notification cannot lose the message; `status` and a future seat launch can rediscover it.
+`post`, `receipt`, and `result` first persist a message and only then make a best-effort notification through the configured application adapter. A missed notification cannot lose the message; `status` and a future seat launch can rediscover it.
 
 ## Host integration
 
-TUIOS is the intended interactive host. A seat binds to a TUIOS pane and, when panes span sessions, its TUIOS session; a posted message is queued as a concise instruction to read its durable YAML file. Tmux and Herdr have small compatibility adapters with the same best-effort contract.
+TUIOS is the intended interactive application. A runtime binding names the active `application` and preserves an opaque native address for every application in which that seat has been hosted. The durable seat never depends on any of them. A posted message is queued as a concise instruction to read its durable YAML file when the active application has an adapter.
+
+```yaml
+runtime:
+  application: herdr # the currently active application
+  addresses:
+    herdr: w89e05ef9ff16:p2f1de975e7b0
+    tuios: decision-os-runtime/driver-runtime
+    tmux: workflow:2.1
+```
+
+Each value is owned by its application, not parsed as a Workflow identifier. Herdr uses its opaque pane locator such as `w…:p…`; tmux uses its normal target-pane syntax; TUIOS uses `session/window`, because its queue command requires both native values. Binding an address never erases addresses already recorded for other applications. The active application selects which bridge receives new-message notifications.
+
+The built-in notification bridges are TUIOS, Herdr, and tmux. You may also record a native ChatGPT Desktop, Claude Desktop, or future host address now; without a matching bridge, Workflow still persists the message and its handoff state but does not attempt a live wake-up.
+
+```sh
+atdd-workflow bind driver.runtime@decision-os \
+  --application herdr \
+  --address w89e05ef9ff16:p2f1de975e7b0
+atdd-workflow bind driver.runtime@decision-os \
+  --application tuios \
+  --address decision-os-runtime/driver-runtime
+atdd-workflow application use driver.runtime@decision-os herdr
+```
+
+When the command runs inside a supported host, use deterministic discovery instead of copying an address yourself:
+
+```sh
+atdd-workflow attach driver.runtime@decision-os --application herdr
+```
+
+`attach` reads the host's own process metadata (`HERDR_PANE_ID`, `TMUX_PANE`, or the TUIOS session/window IDs), binds that native address, and makes that application active. It never infers an address from a pane title or whichever UI pane currently has focus.
+
+To create a new live pane, placement is mandatory. It is separate from the pane's later runtime address: it says where the host must create the pane, while the newly returned native address says which pane was created. The initial launcher supports TUIOS explicitly and never falls back to the active session.
+
+```sh
+atdd-workflow launch driver.runtime@decision-os \
+  --application tuios \
+  --placement decision-os
+```
+
+`launch` reads the seat's declared worktree and agent, opens the pane with `tuios -s decision-os --cwd <seat-worktree>`, passes `ATDD_WORKFLOW_ROOT` and `ATDD_WORKFLOW_SEAT` into the agent process, binds the new pane address, and queues the instruction to open the seat. Herdr and tmux may still attach to pre-existing panes; their launch adapters will be added only after their creation interfaces are verified for the host in use.
 
 The filesystem protocol does not depend on a multiplexer. An agent hosted elsewhere can participate when it has filesystem and shell access and is started with its seat address and the `atdd-workflow` CLI. Without a host adapter capable of injecting a notification, the seat remains correct and recoverable but has no automatic live wake-up; the host or operator must supply the prompt to inspect the seat.
 

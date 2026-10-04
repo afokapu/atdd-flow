@@ -1,6 +1,6 @@
 import { readdir } from "node:fs/promises";
 import {
-  atomicYaml, canonicalAddress, paths, project, readYaml, required, seat, taskId, values, words,
+  type Checkpoint, atomicYaml, canonicalAddress, now, paths, project, readYaml, required, runOutput, seat, taskId, values, words,
 } from "./core";
 
 export type TaskStatus = "todo" | "in_progress" | "review" | "done";
@@ -54,6 +54,37 @@ async function writeTask(root: string, projectName: string, id: string, task: Ta
   await atomicYaml(paths(root).taskFile(projectName, id), task);
 }
 
+async function retireAssignee(root: string, projectName: string, id: string, task: Task) {
+  const assignee = required(task.assignee, `an assignee for task ${id}`);
+  const unfinished = (await allTasks(root, projectName))
+    .filter((entry) => entry.id !== id && entry.task.assignee === assignee && entry.task.status !== "done")
+    .map((entry) => entry.id);
+  if (unfinished.length) throw new Error(`Cannot retire ${assignee}; it still owns unfinished tasks: ${unfinished.join(", ")}.`);
+
+  const owner = await seat(root, assignee);
+  try {
+    const summary = await runOutput(["atdd-bun", "worktree", "finish", "--delete-branch"], owner.worktree);
+    owner.retired = { task: `${projectName}/${id}`, completed_at: now(), summary };
+    await atomicYaml(paths(root).seatFile(assignee), owner);
+    const checkpoint: Checkpoint = {
+      schema: "atdd-workflow/checkpoint/v1", seat: assignee, status: "complete", updated_at: now(),
+      summary: `Retired after ${projectName}/${id}: ${summary}`,
+      next_action: "No active worktree remains; spawn a new seat before assigning new work.",
+      references: [`task:${projectName}/${id}`],
+    };
+    await atomicYaml(paths(root).checkpointFile(assignee), checkpoint);
+  } catch (error) {
+    const checkpoint: Checkpoint = {
+      schema: "atdd-workflow/checkpoint/v1", seat: assignee, status: "blocked", updated_at: now(),
+      summary: `Housekeeping after ${projectName}/${id} failed: ${(error as Error).message}`,
+      next_action: "Inspect the worktree and rerun task completion only after resolving the cleanup failure.",
+      references: [`task:${projectName}/${id}`],
+    };
+    await atomicYaml(paths(root).checkpointFile(assignee), checkpoint);
+    throw error;
+  }
+}
+
 export async function add(root: string, projectName: string, id: string, args: string[]) {
   await project(root, projectName);
   const coordinator = await canonicalAddress(root, required(words(args, "--coordinator"), "--coordinator"));
@@ -79,7 +110,7 @@ export async function add(root: string, projectName: string, id: string, args: s
   console.log(id);
 }
 
-async function transition(root: string, projectName: string, id: string, next: TaskStatus, by: string) {
+async function transition(root: string, projectName: string, id: string, next: TaskStatus, by: string, retire = false) {
   const task = await readTask(root, projectName, id);
   const actor = await canonicalAddress(root, by);
   if (!transitions[task.status].includes(next)) throw new Error(`Task ${id} cannot move from ${task.status} to ${next}.`);
@@ -99,6 +130,7 @@ async function transition(root: string, projectName: string, id: string, next: T
   if (next === "done") {
     if (actor !== task.coordinator) throw new Error(`Only ${task.coordinator} may complete task ${id}.`);
     if (!allProofs(task)) throw new Error(`Task ${id} is missing completion proof.`);
+    if (retire) await retireAssignee(root, projectName, id, task);
   }
   task.status = next;
   if (next !== "in_progress") delete task.blocker;
@@ -115,7 +147,7 @@ export async function review(root: string, projectName: string, id: string, args
 }
 
 export async function done(root: string, projectName: string, id: string, args: string[]) {
-  return transition(root, projectName, taskId(id), "done", required(words(args, "--by"), "--by"));
+  return transition(root, projectName, taskId(id), "done", required(words(args, "--by"), "--by"), args.includes("--retire-assignee"));
 }
 
 export async function returnToWork(root: string, projectName: string, id: string, args: string[]) {

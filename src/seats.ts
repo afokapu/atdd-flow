@@ -1,8 +1,9 @@
 import { mkdir, readdir } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
+import { discoverAddress, launchedAddress, launchCommand, notify } from "./adapters";
 import {
-  type Backend, type Checkpoint, type Project, type Role, type Seat, atomicYaml, canonicalAddress,
-  exists, fill, now, paths, project, readYaml, required, run, seat, site, words, yaml,
+  type Checkpoint, type Project, type Role, type Seat, atomicYaml, canonicalAddress,
+  exists, fill, now, paths, project, readYaml, required, run, runOutput, seat, site, words, yaml,
 } from "./core";
 
 const defaultRoles = (): Record<string, Role> => ({
@@ -11,7 +12,7 @@ const defaultRoles = (): Record<string, Role> => ({
 });
 
 export async function init(root: string, name: string, args: string[]) {
-  const config = { schema: "atdd-workflow/coordination/v1", site: name, backend: "tmux" as Backend };
+  const config = { schema: "atdd-workflow/coordination/v2", site: name, application: "tuios" };
   await Promise.all([mkdir(paths(root).work, { recursive: true }), mkdir(paths(root).threads, { recursive: true })]);
   await atomicYaml(paths(root).site, config);
   if (args.includes("--git") && !await exists(join(root, ".git"))) await run(["git", "init", "--initial-branch=main", root]);
@@ -48,7 +49,7 @@ export async function spawn(root: string, projectName: string, roleName: string,
   const branch = words(args, "--branch") ?? fill(role.branch, { project: config.project, name });
   await ensureWorktree(config, role, worktree, branch);
   const purpose = words(args, "--purpose") ?? (role.purpose ? fill(role.purpose, entries) : undefined);
-  const record: Seat = { schema: "atdd-workflow/seat/v1", address, role: roleName, project: config.project, worktree, branch, agent: role.agent, ...(purpose ? { purpose } : {}) };
+  const record: Seat = { schema: "atdd-workflow/seat/v2", address, role: roleName, project: config.project, worktree, branch, agent: words(args, "--agent") ?? role.agent, ...(purpose ? { purpose } : {}) };
   await atomicYaml(paths(root).seatFile(address), record);
   console.log(address);
 }
@@ -57,14 +58,45 @@ export async function bind(root: string, address: string, args: string[]) {
   const resolved = await canonicalAddress(root, address);
   const record = await seat(root, resolved);
   const config = await site(root);
-  record.runtime = {
-    pane: required(words(args, "--pane"), "--pane"),
-    ...(words(args, "--session") ? { session: words(args, "--session") } : {}),
-    backend: (words(args, "--backend") ?? config.backend) as Backend,
-    attached_at: now(),
-  };
+  const application = words(args, "--application") ?? config.application;
+  if (!/^[a-z][a-z0-9_-]*$/.test(application)) throw new Error(`Application must use lowercase letters, numbers, underscores, or hyphens: ${application}`);
+  const nativeAddress = required(words(args, "--address"), "--address");
+  const addresses = record.runtime?.addresses ?? {};
+  record.runtime = { application, addresses: { ...addresses, [application]: nativeAddress }, attached_at: now() };
   await atomicYaml(paths(root).seatFile(resolved), record);
-  console.log(`Bound ${resolved} to ${record.runtime.backend}:${record.runtime.pane}`);
+  console.log(`Bound ${resolved} to ${application}:${nativeAddress}`);
+}
+
+export async function useApplication(root: string, address: string, application: string) {
+  const resolved = await canonicalAddress(root, address);
+  const record = await seat(root, resolved);
+  const runtime = required(record.runtime, `a runtime binding for ${resolved}`);
+  if (!runtime.addresses[application]) throw new Error(`${resolved} has no ${application} address. Bind it first.`);
+  record.runtime = { ...runtime, application, attached_at: now() };
+  await atomicYaml(paths(root).seatFile(resolved), record);
+  console.log(`Using ${application}:${record.runtime.addresses[application]} for ${resolved}`);
+}
+
+export async function attach(root: string, address: string, args: string[]) {
+  const application = words(args, "--application") ?? (await site(root)).application;
+  const nativeAddress = discoverAddress(application);
+  await bind(root, address, ["--application", application, "--address", nativeAddress]);
+}
+
+export async function launch(root: string, address: string, args: string[]) {
+  const resolved = await canonicalAddress(root, address);
+  const record = await seat(root, resolved);
+  const application = required(words(args, "--application"), "--application");
+  const placement = required(words(args, "--placement"), "--placement");
+  const output = await runOutput(launchCommand({
+    application, placement, name: resolved, worktree: record.worktree,
+    agent: record.agent, root, seat: resolved,
+  }));
+  const nativeAddress = launchedAddress(application, placement, output);
+  await bind(root, resolved, ["--application", application, "--address", nativeAddress]);
+  const notice = `SYSTEM: you are ${resolved}. Read your durable seat with: atdd-workflow open ${resolved}`;
+  try { await notify(application, nativeAddress, notice); }
+  catch (error) { console.warn(`Launch notification for ${resolved} was not delivered: ${(error as Error).message}`); }
 }
 
 export async function describe(root: string, address: string, args: string[]) {

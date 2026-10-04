@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import { basename, resolve } from "node:path";
-import { init, initProject, spawn, bind, describe, checkpoint, openSeat } from "./seats";
+import { init, initProject, spawn, bind, useApplication, attach, launch, describe, checkpoint, openSeat } from "./seats";
 import { addParticipant, post, receipt, result, startThread, status } from "./threads";
 import * as tasks from "./tasks";
 import { required } from "./core";
@@ -13,12 +13,16 @@ Run commands from a coordination repository containing coordination.yaml.
 Usage:
   atdd-workflow init <coordination-directory> [--git]
   atdd-workflow project init <project>
-  atdd-workflow spawn <project> <role> <name> [--worktree <path>] [--branch <branch>]
-  atdd-workflow bind <address> --pane <target> [--session <tuios-session>] [--backend tmux|herdr|tuios]
+  atdd-workflow spawn <project> <role> <name> [--worktree <path>] [--branch <branch>] [--agent <executable>]
+  atdd-workflow bind <address> [--application <application>] --address <native-address>
+  atdd-workflow attach <address> [--application <application>]
+  atdd-workflow launch <address> --application <application> --placement <native-container-address>
+  atdd-workflow application use <address> <application>
   atdd-workflow describe <address> --purpose <one-line responsibility>
   atdd-workflow checkpoint <address> --summary <text> --next <text> [--status active|standby|blocked|complete|unverified]
   atdd-workflow task add <project> <task-id> --title <text> --coordinator <address> [--assignee <address>] --done-when <text> [--done-when <text> ...]
-  atdd-workflow task start|review|done|return <project> <task-id> --by <address>
+  atdd-workflow task start|review|return <project> <task-id> --by <address>
+  atdd-workflow task done <project> <task-id> --by <address> [--retire-assignee]
   atdd-workflow task prove <project> <task-id> --by <address> --item <number> --proof <reference>
   atdd-workflow task block <project> <task-id> --by <address> --reason <text>
   atdd-workflow task list <project> [--coordinator <address>] [--assignee <address>]
@@ -51,6 +55,12 @@ async function main() {
     },
     spawn: () => spawn(root, required(rest[0], "project"), required(rest[1], "role"), required(rest[2], "name"), rest.slice(3)),
     bind: () => bind(root, required(rest[0], "address"), rest.slice(1)),
+    attach: () => attach(root, required(rest[0], "address"), rest.slice(1)),
+    launch: () => launch(root, required(rest[0], "address"), rest.slice(1)),
+    application: async () => {
+      if (rest[0] === "use") return useApplication(root, required(rest[1], "address"), required(rest[2], "application"));
+      throw new Error("Use `atdd-workflow application use <address> <application>`.");
+    },
     describe: () => describe(root, required(rest[0], "address"), rest.slice(1)),
     checkpoint: () => checkpoint(root, required(rest[0], "address"), rest.slice(1)),
     task: async () => {

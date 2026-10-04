@@ -2,11 +2,10 @@ import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 
-export type Backend = "tmux" | "herdr" | "tuios";
 export type Role = { address: string; branch: string; agent: string; purpose?: string; worktree?: string; base?: string };
 export type Group = { role?: string; members?: string[] };
 export type Scope = { purpose: string; coordinator: string; umbrella_branch?: string; legacy_aliases?: string[] };
-export type Site = { schema: string; site: string; backend: Backend; aliases?: Record<string, string> };
+export type Site = { schema: string; site: string; application: string; aliases?: Record<string, string> };
 export type Project = {
   schema: string;
   project: string;
@@ -16,7 +15,12 @@ export type Project = {
   groups?: Record<string, Group>;
   scopes?: Record<string, Scope>;
 };
-export type Runtime = { pane?: string; session?: string; backend?: Backend; attached_at?: string };
+/**
+ * A seat can be reachable through more than one live application. Addresses
+ * are opaque application-owned locators: Workflow records and returns them,
+ * while the relevant bridge is responsible for using their native format.
+ */
+export type Runtime = { application: string; addresses: Record<string, string>; attached_at?: string };
 export type Seat = {
   schema: string;
   address: string;
@@ -27,6 +31,7 @@ export type Seat = {
   agent: string;
   purpose?: string;
   runtime?: Runtime;
+  retired?: { task: string; completed_at: string; summary: string };
 };
 export type Checkpoint = {
   schema: string;
@@ -104,7 +109,7 @@ export async function exists(path: string) {
 
 export async function site(root: string) {
   const value = await readYaml<Site>(paths(root).site);
-  if (value.schema !== "atdd-workflow/coordination/v1") throw new Error("Unsupported coordination schema.");
+  if (value.schema !== "atdd-workflow/coordination/v2") throw new Error("Unsupported coordination schema.");
   return value;
 }
 
@@ -135,10 +140,19 @@ export function fill(template: string, entries: Record<string, string>) {
   return template.replace(/\{(project|name|worktree_root|repository)\}/g, (_, key) => entries[key]);
 }
 
-export async function run(command: string[], quiet = false) {
-  const result = Bun.spawn(command, { stdout: "pipe", stderr: "pipe" });
+async function execute(command: string[], cwd?: string) {
+  const result = Bun.spawn(command, { cwd, stdout: "pipe", stderr: "pipe" });
   const [stdout, stderr, code] = await Promise.all([new Response(result.stdout).text(), new Response(result.stderr).text(), result.exited]);
   if (code !== 0) throw new Error(`${command[0]} failed: ${stderr.trim() || stdout.trim()}`);
+  return stdout;
+}
+
+export async function runOutput(command: string[], cwd?: string) {
+  return (await execute(command, cwd)).trim();
+}
+
+export async function run(command: string[], quiet = false, cwd?: string) {
+  const stdout = await execute(command, cwd);
   if (!quiet && stdout.trim()) process.stdout.write(stdout);
 }
 

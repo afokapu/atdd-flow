@@ -1,0 +1,55 @@
+schema_version: 1.0.0
+rule_id: atdd-workflow.workflow.lifecycle
+kind: policy
+status: active
+name: Coordinate durable agent work through seats, tasks, and threads
+statement: >-
+  When the workflow profile is active, agents coordinate durable work through the locally installed
+  atdd-workflow CLI and its YAML coordination root. A seat owns its runtime binding, branch and
+  worktree; a task owns its delivery state and proof; a thread owns its conversation.
+terms:
+- term_id: workflow_root
+  text: >-
+    The separate coordination repository holding work/, threads/, and the durable YAML records.
+- term_id: seat
+  text: >-
+    A replaceable agent responsibility with a purpose, worktree/branch binding, checkpoint, and
+    optional native application addresses.
+- term_id: retirement
+  text: >-
+    The final housekeeping step for an idle driver seat. It is delegated to ATDD Bun rather than
+    performed with raw Git commands.
+content:
+  summary: >-
+    Use the coordination records as the durable source of truth. A live agent or multiplexer is
+    replaceable and never substitutes for the records.
+  normative_text: |
+    Start from the current seat, checkpoint, assigned tasks, and relevant thread records. A replacement
+    agent resumes from those records; it does not depend on a conversation with its predecessor.
+
+    A driver starts only its assigned ready task, records proof for every done_when criterion, moves it
+    to review, and sends its coordinator a result. A coordinator reviews proof, returns inadequate work
+    to in_progress, and alone may mark a reviewed task done.
+
+    A driver seat may own more than one task. A coordinator uses
+    `atdd-workflow task done <project> <task> --by <coordinator> --retire-assignee` only when every
+    task assigned to that driver in the project is done and the seat is intentionally being retired.
+    That operation delegates to `atdd-bun worktree finish --delete-branch`; do not remove a worktree,
+    delete a delivery branch, or force cleanup through raw Git. A failed retirement leaves the task in
+    review and writes a blocked checkpoint for investigation.
+
+    Use the atdd-workflow CLI to mutate workflow records. Read task, seat, checkpoint, and thread YAML
+    before acting; do not treat terminal pane history, a multiplexer, or an agent's private memory as
+    durable coordination state.
+  fix_hint: >-
+    Inspect the assignee's outstanding tasks and checkpoint. Complete missing proof or merge/cleanliness
+    conditions first; then let the coordinator either complete the task normally or request retirement.
+  exceptions:
+  - A task may be completed normally without retiring its assignee when that driver still has work.
+  - A live host may notify an agent to inspect its seat, but it never owns the durable state.
+metadata:
+  aliases:
+  - ATDD-WORKFLOW-LIFECYCLE
+  introduced_in: 0.1.3
+implementation:
+  type: none
