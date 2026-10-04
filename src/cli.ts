@@ -4,7 +4,8 @@ import { basename, resolve } from "node:path";
 import { init, initProject, spawn, bind, useApplication, attach, launch, describe, checkpoint, migrate, openSeat } from "./seats";
 import { addParticipant, openThread, post, receipt, result, startThread } from "./threads";
 import * as tasks from "./tasks";
-import { required } from "./core";
+import { required, values, words } from "./core";
+import * as judgment from "./judgment";
 import { status } from "./overview";
 
 const usage = `atdd-workflow — filesystem-first agent seats and tasks
@@ -39,6 +40,8 @@ Usage:
   atdd-workflow receipt <thread-id> <message-id> --from <address> [--body <text>]
   atdd-workflow result <thread-id> <message-id> --from <address> --body <text>
   atdd-workflow status [project <project>|task <project> <task-id>|seat <address>|thread <thread-id>] [--all]
+  atdd-workflow scout --goal <text> --path <file> [--path <file> ...] [--question <text>]
+  atdd-workflow focus-check <project> <task-id> --action <proposed action>
   atdd-workflow open <address>
 
 Global:
@@ -99,6 +102,17 @@ async function main() {
     receipt: () => receipt(root, required(rest[0], "thread id"), required(rest[1], "message id"), rest.slice(2)),
     result: () => result(root, required(rest[0], "thread id"), required(rest[1], "message id"), rest.slice(2)),
     status: () => status(root, rest),
+    scout: async () => console.log(JSON.stringify(await judgment.scout({
+      goal: required(words(rest, "--goal"), "--goal"),
+      candidates: values(rest, "--path"),
+      ...(words(rest, "--question") ? { question: words(rest, "--question") } : {}),
+    }), null, 2)),
+    "focus-check": async () => console.log(JSON.stringify(await judgment.focusTask(
+      root,
+      required(rest[0], "project"),
+      required(rest[1], "task id"),
+      required(words(rest.slice(2), "--action"), "--action"),
+    ), null, 2)),
     open: () => openSeat(root, required(rest[0], "address")),
   };
   const action = commands[command];

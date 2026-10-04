@@ -4,6 +4,9 @@
   "workspaces": {
     "": {
       "name": "@afokapu/atdd-workflow",
+      "dependencies": {
+        "@typesafe-ai/sdk": "^0.6.0",
+      },
       "devDependencies": {
         "@afokapu/atdd-bun": "^0.10.33",
       },
@@ -11,6 +14,8 @@
   },
   "packages": {
     "@afokapu/atdd-bun": ["@afokapu/atdd-bun@0.10.33", "", { "dependencies": { "ajv": "^8.17.1", "ajv-formats": "^3.0.1" }, "bin": { "atdd-bun": "src/cli.ts" } }, "sha512-SJtfc6TYA4ROhyBUK2onFF2REB3tmaINVxWHO1p4xiZTikKXA3BNOw+me+Vx2dgk20p+5LZvCfUqs1k4VW5cig=="],
+
+    "@typesafe-ai/sdk": ["@typesafe-ai/sdk@0.6.0", "", {}, "sha512-IddX+Q0XM+VagOUZFeP7wZjaO4SHMdvnh2zEBdrZZnXedWI3BNK1lKhMx3ayrkFWvVLbVcUHJy6AVZlY+e6Jaw=="],
 
     "ajv": ["ajv@8.20.0", "", { "dependencies": { "fast-deep-equal": "^3.1.3", "fast-uri": "^3.0.1", "json-schema-traverse": "^1.0.0", "require-from-string": "^2.0.2" } }, "sha512-Thbli+OlOj+iMPYFBVBfJ3OmCAnaSyNn4M1vz9T6Gka5Jt9ba/HIR56joy65tY6kx/FCF5VXNB819Y7/GUrBGA=="],
 

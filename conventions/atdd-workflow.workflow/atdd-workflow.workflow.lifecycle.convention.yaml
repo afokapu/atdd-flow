@@ -6,7 +6,9 @@ name: Coordinate durable agent work through seats, tasks, and threads
 statement: >-
   When the workflow profile is active, agents coordinate durable work through the locally installed
   atdd-workflow CLI and its YAML coordination root. A seat owns its runtime binding, branch and
-  worktree; a task owns its delivery state and proof; a thread owns its conversation.
+  worktree; a task owns its delivery state and proof; a thread owns its conversation. Drivers favor
+  the smallest effective implementation, coordinate shared-boundary decisions through their
+  coordinators, and continue assigned work until it is review-ready or explicitly blocked.
 terms:
 - term_id: workflow_root
   text: >-
@@ -19,10 +21,29 @@ terms:
   text: >-
     The final housekeeping step for an idle driver seat. It is delegated to ATDD Bun rather than
     performed with raw Git commands.
+- term_id: smallest_sufficient_change
+  text: >-
+    The least broad implementation that correctly satisfies the current task's done_when criteria
+    and the repository's existing conventions.
+- term_id: responsibility_boundary
+  text: >-
+    A point where implementation requires agreement about vocabulary, interfaces, contracts,
+    ownership, or responsibility shared with another seat or project.
+- term_id: boundary_handshake
+  text: >-
+    The coordinator-mediated agreement used when a driver reaches a shared responsibility boundary.
+    Coordinators resolve only the minimum shared contract necessary to continue implementation and
+    record that agreement durably in a Workflow thread.
+- term_id: review_ready
+  text: >-
+    A task state reached only after required implementation and verification are complete, every
+    done_when criterion carries proof, the task has been moved to review, and the coordinator has
+    received the result.
 content:
   summary: >-
-    Use the coordination records as the durable source of truth. A live agent or multiplexer is
-    replaceable and never substitutes for the records.
+    Use coordination records as the durable source of truth. Drivers implement the smallest effective
+    solution, coordinators resolve shared-boundary ambiguity, and an assigned task continues until
+    review-ready or explicitly blocked.
   normative_text: |
     Before taking workflow action in a repository, run `atdd-workflow --help` to discover the
     commands and current syntax available in the installed CLI. If the executable is project-local
@@ -32,9 +53,56 @@ content:
     Start from the current seat, checkpoint, assigned tasks, and relevant thread records. A replacement
     agent resumes from those records; it does not depend on a conversation with its predecessor.
 
-    A driver starts only its assigned ready task, records proof for every done_when criterion, moves it
-    to review, and sends its coordinator a result. A coordinator reviews proof, returns inadequate work
-    to in_progress, and alone may mark a reviewed task done.
+    A driver starts only its assigned ready task. Treat the task's done_when criteria as the required
+    delivery scope. Prefer existing repository patterns, components, dependencies, contracts, and
+    abstractions. When multiple implementations are correct, choose the smallest effective change that
+    agrees with the existing system.
+
+    Do not redesign adjacent systems, introduce generalized infrastructure, add dependencies, create
+    abstractions for hypothetical future requirements, or perform unrelated cleanup merely because the
+    opportunity was discovered. Broaden the implementation only when a done_when criterion requires it,
+    the current design cannot correctly satisfy the task without it, or the broader change is necessary
+    to resolve a verified blocker.
+
+    Work criterion by criterion. Continue from the next unmet done_when criterion through
+    implementation, verification, and proof rather than treating successful code generation as task
+    completion.
+
+    An autonomous work turn on an assigned in_progress task must not intentionally end while required
+    work remains actionable. Complete the required implementation, run the relevant tests and ATDD Bun
+    checks, correct failures caused by the work, record proof for every done_when criterion, move the
+    task to review, and send the coordinator a result. Continue until the task is review-ready or
+    explicitly blocked.
+
+    If completion is impossible, record the blocker, checkpoint the exact current state and next action,
+    and notify the coordinator. Do not silently leave actionable required work unfinished.
+
+    When a driver reaches a responsibility boundary involving shared vocabulary, endpoint shape,
+    contracts, artifact ownership, or another participant's responsibility, do not independently
+    redefine the shared contract. Send the concrete boundary question to the driver's coordinator.
+
+    The coordinator aligns directly with affected coordinators through the existing durable thread
+    mechanism. Resolve only the minimum shared vocabulary, interface, ownership, or responsibility split
+    needed for the current work. Prefer an existing convention or contract over inventing a new one.
+    Record the agreement in the relevant thread and communicate the result back to affected drivers.
+
+    Boundary coordination is not an invitation to redesign adjacent systems or solve hypothetical future
+    needs. A settled boundary decision remains in force unless implementation produces concrete evidence
+    that it cannot satisfy the task.
+
+    A driver waiting on a boundary decision continues any independent required work that remains
+    actionable. Mark the task blocked only when the unresolved decision prevents further meaningful
+    progress.
+
+    Use `atdd-workflow scout` only when repository scope is genuinely unclear or candidate files are
+    numerous. Use `atdd-workflow focus-check` only before a likely scope expansion such as a new
+    dependency, generalized abstraction, persistent schema, architecture change, adjacent refactor, or
+    unrelated defect. These read-only Jev judgments are optional: when unavailable, uncertain, or too
+    expensive, use repository evidence and prefer the smaller reversible solution.
+
+    A driver records proof for every done_when criterion, moves the completed task to review, and sends
+    its coordinator a result. A coordinator reviews proof, returns inadequate work to in_progress, and
+    alone may mark a reviewed task done.
 
     A driver seat may own more than one task. A coordinator uses
     `atdd-workflow task done <project> <task> --by <coordinator> --retire-assignee` only when every
@@ -48,14 +116,20 @@ content:
     developer's global executable installation.
 
     Use the atdd-workflow CLI to mutate workflow records. Read task, seat, checkpoint, and thread YAML
-    before acting; do not treat terminal pane history, a multiplexer, or an agent's private memory as
-    durable coordination state.
+    before acting; do not treat terminal pane history, a multiplexer, an optional judgment helper, or an
+    agent's private memory as durable coordination state.
   fix_hint: >-
-    Inspect the assignee's outstanding tasks and checkpoint. Complete missing proof or merge/cleanliness
-    conditions first; then let the coordinator either complete the task normally or request retirement.
+    Return to the assigned task and its unmet done_when criteria. Remove speculative scope that is not
+    required for correctness. Resolve shared boundary ambiguity through the relevant coordinators.
+    Complete remaining verification and proof, or explicitly record the blocker and next action.
   exceptions:
+  - A broader change is permitted when it is necessary to satisfy the current task correctly or resolve
+    a verified blocker.
+  - A driver may continue independent work while waiting for a boundary decision.
   - A task may be completed normally without retiring its assignee when that driver still has work.
   - A live host may notify an agent to inspect its seat, but it never owns the durable state.
+  - An optional scouting or focus helper may advise an agent, but it never owns task state, proof,
+    correctness, or completion authority.
 metadata:
   aliases:
   - ATDD-WORKFLOW-LIFECYCLE

@@ -115,6 +115,35 @@ Every item in the briefing leads to an inspectable record: use
 `atdd-workflow task open <project> <task-id>`, `atdd-workflow open <seat-address>`,
 or `atdd-workflow thread open <thread-id>` for the corresponding durable YAML.
 
+## Optional focus helper
+
+The optional Jev helper is a read-only scouting aid, not a Workflow authority. It writes no YAML,
+does not assign work, and cannot decide correctness, proof, review, or task state. Core Workflow
+works without an API key or network access.
+
+Use `scout` only when the likely repository surface is genuinely unclear or broad:
+
+```sh
+atdd-workflow scout \
+  --goal 'Fix payment retry behavior' \
+  --path src/payment/retry.ts \
+  --path src/payment/provider.ts \
+  --path src/profile/avatar.ts
+```
+
+It returns JSON with `relevant` or `not_relevant` and confidence for each candidate. `focus-check`
+is reserved for likely scope expansion; it reads the named task and returns `REQUIRED`,
+`USEFUL_BUT_NOT_REQUIRED`, or `SPECULATIVE` with confidence:
+
+```sh
+atdd-workflow focus-check decision-os c1-w2b \
+  --action 'Add a generic retry orchestration service'
+```
+
+Set `TYPESAFE_API_KEY` to use Jev. If it is absent, unavailable, uncertain, or too expensive for
+the task, the helper returns an unavailable result and the agent proceeds from repository evidence,
+preferring the smaller reversible solution.
+
 ## Use from a code repository
 
 Install the CLI once as a development dependency in each coordinated code repository. Every agent working from that checkout then uses the same version; individual agents do not install their own copy.

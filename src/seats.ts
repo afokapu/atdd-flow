@@ -88,6 +88,8 @@ export async function attach(root: string, address: string, args: string[]) {
   await bind(root, address, ["--application", application, "--address", nativeAddress]);
 }
 
+export const launchNotice = (address: string) => `SYSTEM: you are ${address}. Read your durable seat and assigned task with: atdd-workflow open ${address}. Continue assigned in_progress work until it is review-ready or explicitly blocked.`;
+
 export async function launch(root: string, address: string, args: string[]) {
   const resolved = await canonicalAddress(root, address);
   const record = await seat(root, resolved);
@@ -99,7 +101,7 @@ export async function launch(root: string, address: string, args: string[]) {
   }));
   const nativeAddress = launchedAddress(application, placement, output);
   await bind(root, resolved, ["--application", application, "--address", nativeAddress]);
-  const notice = `SYSTEM: you are ${resolved}. Read your durable seat with: atdd-workflow open ${resolved}`;
+  const notice = launchNotice(resolved);
   try { await notify(application, nativeAddress, notice); }
   catch (error) { console.warn(`Launch notification for ${resolved} was not delivered: ${(error as Error).message}`); }
 }

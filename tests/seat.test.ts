@@ -3,6 +3,7 @@ import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { discoverAddress, launchCommand, launchedAddress, notificationCommand } from "../src/adapters";
+import { launchNotice } from "../src/seats";
 
 const roots: string[] = [];
 const cli = join(import.meta.dir, "..", "src", "cli.ts");
@@ -259,6 +260,8 @@ test("host adapters discover native addresses from host-provided environment", (
     "tuios", "new-window", "driver.runtime@etdd", "-s", "etdd-os", "--cwd", "/worktrees/runtime", "--no-focus", "--print-id", "--",
     "/usr/bin/env", "ATDD_WORKFLOW_ROOT=/coordination", "ATDD_WORKFLOW_SEAT=driver.runtime@etdd", "codex",
   ]);
+  expect(launchNotice("driver.runtime@etdd")).toContain("Read your durable seat and assigned task");
+  expect(launchNotice("driver.runtime@etdd")).toContain("Continue assigned in_progress work until it is review-ready or explicitly blocked.");
   expect(launchedAddress("tuios", "etdd-os", "window-7\n")).toBe("etdd-os/window-7");
   expect(() => launchCommand({ application: "herdr", placement: "w1", name: "driver", worktree: "/work", agent: "codex", root: "/coordination", seat: "driver@demo" })).toThrow("No deterministic launch adapter");
 });
