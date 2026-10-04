@@ -46,6 +46,7 @@ export type LaunchRequest = {
   name: string;
   worktree: string;
   agent: string;
+  args?: string[];
   root: string;
   seat: string;
 };
@@ -57,6 +58,7 @@ export function launchCommand(request: LaunchRequest): string[] {
     `ATDD_WORKFLOW_ROOT=${request.root}`,
     `ATDD_WORKFLOW_SEAT=${request.seat}`,
     request.agent,
+    ...(request.args ?? []),
   ];
   if (request.application === "tuios") {
     return [
