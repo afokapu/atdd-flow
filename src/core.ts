@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 
-export type Role = { address: string; branch: string; agent: string; purpose?: string; worktree?: string; base?: string };
+export type Role = { address: string; branch: string; agent?: string; purpose?: string; worktree?: string; base?: string };
 export type Group = { role?: string; members?: string[] };
 export type Scope = { purpose: string; coordinator: string; umbrella_branch?: string; legacy_aliases?: string[] };
 /**
@@ -14,9 +14,21 @@ export type Desk = {
   schema: "atdd-workflow/desk/v1";
   desk: string;
   application: string;
-  /** Named commands available to every seat launched from this Desk. */
+  /** Named commands that model portfolio entries may resolve through. */
   executables?: Record<string, string>;
   aliases?: Record<string, string>;
+};
+export type ModelCandidate = {
+  id: string;
+  executable: string;
+  args?: string[];
+  description?: string;
+  enabled?: boolean;
+};
+export type ModelPortfolio = {
+  schema: "atdd-workflow/models/v1";
+  /** Ordered strongest to weakest. Workflow prefers the weakest sufficient enabled candidate. */
+  models: ModelCandidate[];
 };
 type LegacyCoordination = { schema: "atdd-workflow/coordination/v2"; site: string; application: string; aliases?: Record<string, string> };
 export type Project = {
@@ -33,7 +45,7 @@ export type Project = {
  * are opaque application-owned locators: Workflow records and returns them,
  * while the relevant bridge is responsible for using their native format.
  */
-export type Runtime = { application: string; addresses: Record<string, string>; attached_at?: string };
+export type Runtime = { application: string; addresses: Record<string, string>; attached_at?: string; model?: string };
 export type Seat = {
   schema: string;
   address: string;
@@ -41,7 +53,8 @@ export type Seat = {
   project: string;
   worktree: string;
   branch: string;
-  agent: string;
+  /** Legacy pinned launch executable. New seats leave model choice to Jev through models.yaml. */
+  agent?: string;
   purpose?: string;
   runtime?: Runtime;
   retired?: { task: string; completed_at: string; summary: string };
@@ -86,6 +99,7 @@ export function taskId(value: string) {
 
 export const paths = (root: string) => ({
   desk: join(root, "desk.yaml"),
+  models: join(root, "models.yaml"),
   legacyCoordination: join(root, "coordination.yaml"),
   work: join(root, "work"),
   project: (name: string) => join(root, "work", name),
@@ -142,6 +156,21 @@ export async function migrateDesk(root: string) {
   const record = await desk(root);
   await atomicYaml(files.desk, record);
   return true;
+}
+
+export async function modelPortfolio(root: string): Promise<ModelPortfolio | undefined> {
+  const file = paths(root).models;
+  if (!await exists(file)) return undefined;
+  const value = await readYaml<ModelPortfolio>(file);
+  if (value.schema !== "atdd-workflow/models/v1") throw new Error("Unsupported model portfolio schema.");
+  if (!Array.isArray(value.models) || !value.models.length) throw new Error("models.yaml must declare at least one model.");
+  const ids = new Set<string>();
+  for (const model of value.models) {
+    if (!model.id?.trim() || !model.executable?.trim()) throw new Error("Every model requires id and executable.");
+    if (ids.has(model.id)) throw new Error(`Duplicate model id in models.yaml: ${model.id}`);
+    ids.add(model.id);
+  }
+  return value;
 }
 
 export async function project(root: string, name: string) {
