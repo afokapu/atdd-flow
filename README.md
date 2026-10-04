@@ -99,6 +99,11 @@ workstream progress, active tasks, and the next useful commands. For a complete,
 line-by-line audit of seats, tasks, proof, dependencies, threads, and outstanding
 results, use `atdd-workflow status --all`.
 
+To focus an operator briefing on a single workstream, use
+`atdd-workflow status --project decision-os`. It includes only that project's
+seats and tasks, plus threads that include one of its seats or link one of its
+tasks. Add `--all` for that project's complete audit.
+
 Every item in the briefing leads to an inspectable record: use
 `atdd-workflow task open <project> <task-id>`, `atdd-workflow open <seat-address>`,
 or `atdd-workflow thread open <thread-id>` for the corresponding durable YAML.

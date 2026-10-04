@@ -38,7 +38,7 @@ Usage:
   atdd-workflow post <thread-id> --from <address> --to <all|address,...> --body <text> [--expects-result]
   atdd-workflow receipt <thread-id> <message-id> --from <address> [--body <text>]
   atdd-workflow result <thread-id> <message-id> --from <address> --body <text>
-  atdd-workflow status [--all]
+  atdd-workflow status [--project <project>] [--all]
   atdd-workflow open <address>
 
 Global:

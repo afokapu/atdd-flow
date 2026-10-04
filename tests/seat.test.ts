@@ -408,8 +408,11 @@ test("status gives an operator one view of seats, tasks, and threads", async () 
   const thread = await run(site, "thread", "start", "--with", "coordinator@demo,driver.runtime@demo", "--subject", "Runtime handoff");
   const dashboard = await run(site, "status");
   expect(dashboard).toContain("DESK");
-  expect(dashboard).toContain("WORKSTREAMS");
+  expect(dashboard).toContain("WORKSTREAM");
   expect(dashboard).toContain("atdd-workflow task open demo W-runtime");
+  const projectDashboard = await run(site, "status", "--project", "demo");
+  expect(projectDashboard).toContain("DESK / demo");
+  expect(projectDashboard).toContain("WORKSTREAM");
   expect(await run(site, "thread", "open", thread)).toContain("Runtime handoff");
   const output = await run(site, "status", "--all");
   expect(output).toContain("SEATS");

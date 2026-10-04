@@ -7,6 +7,7 @@ type ListedTask = { project: string; id: string; task: Task; waiting: string[] }
 type ListedSeat = { project: string; record: Seat; checkpoint?: Checkpoint };
 type ListedThread = { record: Thread; pending: string[] };
 type Attention = { project?: string; id: string; label: string; state: string; detail: string; command: string; priority: number };
+type StatusOptions = { all: boolean; project?: string };
 
 const terminalWidth = () => Math.max(72, Math.min(process.stdout.columns || 100, 120));
 const useColor = Boolean(process.stdout.isTTY && !process.env.NO_COLOR && process.env.TERM !== "dumb");
@@ -149,7 +150,7 @@ function printAttention(items: Attention[]) {
 }
 
 function printProjects(projects: string[], allTasks: ListedTask[], allSeats: ListedSeat[]) {
-  rule("WORKSTREAMS");
+  rule(projects.length === 1 ? "WORKSTREAM" : "WORKSTREAMS");
   const width = terminalWidth();
   for (const project of projects) {
     const tasks = allTasks.filter((entry) => entry.project === project);
@@ -197,8 +198,20 @@ function printNext(items: Attention[], allTasks: ListedTask[]) {
   console.log(`  ${muted("The Desk is clear. Use `status --all` to inspect the full record.")}`);
 }
 
-async function dashboard(root: string) {
-  const [record, projectList, threadList] = await Promise.all([desk(root), projectNames(root), threads(root)]);
+function threadMatchesProject(entry: ListedThread, project: string) {
+  return entry.record.task?.startsWith(`${project}/`) || entry.record.participants.some((address) => address.slice(address.lastIndexOf("@") + 1) === project);
+}
+
+async function selectedProjects(root: string, requested?: string) {
+  const all = await projectNames(root);
+  if (!requested) return all;
+  if (!all.includes(requested)) throw new Error(`Project does not exist in this Desk: ${requested}`);
+  return [requested];
+}
+
+async function dashboard(root: string, requestedProject?: string) {
+  const [record, projectList, allThreads] = await Promise.all([desk(root), selectedProjects(root, requestedProject), threads(root)]);
+  const threadList = requestedProject ? allThreads.filter((entry) => threadMatchesProject(entry, requestedProject)) : allThreads;
   const [allSeats, allTasks] = await Promise.all([
     Promise.all(projectList.map((project) => seats(root, project))).then((entries) => entries.flat()),
     Promise.all(projectList.map((project) => tasks(root, project))).then((entries) => entries.flat()),
@@ -214,7 +227,8 @@ async function dashboard(root: string) {
   const openThreads = threadList.filter((entry) => entry.record.state === "open").length;
   const facts = `${projectList.length} workstreams${dot}${allSeats.length} seats${dot}${allTasks.length} tasks${dot}${openThreads} live threads`;
   const width = terminalWidth();
-  console.log(`${muted("╭─")} ${strong("DESK")} ${muted("─".repeat(Math.max(2, width - record.desk.length - 12)))} ${strong(record.desk)} ${muted("─╮")}`);
+  const title = requestedProject ? `DESK / ${requestedProject}` : "DESK";
+  console.log(`${muted("╭─")} ${strong(title)} ${muted("─".repeat(Math.max(2, width - record.desk.length - title.length - 9)))} ${strong(record.desk)} ${muted("─╮")}`);
   console.log(`${muted("│")}  ${facts.padEnd(width - 4)}${muted("│")}`);
   console.log(`${muted("│")}  ${muted(`application: ${record.application}`.padEnd(width - 4))}${muted("│")}`);
   console.log(`${muted("╰")}${muted("─".repeat(width - 2))}${muted("╯")}`);
@@ -244,18 +258,23 @@ async function printTasks(root: string, projectName: string) {
   }
 }
 
-async function audit(root: string) {
-  const projects = await projectNames(root);
+async function audit(root: string, requestedProject?: string) {
+  const projects = await selectedProjects(root, requestedProject);
   console.log("SEATS");
   for (const project of projects) await printSeats(root, project);
   console.log("TASKS");
   for (const project of projects) await printTasks(root, project);
   console.log("THREADS");
-  for (const entry of await threads(root)) console.log(`${entry.record.id}  ${entry.record.state}  ${entry.record.subject}${entry.pending.length ? `  waiting:${entry.pending.join(",")}` : ""}`);
+  for (const entry of (requestedProject ? (await threads(root)).filter((item) => threadMatchesProject(item, requestedProject)) : await threads(root))) console.log(`${entry.record.id}  ${entry.record.state}  ${entry.record.subject}${entry.pending.length ? `  waiting:${entry.pending.join(",")}` : ""}`);
 }
 
 export async function status(root: string, args: string[] = []) {
-  if (args.includes("--all")) return audit(root);
-  if (args.length) throw new Error("Use `atdd-workflow status` or `atdd-workflow status --all`.");
-  return dashboard(root);
+  const projectIndex = args.indexOf("--project");
+  const project = projectIndex < 0 ? undefined : args[projectIndex + 1];
+  if (projectIndex >= 0 && !project) throw new Error("Missing project name after --project.");
+  const allowed = new Set(["--all", "--project", project]);
+  if (args.some((argument) => !allowed.has(argument))) throw new Error("Use `atdd-workflow status [--project <project>] [--all]`.");
+  const options: StatusOptions = { all: args.includes("--all"), ...(project ? { project } : {}) };
+  if (options.all) return audit(root, options.project);
+  return dashboard(root, options.project);
 }
