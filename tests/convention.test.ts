@@ -9,11 +9,11 @@ test("workflow lifecycle convention remains valid and carries the focus discipli
     content: { normative_text: string };
   };
   expect(convention.rule_id).toBe("atdd-workflow.workflow.lifecycle");
-  expect(convention.content.normative_text).toContain("atdd-workflow --help");
+  expect(convention.content.normative_text).toContain("atdd-flow --help");
   expect(convention.content.normative_text).toContain("smallest effective change");
   expect(convention.content.normative_text).toMatch(/review-ready or\s+explicitly blocked/);
-  expect(convention.content.normative_text).toContain("atdd-workflow scout");
-  expect(convention.content.normative_text).toContain("atdd-workflow focus-check");
+  expect(convention.content.normative_text).toContain("atdd-flow scout");
+  expect(convention.content.normative_text).toContain("atdd-flow focus-check");
   expect(convention.content.normative_text).toContain("atdd-bun.review.behavioral-reconciliation");
   expect(convention.content.normative_text).toContain("LOCAL, ASSEMBLED, JOURNEY, or SYSTEM");
   expect(convention.content.normative_text).toContain("review -> done");

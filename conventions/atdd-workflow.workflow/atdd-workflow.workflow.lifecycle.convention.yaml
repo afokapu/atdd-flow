@@ -5,7 +5,7 @@ status: active
 name: Coordinate durable agent work through seats, tasks, and threads
 statement: >-
   When the workflow profile is active, agents coordinate durable work through the locally installed
-  atdd-workflow CLI and its YAML coordination root. A seat owns its runtime binding, branch and
+  atdd-flow CLI and its YAML coordination root. A seat owns its runtime binding, branch and
   worktree; a task owns its delivery state and proof; a thread owns its conversation. Drivers favor
   the smallest effective implementation, coordinate shared-boundary decisions through their
   coordinators, and continue assigned work until it is review-ready or explicitly blocked.
@@ -54,9 +54,9 @@ content:
     solution, coordinators resolve shared-boundary ambiguity, and an assigned task continues until
     review-ready or explicitly blocked.
   normative_text: |
-    Before taking workflow action in a repository, run `atdd-workflow --help` to discover the
+    Before taking workflow action in a repository, run `atdd-flow --help` to discover the
     commands and current syntax available in the installed CLI. If the executable is project-local
-    and not on PATH, run `bunx atdd-workflow --help`. Treat that help output as the command authority:
+    and not on PATH, run `bunx atdd-flow --help`. Treat that help output as the command authority:
     do not invent flags, infer command forms from memory, or rely on an older agent's instructions.
 
     Start from the current seat, checkpoint, assigned tasks, and relevant thread records. A replacement
@@ -103,8 +103,8 @@ content:
     actionable. Mark the task blocked only when the unresolved decision prevents further meaningful
     progress.
 
-    Use `atdd-workflow scout` only when repository scope is genuinely unclear or candidate files are
-    numerous. Use `atdd-workflow focus-check` only before a likely scope expansion such as a new
+    Use `atdd-flow scout` only when repository scope is genuinely unclear or candidate files are
+    numerous. Use `atdd-flow focus-check` only before a likely scope expansion such as a new
     dependency, generalized abstraction, persistent schema, architecture change, adjacent refactor, or
     unrelated defect. These read-only Jev judgments advise scope; they do not own correctness or completion.
 
@@ -150,7 +150,7 @@ content:
     to the delivery being completed; they do not prove the reviewer's semantic judgment is correct.
 
     A driver seat may own more than one task. A coordinator uses
-    `atdd-workflow task done <project> <task> --by <coordinator> --retire-assignee` only when every
+    `atdd-flow task done <project> <task> --by <coordinator> --retire-assignee` only when every
     task assigned to that driver in the project is done and the seat is intentionally being retired.
     That operation delegates to `atdd-bun worktree finish --delete-branch`; do not remove a worktree,
     delete a delivery branch, or force cleanup through raw Git. A failed retirement leaves the task in
@@ -160,7 +160,7 @@ content:
     Retirement resolves ATDD Bun from the worktree's local node_modules/.bin so it does not depend on a
     developer's global executable installation.
 
-    Use the atdd-workflow CLI to mutate workflow records. Read task, seat, checkpoint, and thread YAML
+    Use the atdd-flow CLI to mutate workflow records. Read task, seat, checkpoint, and thread YAML
     before acting; do not treat terminal pane history, a multiplexer, an optional judgment helper, or an
     agent's private memory as durable coordination state.
   fix_hint: >-

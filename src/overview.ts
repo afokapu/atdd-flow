@@ -109,7 +109,7 @@ function taskPhase(entry: ListedTask) {
 
 function attentionForTask(entry: ListedTask, checkpointBySeat: Map<string, Checkpoint | undefined>): Attention | undefined {
   const { task } = entry;
-  const inspect = `atdd-workflow task open ${entry.project} ${entry.id}`;
+  const inspect = `atdd-flow task open ${entry.project} ${entry.id}`;
   if (task.status === "done") return undefined;
   if (task.blocker) return {
     project: entry.project, id: entry.id, label: task.title, state: "BLOCKED", detail: task.blocker,
@@ -131,11 +131,11 @@ function attentionForTask(entry: ListedTask, checkpointBySeat: Map<string, Check
   const checkpoint = checkpointBySeat.get(task.assignee);
   if (task.status === "in_progress" && checkpoint?.status === "blocked") return {
     project: entry.project, id: entry.id, label: task.title, state: "RE_SEAT",
-    detail: checkpoint.next_action || checkpoint.summary, command: `atdd-workflow open ${task.assignee}`, priority: 1,
+    detail: checkpoint.next_action || checkpoint.summary, command: `atdd-flow open ${task.assignee}`, priority: 1,
   };
   if (task.status === "in_progress" && checkpoint?.status === "unverified") return {
     project: entry.project, id: entry.id, label: task.title, state: "VERIFY",
-    detail: "The assigned seat has not been reconciled with a current holder.", command: `atdd-workflow open ${task.assignee}`, priority: 2,
+    detail: "The assigned seat has not been reconciled with a current holder.", command: `atdd-flow open ${task.assignee}`, priority: 2,
   };
   return undefined;
 }
@@ -143,7 +143,7 @@ function attentionForTask(entry: ListedTask, checkpointBySeat: Map<string, Check
 function attentionForThread(entry: ListedThread): Attention[] {
   return entry.pending.map((pending) => ({
     id: entry.record.id, label: entry.record.subject, state: "WAITING", detail: `A result is still expected from ${pending.slice(pending.indexOf("@") + 1)}.`,
-    command: `atdd-workflow thread open ${entry.record.id}`, priority: 4,
+    command: `atdd-flow thread open ${entry.record.id}`, priority: 4,
   }));
 }
 
@@ -159,7 +159,7 @@ function printAttention(items: Attention[]) {
     console.log(`    ${truncate(item.label, width - 4)}`);
     console.log(`    ${muted(truncate(item.detail, width - 4))}`);
   }
-  if (items.length > displayed.length) console.log(`  ${muted(`+ ${items.length - displayed.length} more items; run \`atdd-workflow status --all\` for the full audit.`)}`);
+  if (items.length > displayed.length) console.log(`  ${muted(`+ ${items.length - displayed.length} more items; run \`atdd-flow status --all\` for the full audit.`)}`);
 }
 
 function printProjects(projects: string[], allTasks: ListedTask[], allSeats: ListedSeat[]) {
@@ -207,7 +207,7 @@ function printNext(items: Attention[], allTasks: ListedTask[]) {
   const ready = readyTasks(allTasks);
   rule("NEXT");
   if (items.length) return void items.slice(0, 3).forEach((item, index) => console.log(`  ${strong(`${index + 1}.`)} ${item.command}`));
-  if (ready.length) return console.log(`  ${strong("1.")} atdd-workflow task open ${ready[0].project} ${ready[0].id}`);
+  if (ready.length) return console.log(`  ${strong("1.")} atdd-flow task open ${ready[0].project} ${ready[0].id}`);
   console.log(`  ${muted("The Desk is clear. Use `status --all` to inspect the full record.")}`);
 }
 
@@ -295,12 +295,12 @@ async function taskDashboard(root: string, projectName: string, taskId: string) 
   let next: string;
   if (entry.task.blocker) next = "Resolve the recorded blocker before changing state.";
   else if (entry.waiting.length) next = "Complete the unmet dependencies first.";
-  else if (entry.task.status === "review" && reviewRequired && !latestReview) next = `Coordinator: launch final review with \`atdd-workflow behavioral-review launch ${projectName} ${taskId} --by ${entry.task.coordinator} --application <application> --placement <container>.\``;
-  else if (entry.task.status === "review" && latestReview?.status === "pending") next = `Await reviewer ${latestReview.reviewer.address}; inspect with \`atdd-workflow behavioral-review open ${projectName} ${taskId}.\``;
-  else if (entry.task.status === "review" && latestReview?.result?.decision === "RETURN") next = `Coordinator: return the task with \`atdd-workflow task return ${projectName} ${taskId} --by ${entry.task.coordinator}.\``;
+  else if (entry.task.status === "review" && reviewRequired && !latestReview) next = `Coordinator: launch final review with \`atdd-flow behavioral-review launch ${projectName} ${taskId} --by ${entry.task.coordinator} --application <application> --placement <container>.\``;
+  else if (entry.task.status === "review" && latestReview?.status === "pending") next = `Await reviewer ${latestReview.reviewer.address}; inspect with \`atdd-flow behavioral-review open ${projectName} ${taskId}.\``;
+  else if (entry.task.status === "review" && latestReview?.result?.decision === "RETURN") next = `Coordinator: return the task with \`atdd-flow task return ${projectName} ${taskId} --by ${entry.task.coordinator}.\``;
   else if (entry.task.status === "review" && latestReview?.result?.decision === "ESCALATE") next = "Coordinator: resolve authoritative intent; keep the task in review or block it explicitly.";
-  else if (entry.task.status === "review") next = `Coordinator: complete with \`atdd-workflow task done ${projectName} ${taskId} --by ${entry.task.coordinator}.\``;
-  else if (entry.task.assignee) next = `Driver: start with \`atdd-workflow task start ${projectName} ${taskId} --by ${entry.task.assignee}.\``;
+  else if (entry.task.status === "review") next = `Coordinator: complete with \`atdd-flow task done ${projectName} ${taskId} --by ${entry.task.coordinator}.\``;
+  else if (entry.task.assignee) next = `Driver: start with \`atdd-flow task start ${projectName} ${taskId} --by ${entry.task.assignee}.\``;
   else next = "Coordinator: assign a driver before this task can start.";
   console.log(`  ${next}`);
 }
@@ -393,11 +393,11 @@ async function audit(root: string, requestedProject?: string) {
 export async function status(root: string, args: string[] = []) {
   const all = args.includes("--all");
   const [scope, ...values] = args.filter((argument) => argument !== "--all");
-  if (args.some((argument) => argument.startsWith("-") && argument !== "--all")) throw new Error("Use `atdd-workflow status [project|task|seat|thread] ... [--all]`.");
+  if (args.some((argument) => argument.startsWith("-") && argument !== "--all")) throw new Error("Use `atdd-flow status [project|task|seat|thread] ... [--all]`.");
   if (!scope) return all ? audit(root) : dashboard(root);
   if (scope === "project" && values.length === 1) return all ? audit(root, values[0]) : dashboard(root, values[0]);
   if (scope === "task" && values.length === 2) return taskDashboard(root, values[0], values[1]);
   if (scope === "seat" && values.length === 1) return seatDashboard(root, values[0]);
   if (scope === "thread" && values.length === 1) return threadDashboard(root, values[0]);
-  throw new Error("Use `atdd-workflow status [project <project>|task <project> <task-id>|seat <address>|thread <thread-id>] [--all]`.");
+  throw new Error("Use `atdd-flow status [project <project>|task <project> <task-id>|seat <address>|thread <thread-id>] [--all]`.");
 }

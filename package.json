@@ -1,10 +1,10 @@
 {
-  "name": "@afokapu/atdd-workflow",
-  "version": "0.1.19",
+  "name": "@afokapu/atdd-flow",
+  "version": "0.2.0",
   "description": "Filesystem-first Desk registry for projects, seats, tasks, threads, and handoffs.",
   "type": "module",
   "bin": {
-    "atdd-workflow": "bin/atdd-workflow"
+    "atdd-flow": "bin/atdd-flow"
   },
   "scripts": {
     "workflow": "bun run src/cli.ts",
@@ -28,18 +28,18 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/afokapu/atdd-workflow.git"
+    "url": "git+https://github.com/afokapu/atdd-flow.git"
   },
   "bugs": {
-    "url": "https://github.com/afokapu/atdd-workflow/issues"
+    "url": "https://github.com/afokapu/atdd-flow/issues"
   },
-  "homepage": "https://github.com/afokapu/atdd-workflow#readme",
+  "homepage": "https://github.com/afokapu/atdd-flow#readme",
   "license": "MIT",
   "engines": {
     "bun": ">=1.3.0"
   },
   "devDependencies": {
-    "@afokapu/atdd-bun": "^0.10.35"
+    "@afokapu/atdd-bun": "^0.10.44"
   },
   "dependencies": {
     "@typesafe-ai/sdk": "^0.6.0"

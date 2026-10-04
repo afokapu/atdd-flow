@@ -161,7 +161,7 @@ async function chooseLaunchModel(root: string, config: Desk, record: Seat, portf
 }
 
 export const launchNotice = (address: string) =>
-  `SYSTEM: you are ${address}. Read your durable seat and assigned task with: atdd-workflow open ${address}. Continue assigned in_progress work until it is review-ready or explicitly blocked.`;
+  `SYSTEM: you are ${address}. Read your durable seat and assigned task with: atdd-flow open ${address}. Continue assigned in_progress work until it is review-ready or explicitly blocked.`;
 
 export async function launch(root: string, address: string, args: string[]) {
   const resolved = await canonicalAddress(root, address);

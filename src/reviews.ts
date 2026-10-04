@@ -223,7 +223,7 @@ function reviewerNotice(projectName: string, taskId: string, attempt: Behavioral
     conventionText,
     "",
     "READ INPUTS IN THIS ORDER:",
-    `1. Task criteria/source: atdd-workflow task open ${projectName} ${taskId}`,
+    `1. Task criteria/source: atdd-flow task open ${projectName} ${taskId}`,
     `2. Plan artifacts: ${attempt.input.plan_artifacts.join(", ") || "(none discovered)"}`,
     `3. Deterministic gates: ${attempt.input.deterministic_gates.join("; ")}`,
     `4. Executable proof: ${attempt.input.executable_proof.join("; ") || "(none)"}`,
@@ -231,7 +231,7 @@ function reviewerNotice(projectName: string, taskId: string, attempt: Behavioral
     `6. Implementation only after reconstructing the behavioral oracle: ${attempt.input.implementation.diff_command}`,
     "",
     `Write the structured review result to ${resultPath} with intent, exercise, observed, reconciliation, decision, rationale, and confidence, then persist it with:`,
-    `atdd-workflow behavioral-review record ${projectName} ${taskId} --by ${attempt.reviewer.address} --file ${resultPath}`,
+    `atdd-flow behavioral-review record ${projectName} ${taskId} --by ${attempt.reviewer.address} --file ${resultPath}`,
     "Allowed decisions: APPROVE, RETURN, ESCALATE. Do not directly return, block, or complete the task.",
   ].join("\n");
 }

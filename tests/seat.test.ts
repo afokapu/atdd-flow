@@ -443,7 +443,7 @@ test("status gives an operator one view of seats, tasks, and threads", async () 
   const dashboard = await run(site, "status");
   expect(dashboard).toContain("DESK");
   expect(dashboard).toContain("WORKSTREAM");
-  expect(dashboard).toContain("atdd-workflow task open demo W-runtime");
+  expect(dashboard).toContain("atdd-flow task open demo W-runtime");
   const projectDashboard = await run(site, "status", "project", "demo");
   expect(projectDashboard).toContain("DESK / demo");
   expect(projectDashboard).toContain("WORKSTREAM");
