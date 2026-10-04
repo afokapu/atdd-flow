@@ -125,6 +125,26 @@ test("Workflow-governed tasks cannot transition review to done without accepted 
   }
 });
 
+
+test("delivery branches cannot disable final review by changing their local Workflow profile", async () => {
+  const { root, task } = await fixture();
+  try {
+    const delivery = join(root, "delivery-policy");
+    await mkdir(delivery, { recursive: true });
+    await writeFile(join(delivery, "atdd-bun.yaml"), "profiles: [coder]\n");
+    await writeFile(join(root, "work", "demo", "seats", "driver.delivery", "seat.yaml"), `schema: atdd-workflow/seat/v2
+address: driver.delivery@demo
+role: driver
+project: demo
+worktree: ${delivery}
+branch: delivery/review
+`);
+    expect(await behavioralReviewRequired(root, task)).toBe(true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("only APPROVE on the current clean delivery satisfies completion", async () => {
   const { root, repository, head, task } = await fixture();
   try {
