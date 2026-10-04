@@ -28,6 +28,15 @@ async function messages(root: string, threadId: string) {
   return Promise.all(files.map((file) => readYaml<Message>(`${folder}/${file}`)));
 }
 
+async function replyTarget(root: string, threadId: string, messageId: string, from: string, needsResult: boolean) {
+  const record = await thread(root, threadId);
+  const target = (await messages(root, threadId)).find((message) => message.id === messageId);
+  if (!target) throw new Error(`Message ${messageId} does not exist in thread ${threadId}.`);
+  const recipients = target.to === "all" ? record.participants.filter((address) => address !== target.from) : target.to;
+  if (!recipients.includes(from)) throw new Error(`${from} was not a recipient of message ${messageId}.`);
+  if (needsResult && !target.expects_result) throw new Error(`Message ${messageId} does not expect a result.`);
+}
+
 async function seatsByRole(root: string, projectName: string, role: string) {
   const folder = paths(root).seats(projectName);
   const locals = await readdir(folder);
@@ -105,11 +114,15 @@ export async function addParticipant(root: string, threadId: string, address: st
 }
 
 export async function receipt(root: string, threadId: string, messageId: string, args: string[]) {
-  return post(root, threadId, args, { from: required(words(args, "--from"), "--from"), kind: "receipt", in_reply_to: messageId, body: words(args, "--body") ?? `Received ${messageId}.` });
+  const from = await canonicalAddress(root, required(words(args, "--from"), "--from"));
+  await replyTarget(root, threadId, messageId, from, false);
+  return post(root, threadId, args, { from, kind: "receipt", in_reply_to: messageId, body: words(args, "--body") ?? `Received ${messageId}.` });
 }
 
 export async function result(root: string, threadId: string, messageId: string, args: string[]) {
-  return post(root, threadId, args, { from: required(words(args, "--from"), "--from"), kind: "result", in_reply_to: messageId, body: required(words(args, "--body"), "--body") });
+  const from = await canonicalAddress(root, required(words(args, "--from"), "--from"));
+  await replyTarget(root, threadId, messageId, from, true);
+  return post(root, threadId, args, { from, kind: "result", in_reply_to: messageId, body: required(words(args, "--body"), "--body") });
 }
 
 export async function status(root: string) {

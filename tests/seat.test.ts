@@ -117,6 +117,24 @@ test("a broadcast request remains open until every targeted participant replies"
   expect(await run(site, "status")).not.toContain("waiting:");
 });
 
+test("a receipt or result must reply to a message addressed to its sender", async () => {
+  const root = await mkdtemp(join(tmpdir(), "atdd-workflow-"));
+  roots.push(root);
+  const site = join(root, "site");
+  await run(root, "init", site);
+  await run(site, "project", "init", "demo");
+  await run(site, "spawn", "demo", "coordinator", "main", "--worktree", "/tmp/demo-main");
+  await run(site, "spawn", "demo", "driver", "one", "--worktree", "/tmp/demo-one");
+  await run(site, "spawn", "demo", "driver", "two", "--worktree", "/tmp/demo-two");
+  const thread = await run(site, "thread", "start", "--with", "coordinator@demo,driver.one@demo,driver.two@demo", "--subject", "Reply validation");
+  const request = await run(site, "post", thread, "--from", "coordinator@demo", "--to", "driver.one@demo", "--expects-result", "--body", "Reply only if addressed.");
+
+  expect(await fail(site, "result", thread, "M-missing", "--from", "driver.one@demo", "--body", "No.")).toContain("does not exist");
+  expect(await fail(site, "receipt", thread, request, "--from", "driver.two@demo")).toContain("was not a recipient");
+  expect(await fail(site, "result", thread, request, "--from", "driver.two@demo", "--body", "No.")).toContain("was not a recipient");
+  await run(site, "result", thread, request, "--from", "driver.one@demo", "--body", "Done.");
+});
+
 test("a replacement agent resumes an outstanding seat and completes its work", async () => {
   const root = await mkdtemp(join(tmpdir(), "atdd-workflow-"));
   roots.push(root);
