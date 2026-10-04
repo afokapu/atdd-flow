@@ -38,7 +38,7 @@ async function allTasks(root: string, projectName: string): Promise<ListedTask[]
   let files: string[];
   try { files = await readdir(folder); }
   catch { return []; }
-  return Promise.all(files.filter((file) => file.endsWith(".yaml")).sort().map(async (file) => ({ id: file.slice(0, -5), task: await readTask(root, projectName, file.slice(0, -5)) })));
+  return Promise.all(files.filter((file) => file.endsWith(".yaml") && !file.endsWith(".reviews.yaml")).sort().map(async (file) => ({ id: file.slice(0, -5), task: await readTask(root, projectName, file.slice(0, -5)) })));
 }
 
 export async function seatTasks(root: string, projectName: string, address: string): Promise<ListedTask[]> {
