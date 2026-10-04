@@ -95,7 +95,7 @@ Your TUIOS, tmux, Herdr, ChatGPT Desktop, or Claude launch arrangement should se
 
 Every package change merged to `main` runs tests, selects the next patch version, publishes `@afokapu/atdd-workflow`, commits that version, and tags it. Because the source repository is private, npm provenance is not available for this package.
 
-For the first release, add a granular read-and-write npm access token as the private GitHub Actions secret `NPM_TOKEN`, then run the **Publish** workflow manually. After the first release, configure npm trusted publishing for `afokapu/atdd-workflow` with GitHub repository `afokapu/atdd-workflow`, workflow filename `publish.yml`, and permission to run `npm publish`; set the repository variable `NPM_PUBLISH_ENABLED=true`, then remove `NPM_TOKEN`. Subsequent releases use short-lived GitHub OIDC credentials. Until either setting exists, the release job is deliberately skipped.
+For the first release, add a granular read-and-write npm access token as the private GitHub Actions secret `NPM_TOKEN`, set the repository variable `NPM_PUBLISH_ENABLED=true`, then run the **Publish** workflow manually. After the first release, configure npm trusted publishing for `afokapu/atdd-workflow` with GitHub repository `afokapu/atdd-workflow`, workflow filename `publish.yml`, and permission to run `npm publish`; then remove `NPM_TOKEN`. Subsequent releases use short-lived GitHub OIDC credentials. Until `NPM_PUBLISH_ENABLED=true`, the release job is deliberately skipped.
 
 ## First project
 
