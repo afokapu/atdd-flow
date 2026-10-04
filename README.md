@@ -119,7 +119,7 @@ The operator sets `repository` and `worktree_root` in `work/<project>/project.ya
 
 ## Host integration
 
-TUIOS is the intended interactive host. A seat binds to a TUIOS pane, and a posted message is queued as a concise instruction to read its durable YAML file. Tmux and Herdr have small compatibility adapters with the same best-effort contract.
+TUIOS is the intended interactive host. A seat binds to a TUIOS pane and, when panes span sessions, its TUIOS session; a posted message is queued as a concise instruction to read its durable YAML file. Tmux and Herdr have small compatibility adapters with the same best-effort contract.
 
 The filesystem protocol does not depend on a multiplexer. An agent hosted elsewhere can participate when it has filesystem and shell access and is started with its seat address and the `atdd-workflow` CLI. Without a host adapter capable of injecting a notification, the seat remains correct and recoverable but has no automatic live wake-up; the host or operator must supply the prompt to inspect the seat.
 

@@ -16,7 +16,7 @@ export type Project = {
   groups?: Record<string, Group>;
   scopes?: Record<string, Scope>;
 };
-export type Runtime = { pane?: string; backend?: Backend; attached_at?: string };
+export type Runtime = { pane?: string; session?: string; backend?: Backend; attached_at?: string };
 export type Seat = {
   schema: string;
   address: string;

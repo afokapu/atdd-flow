@@ -69,7 +69,7 @@ async function inject(root: string, address: string, message: Message, threadId:
   const commands: Record<Backend, string[]> = {
     tmux: ["tmux", "send-keys", "-t", runtime.pane, notice, "Enter"],
     herdr: ["herdr", "agent", "send", runtime.pane, notice],
-    tuios: ["tuios", "queue", "-w", runtime.pane, notice],
+    tuios: ["tuios", "queue", ...(runtime.session ? ["-s", runtime.session] : []), "-w", runtime.pane, notice],
   };
   try { await run(commands[runtime.backend], true); }
   catch (error) { console.warn(`Notification for ${address} was not delivered: ${(error as Error).message}`); }

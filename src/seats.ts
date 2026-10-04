@@ -57,7 +57,12 @@ export async function bind(root: string, address: string, args: string[]) {
   const resolved = await canonicalAddress(root, address);
   const record = await seat(root, resolved);
   const config = await site(root);
-  record.runtime = { pane: required(words(args, "--pane"), "--pane"), backend: (words(args, "--backend") ?? config.backend) as Backend, attached_at: now() };
+  record.runtime = {
+    pane: required(words(args, "--pane"), "--pane"),
+    ...(words(args, "--session") ? { session: words(args, "--session") } : {}),
+    backend: (words(args, "--backend") ?? config.backend) as Backend,
+    attached_at: now(),
+  };
   await atomicYaml(paths(root).seatFile(resolved), record);
   console.log(`Bound ${resolved} to ${record.runtime.backend}:${record.runtime.pane}`);
 }

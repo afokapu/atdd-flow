@@ -14,7 +14,7 @@ Usage:
   atdd-workflow init <coordination-directory> [--git]
   atdd-workflow project init <project>
   atdd-workflow spawn <project> <role> <name> [--worktree <path>] [--branch <branch>]
-  atdd-workflow bind <address> --pane <target> [--backend tmux|herdr|tuios]
+  atdd-workflow bind <address> --pane <target> [--session <tuios-session>] [--backend tmux|herdr|tuios]
   atdd-workflow describe <address> --purpose <one-line responsibility>
   atdd-workflow checkpoint <address> --summary <text> --next <text> [--status active|standby|blocked|complete|unverified]
   atdd-workflow task add <project> <task-id> --title <text> --coordinator <address> [--assignee <address>] --done-when <text> [--done-when <text> ...]
