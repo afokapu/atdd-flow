@@ -153,6 +153,7 @@ async function chooseLaunchModel(root: string, config: Desk, record: Seat, portf
   if (!candidates.length) throw new Error("No enabled model in models.yaml has an available executable.");
   const work = (await seatTasks(root, record.project, record.address)).filter((entry) => entry.task.status !== "done");
   const reviewRoute = await reviewRouteForSeat(root, record);
+  if (reviewRoute === "ADVERSARIAL") return { candidate: candidates[0]!, reviewRoute };
   const selection = await selectModel({
     seat: { address: record.address, role: record.role, ...(record.purpose ? { purpose: record.purpose } : {}) },
     tasks: work.map((entry) => ({
