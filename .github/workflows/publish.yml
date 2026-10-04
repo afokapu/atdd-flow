@@ -51,9 +51,8 @@ jobs:
           echo "next=$next" >> "$GITHUB_OUTPUT"
       - run: npm version "${{ steps.version.outputs.next }}" --no-git-tag-version --allow-same-version
       - run: npm pack --dry-run
-      # The source repository is private, so npm cannot generate provenance.
       # `NPM_TOKEN` is needed only for the first release; later releases use OIDC.
-      - run: npm publish --access public
+      - run: npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       - name: Commit and tag release

@@ -4,7 +4,7 @@
   "description": "Filesystem-first coordination for agent work: seats, tasks, threads, and handoffs.",
   "type": "module",
   "bin": {
-    "atdd-workflow": "./src/cli.ts"
+    "atdd-workflow": "./bin/atdd-workflow"
   },
   "scripts": {
     "workflow": "bun run src/cli.ts",
@@ -12,6 +12,7 @@
     "test": "bun test"
   },
   "files": [
+    "bin",
     "src",
     "README.md",
     "LICENSE"
