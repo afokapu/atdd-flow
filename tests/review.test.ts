@@ -33,6 +33,7 @@ async function fixture() {
   await writeFile(join(root, "desk.yaml"), "schema: atdd-workflow/desk/v1\ndesk: test\napplication: tuios\n");
   await writeFile(join(root, "work", "demo", "project.yaml"), `schema: atdd-workflow/project/v1
 project: demo
+repository: ${repository}
 roles:
   driver:
     address: driver.{name}@{project}
