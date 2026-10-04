@@ -18,7 +18,7 @@ export type Task = {
   done_when: DoneWhen[];
 };
 
-type ListedTask = { id: string; task: Task };
+export type ListedTask = { id: string; task: Task };
 
 const transitions: Record<TaskStatus, TaskStatus[]> = {
   todo: ["in_progress"],
@@ -39,6 +39,12 @@ async function allTasks(root: string, projectName: string): Promise<ListedTask[]
   try { files = await readdir(folder); }
   catch { return []; }
   return Promise.all(files.filter((file) => file.endsWith(".yaml")).sort().map(async (file) => ({ id: file.slice(0, -5), task: await readTask(root, projectName, file.slice(0, -5)) })));
+}
+
+export async function seatTasks(root: string, projectName: string, address: string): Promise<ListedTask[]> {
+  return (await allTasks(root, projectName)).filter((entry) =>
+    entry.task.assignee === address || entry.task.coordinator === address
+  );
 }
 
 async function ready(root: string, projectName: string, task: Task) {
