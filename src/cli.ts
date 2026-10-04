@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import { basename, resolve } from "node:path";
-import { init, initProject, spawn, bind, useApplication, attach, launch, describe, checkpoint, openSeat } from "./seats";
+import { init, initProject, spawn, bind, useApplication, attach, launch, describe, checkpoint, migrate, openSeat } from "./seats";
 import { addParticipant, post, receipt, result, startThread } from "./threads";
 import * as tasks from "./tasks";
 import { required } from "./core";
@@ -9,10 +9,12 @@ import { status } from "./overview";
 
 const usage = `atdd-workflow — filesystem-first agent seats and tasks
 
-Run commands from a coordination repository containing coordination.yaml.
+Run commands from a Desk containing desk.yaml.
+Legacy coordination.yaml registries are read safely and can be migrated.
 
 Usage:
-  atdd-workflow init <coordination-directory> [--git]
+  atdd-workflow init <desk-directory> [--git]
+  atdd-workflow desk migrate
   atdd-workflow project init <project>
   atdd-workflow spawn <project> <role> <name> [--worktree <path>] [--branch <branch>] [--agent <executable>]
   atdd-workflow bind <address> [--application <application>] --address <native-address>
@@ -39,8 +41,8 @@ Usage:
   atdd-workflow open <address>
 
 Global:
-  atdd-workflow --root <coordination-directory> <command>
-  ATDD_WORKFLOW_ROOT=<coordination-directory> atdd-workflow <command>`;
+  atdd-workflow --root <desk-directory> <command>
+  ATDD_WORKFLOW_ROOT=<desk-directory> atdd-workflow <command>`;
 
 async function main() {
   const original = process.argv.slice(2);
@@ -51,7 +53,11 @@ async function main() {
   const [command, ...rest] = args;
   const root = resolve(rootOverride ?? process.cwd());
   const commands: Record<string, () => Promise<void>> = {
-    init: () => init(resolve(required(rest[0], "coordination directory")), basename(required(rest[0], "coordination directory")), rest.slice(1)),
+    init: () => init(resolve(required(rest[0], "desk directory")), basename(required(rest[0], "desk directory")), rest.slice(1)),
+    desk: async () => {
+      if (rest[0] === "migrate") return migrate(root);
+      throw new Error("Use `atdd-workflow desk migrate`.");
+    },
     project: async () => {
       if (rest[0] === "init") return initProject(root, required(rest[1], "project"));
       throw new Error("Use `atdd-workflow project init <project>`.");

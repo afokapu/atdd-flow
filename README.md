@@ -1,6 +1,6 @@
 # ATDD Workflow
 
-`atdd-workflow` is a tiny, filesystem-first coordination tool for replaceable coding-agent seats and tasks. Its durable data lives in a private coordination repository, separate from the code repositories it coordinates.
+`atdd-workflow` is a tiny, filesystem-first coordination tool for replaceable coding-agent seats and tasks. Its durable data lives in a **Desk**: a private registry of projects, seats, tasks, threads, and handoffs, separate from the code repositories it coordinates.
 
 The durable protocol is YAML. A site is independent from the code repositories and worktrees it coordinates. TUIOS is the primary live application: it provides the operator's pane layout and queues a file-reading notification when a message arrives.
 
@@ -9,8 +9,8 @@ No database, daemon, cloud account, or model-provider SDK is required.
 ## Layout
 
 ```text
-private-work-coordination/
-├── coordination.yaml
+desk/
+├── desk.yaml
 ├── work/
 │   └── resolver-os/
 │       ├── project.yaml
@@ -30,7 +30,7 @@ private-work-coordination/
 
 Each seat may carry a one-line `purpose`, set with `atdd-workflow describe <address> --purpose <text>`. It is the human and agent-readable responsibility statement; it does not presume a fixed lane, branch, worktree, or host.
 
-`coordination.yaml` may also declare address aliases when a project is consolidated or renamed. Aliases resolve at the CLI boundary; threads and checkpoints retain the canonical address, so a legacy name never creates a second seat.
+`desk.yaml` may also declare address aliases when a project is consolidated or renamed. Aliases resolve at the CLI boundary; threads and checkpoints retain the canonical address, so a legacy name never creates a second seat. Existing `coordination.yaml` registries are read as legacy inputs and can be upgraded with `atdd-workflow desk migrate`.
 
 `project.yaml` can describe optional named scopes—such as independent coordinator responsibilities within one repository—and their legacy aliases. A scope is explanatory metadata, not a lane system: it does not impose a branch, worktree, or lifecycle on a seat.
 
@@ -73,24 +73,24 @@ atdd-workflow task import resolver-os managed-runtime-pivot \
   --proof https://github.com/example/resolver-os/pull/69
 ```
 
-## Bootstrap a coordination repository
+## Bootstrap a Desk
 
-The operator creates this repository once—not a coordinator or driver during ordinary work. Give it a name that describes its trust boundary, not the tool: for example, `private-work-coordination` or `client-a-coordination`. Start with one repository for projects that need to coordinate together. Create another only for a different operator, access boundary, or retention policy; cross-repository threads are deliberately not a v1 feature.
+The operator creates the Desk once—not a coordinator or driver during ordinary work. It is the registry for projects, seats, tasks, threads, and handoffs. Give it a name that describes its trust boundary, not the tool: for example, `desk` or `client-a-desk`. Start with one Desk for projects that need to coordinate together. Create another only for a different operator, access boundary, or retention policy; cross-Desk threads are deliberately not a v1 feature.
 
 ```sh
-atdd-workflow init ~/Github/private-work-coordination --git
-cd ~/Github/private-work-coordination
-git add . && git commit -m 'chore: initialize coordination repository'
-gh repo create afokapu/private-work-coordination --private --source . --remote origin --push
+atdd-workflow init ~/Github/desk --git
+cd ~/Github/desk
+git add . && git commit -m 'chore: initialize Desk'
+gh repo create afokapu/desk --private --source . --remote origin --push
 ```
 
 The Git repository is the local and remote history. The tool writes YAML; Git records, syncs, and restores it. Agents do not create or choose the repository. The operator supplies its path through the host configuration or each agent's launch environment:
 
 ```sh
-export ATDD_WORKFLOW_ROOT="$HOME/Github/private-work-coordination"
+export ATDD_WORKFLOW_ROOT="$HOME/Github/desk"
 atdd-workflow status
 # Equivalent for a one-off invocation:
-atdd-workflow --root ~/Github/private-work-coordination status
+atdd-workflow --root ~/Github/desk status
 ```
 
 `status` is the operator overview: it prints every seat with its checkpoint state,
@@ -103,7 +103,7 @@ Install the CLI once as a development dependency in each coordinated code reposi
 
 ```sh
 bun add -d @afokapu/atdd-workflow
-bunx atdd-workflow --root ~/Github/private-work-coordination status
+bunx atdd-workflow --root ~/Github/desk status
 ```
 
 Your TUIOS, tmux, Herdr, ChatGPT Desktop, or Claude launch arrangement should set `ATDD_WORKFLOW_ROOT` and the seat address. A live application is optional; the root path is the durable entry point.

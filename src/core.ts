@@ -6,7 +6,12 @@ import { randomUUID } from "node:crypto";
 export type Role = { address: string; branch: string; agent: string; purpose?: string; worktree?: string; base?: string };
 export type Group = { role?: string; members?: string[] };
 export type Scope = { purpose: string; coordinator: string; umbrella_branch?: string; legacy_aliases?: string[] };
-export type Site = { schema: string; site: string; application: string; aliases?: Record<string, string> };
+/**
+ * The Desk is the durable registry for a workflow: projects, seats, tasks,
+ * threads, and their handoff records all resolve from this root.
+ */
+export type Desk = { schema: "atdd-workflow/desk/v1"; desk: string; application: string; aliases?: Record<string, string> };
+type LegacyCoordination = { schema: "atdd-workflow/coordination/v2"; site: string; application: string; aliases?: Record<string, string> };
 export type Project = {
   schema: string;
   project: string;
@@ -73,7 +78,8 @@ export function taskId(value: string) {
 }
 
 export const paths = (root: string) => ({
-  site: join(root, "coordination.yaml"),
+  desk: join(root, "desk.yaml"),
+  legacyCoordination: join(root, "coordination.yaml"),
   work: join(root, "work"),
   project: (name: string) => join(root, "work", name),
   projectFile: (name: string) => join(root, "work", name, "project.yaml"),
@@ -108,10 +114,27 @@ export async function exists(path: string) {
   catch { return false; }
 }
 
-export async function site(root: string) {
-  const value = await readYaml<Site>(paths(root).site);
-  if (value.schema !== "atdd-workflow/coordination/v2") throw new Error("Unsupported coordination schema.");
-  return value;
+export async function desk(root: string): Promise<Desk> {
+  const files = paths(root);
+  if (await exists(files.desk)) {
+    const value = await readYaml<Desk>(files.desk);
+    if (value.schema !== "atdd-workflow/desk/v1") throw new Error("Unsupported Desk schema.");
+    return value;
+  }
+  if (await exists(files.legacyCoordination)) {
+    const legacy = await readYaml<LegacyCoordination>(files.legacyCoordination);
+    if (legacy.schema !== "atdd-workflow/coordination/v2") throw new Error("Unsupported legacy coordination schema.");
+    return { schema: "atdd-workflow/desk/v1", desk: legacy.site, application: legacy.application, ...(legacy.aliases ? { aliases: legacy.aliases } : {}) };
+  }
+  throw new Error("Desk registry not found. Expected desk.yaml (or legacy coordination.yaml).");
+}
+
+export async function migrateDesk(root: string) {
+  const files = paths(root);
+  if (await exists(files.desk)) return false;
+  const record = await desk(root);
+  await atomicYaml(files.desk, record);
+  return true;
 }
 
 export async function project(root: string, name: string) {
@@ -121,7 +144,7 @@ export async function project(root: string, name: string) {
 }
 
 export async function canonicalAddress(root: string, address: string) {
-  const aliases = (await site(root)).aliases ?? {};
+  const aliases = (await desk(root)).aliases ?? {};
   const visited = new Set<string>();
   let resolved = address;
   while (aliases[resolved]) {

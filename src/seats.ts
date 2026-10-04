@@ -3,7 +3,7 @@ import { dirname, join, resolve } from "node:path";
 import { discoverAddress, launchedAddress, launchCommand, notify } from "./adapters";
 import {
   type Checkpoint, type Project, type Role, type Seat, atomicYaml, canonicalAddress,
-  exists, fill, now, paths, project, readYaml, required, run, runOutput, seat, site, words, yaml,
+  desk, exists, fill, migrateDesk, now, paths, project, readYaml, required, run, runOutput, seat, words, yaml,
 } from "./core";
 
 const defaultRoles = (): Record<string, Role> => ({
@@ -12,15 +12,20 @@ const defaultRoles = (): Record<string, Role> => ({
 });
 
 export async function init(root: string, name: string, args: string[]) {
-  const config = { schema: "atdd-workflow/coordination/v2", site: name, application: "tuios" };
+  const config = { schema: "atdd-workflow/desk/v1" as const, desk: name, application: "tuios" };
   await Promise.all([mkdir(paths(root).work, { recursive: true }), mkdir(paths(root).threads, { recursive: true })]);
-  await atomicYaml(paths(root).site, config);
+  await atomicYaml(paths(root).desk, config);
   if (args.includes("--git") && !await exists(join(root, ".git"))) await run(["git", "init", "--initial-branch=main", root]);
-  console.log(`Initialized ${root}`);
+  console.log(`Initialized Desk ${root}`);
+}
+
+export async function migrate(root: string) {
+  if (await migrateDesk(root)) console.log("Migrated legacy coordination registry to desk.yaml");
+  else console.log("Desk registry already exists");
 }
 
 export async function initProject(root: string, name: string) {
-  await site(root);
+  await desk(root);
   const config: Project = { schema: "atdd-workflow/project/v1", project: name, roles: defaultRoles() };
   await mkdir(paths(root).seats(name), { recursive: true });
   await atomicYaml(paths(root).projectFile(name), config);
@@ -57,7 +62,7 @@ export async function spawn(root: string, projectName: string, roleName: string,
 export async function bind(root: string, address: string, args: string[]) {
   const resolved = await canonicalAddress(root, address);
   const record = await seat(root, resolved);
-  const config = await site(root);
+  const config = await desk(root);
   const application = words(args, "--application") ?? config.application;
   if (!/^[a-z][a-z0-9_-]*$/.test(application)) throw new Error(`Application must use lowercase letters, numbers, underscores, or hyphens: ${application}`);
   const nativeAddress = required(words(args, "--address"), "--address");
@@ -78,7 +83,7 @@ export async function useApplication(root: string, address: string, application:
 }
 
 export async function attach(root: string, address: string, args: string[]) {
-  const application = words(args, "--application") ?? (await site(root)).application;
+  const application = words(args, "--application") ?? (await desk(root)).application;
   const nativeAddress = discoverAddress(application);
   await bind(root, address, ["--application", application, "--address", nativeAddress]);
 }

@@ -50,7 +50,7 @@ test("a request remains outstanding until its linked result exists", async () =>
   await run(site, "spawn", "demo", "coordinator", "main", "--worktree", "/tmp/demo-main");
   await run(site, "spawn", "demo", "driver", "runtime", "--worktree", "/tmp/demo-runtime");
   await run(site, "describe", "driver.runtime@demo", "--purpose", "Own the runtime rollout.");
-  await stat(join(site, "coordination.yaml"));
+  await stat(join(site, "desk.yaml"));
   await stat(join(site, "work", "demo", "project.yaml"));
   await stat(join(site, "work", "demo", "seats", "driver.runtime", "seat.yaml"));
   expect(await run(site, "open", "driver.runtime@demo")).toContain("Own the runtime rollout.");
@@ -64,17 +64,36 @@ test("a request remains outstanding until its linked result exists", async () =>
   expect(await run(site, "status")).not.toContain("waiting:");
 });
 
-test("an operator can initialize a standalone coordination Git repository", async () => {
+test("an operator can initialize a standalone Desk Git repository", async () => {
   const root = await mkdtemp(join(tmpdir(), "atdd-workflow-"));
   roots.push(root);
-  const coordination = join(root, "private-work-coordination");
+  const coordination = join(root, "desk");
 
   await run(root, "init", coordination, "--git");
 
   await stat(join(coordination, ".git"));
-  const config = await readFile(join(coordination, "coordination.yaml"), "utf8");
-  expect(config).toContain("atdd-workflow/coordination/v2");
+  const config = await readFile(join(coordination, "desk.yaml"), "utf8");
+  expect(config).toContain("atdd-workflow/desk/v1");
   expect(config).toContain("application: tuios");
+});
+
+test("a legacy coordination registry upgrades to a Desk without changing its aliases", async () => {
+  const root = await mkdtemp(join(tmpdir(), "atdd-workflow-"));
+  roots.push(root);
+  const registry = join(root, "legacy");
+  await mkdir(registry, { recursive: true });
+  await writeFile(join(registry, "coordination.yaml"), `schema: atdd-workflow/coordination/v2
+site: legacy
+application: tuios
+aliases:
+  coordinator@old: coordinator@demo
+`);
+
+  await run(registry, "desk", "migrate");
+  const config = await readFile(join(registry, "desk.yaml"), "utf8");
+  expect(config).toContain("schema: atdd-workflow/desk/v1");
+  expect(config).toContain("desk: legacy");
+  expect(config).toContain("coordinator@old: coordinator@demo");
 });
 
 test("a migration can record a completed task from authoritative proof without inventing a driver", async () => {
@@ -197,8 +216,8 @@ test("a legacy alias resolves to one canonical seat", async () => {
   await run(root, "init", site);
   await run(site, "project", "init", "decision-os");
   await run(site, "spawn", "decision-os", "coordinator", "main", "--worktree", "/tmp/decision-os-main");
-  await writeFile(join(site, "coordination.yaml"), `schema: atdd-workflow/coordination/v2
-site: site
+  await writeFile(join(site, "desk.yaml"), `schema: atdd-workflow/desk/v1
+desk: site
 application: tuios
 aliases:
   coordinator@DOS-jev: coordinator@decision-os
