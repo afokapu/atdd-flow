@@ -8,6 +8,8 @@ on:
     paths:
       - src/**
       - examples/**
+      - .github/workflows/publish.yml
+      - bun.lock
       - package.json
       - README.md
       - LICENSE
@@ -32,6 +34,7 @@ jobs:
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
+      - run: bun install --frozen-lockfile
       - run: bun test
       - name: Compute next version
         id: version
