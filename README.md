@@ -1,6 +1,6 @@
-# ATDD Seat
+# ATDD Work
 
-`atdd-seat` is a tiny, filesystem-first coordination tool for replaceable coding-agent seats.
+`atdd-work` is a tiny, filesystem-first coordination tool for replaceable coding-agent seats and tasks.
 
 The durable protocol is YAML. A site is independent from the code repositories and worktrees it coordinates. TUIOS is the primary live host: it provides the operator's pane layout and queues a file-reading notification when a message arrives.
 
@@ -45,17 +45,17 @@ todo → in_progress → review → done
 The driver starts a task, fills the proof beside each `done_when` criterion, and submits it for review. Only its coordinator can mark it done; a review can instead be returned to `in_progress`. Dependencies are task-local: a task starts only after every `depends_on` task is done. Tasks without unfinished dependencies are parallel-ready.
 
 ```sh
-bun /path/to/atdd-seat/src/seat.ts task add resolver-os W-runtime \
+bun /path/to/atdd-work/src/seat.ts task add resolver-os W-runtime \
   --title 'Complete runtime rollout' \
   --coordinator coordinator@resolver-os \
   --assignee driver.runtime@resolver-os \
   --body 'Deliver the bounded runtime rollout.' \
   --done-when 'Required checks pass' \
   --done-when 'Coordinator accepts the result'
-bun /path/to/atdd-seat/src/seat.ts task start resolver-os W-runtime --by driver.runtime@resolver-os
-bun /path/to/atdd-seat/src/seat.ts task prove resolver-os W-runtime --by driver.runtime@resolver-os --item 1 --proof 'CI run 42: passed'
-bun /path/to/atdd-seat/src/seat.ts task review resolver-os W-runtime --by driver.runtime@resolver-os
-bun /path/to/atdd-seat/src/seat.ts task done resolver-os W-runtime --by coordinator@resolver-os
+bun /path/to/atdd-work/src/seat.ts task start resolver-os W-runtime --by driver.runtime@resolver-os
+bun /path/to/atdd-work/src/seat.ts task prove resolver-os W-runtime --by driver.runtime@resolver-os --item 1 --proof 'CI run 42: passed'
+bun /path/to/atdd-work/src/seat.ts task review resolver-os W-runtime --by driver.runtime@resolver-os
+bun /path/to/atdd-work/src/seat.ts task done resolver-os W-runtime --by coordinator@resolver-os
 ```
 
 An item is effectively checked when its `proof` is present. Proof is a short durable reference—a PR, CI run, report, commit range, deployment, or thread message—not a new evidence database. The task body carries the full brief and can point to its source document. A thread may optionally link a task, but one is not created automatically for every task.
@@ -65,13 +65,13 @@ An item is effectively checked when its `proof` is present. Proof is a short dur
 ```sh
 bun run src/seat.ts init ~/Github/workseats
 cd ~/Github/workseats
-bun /path/to/atdd-seat/src/seat.ts project init resolver-os
-bun /path/to/atdd-seat/src/seat.ts spawn resolver-os coordinator main --worktree /src/resolver-os
-bun /path/to/atdd-seat/src/seat.ts spawn resolver-os driver runtime --worktree /src/resolver-os-runtime
-bun /path/to/atdd-seat/src/seat.ts thread start \
+bun /path/to/atdd-work/src/seat.ts project init resolver-os
+bun /path/to/atdd-work/src/seat.ts spawn resolver-os coordinator main --worktree /src/resolver-os
+bun /path/to/atdd-work/src/seat.ts spawn resolver-os driver runtime --worktree /src/resolver-os-runtime
+bun /path/to/atdd-work/src/seat.ts thread start \
   --with coordinator@resolver-os,driver.runtime@resolver-os \
   --subject 'Runtime rollout'
-bun /path/to/atdd-seat/src/seat.ts post T-... \
+bun /path/to/atdd-work/src/seat.ts post T-... \
   --from coordinator@resolver-os \
   --to driver.runtime@resolver-os \
   --expects-result \

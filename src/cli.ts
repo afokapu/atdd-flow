@@ -6,7 +6,7 @@ import { addParticipant, post, receipt, result, startThread, status } from "./th
 import * as tasks from "./tasks";
 import { required } from "./core";
 
-const usage = `atdd-seat — filesystem-first agent seats
+const usage = `atdd-work — filesystem-first agent seats and tasks
 
 Run commands from a site directory containing site.yaml.
 
