@@ -1,0 +1,13 @@
+schema: atdd-workflow/models/v1
+models:
+  - id: frontier
+    executable: claude
+    args: [--model, opus]
+    description: Use only when weaker candidates are insufficient.
+  - id: standard
+    executable: claude
+    args: [--model, sonnet]
+  - id: codex
+    executable: codex
+  - id: glm
+    executable: glm
