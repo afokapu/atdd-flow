@@ -74,8 +74,9 @@ models:
 
 Order is policy: strongest first, weakest last. Entries whose executable is unavailable, or whose
 `enabled` flag is false, are excluded. At launch, Jev sees the seat's active work and any review
-posture, then selects the weakest available model sufficient for that responsibility. If Jev is
-unavailable, Workflow conservatively launches the strongest available model. Older Desks without
+posture, then selects the weakest available model sufficient for that responsibility. An adversarial
+review is routed directly to the strongest available candidate. If Jev is unavailable or its model
+selection confidence is low, Workflow also conservatively launches the strongest available model. Older Desks without
 `models.yaml` continue to honor a legacy seat `agent` through the executable registry.
 
 ## Configure worktrees and seats
