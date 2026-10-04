@@ -1,11 +1,14 @@
 import { readFile } from "node:fs/promises";
+import { execFile as execute } from "node:child_process";
 import { resolve } from "node:path";
+import { promisify } from "node:util";
 import { choice, TypeSafeClient } from "@typesafe-ai/sdk";
 import { paths, readYaml, required } from "./core";
 import { type Task } from "./tasks";
 
 type ChoiceAnswer = { choice: string; confidence: number };
 type JudgmentClient = { systemOne(request: unknown): Promise<{ model?: string; answers: Record<string, ChoiceAnswer> }> };
+type Credential = () => Promise<string | undefined>;
 type Unavailable = { available: false; reason: string };
 
 export type ScoutResult = { path: string; relevance: "relevant" | "not_relevant"; confidence: number };
@@ -14,15 +17,37 @@ export type FocusJudgment = "REQUIRED" | "USEFUL_BUT_NOT_REQUIRED" | "SPECULATIV
 export type FocusResponse = { available: true; model?: string; judgment: FocusJudgment; confidence: number } | Unavailable;
 export type ScoutInput = { goal: string; candidates: string[]; question?: string };
 export type FocusInput = { title: string; body?: string; doneWhen: string[]; proposedAction: string };
-export type JudgmentOptions = { client?: JudgmentClient };
+export type JudgmentOptions = { client?: JudgmentClient; credential?: Credential };
 
 const excerptLimit = 6_000;
+const keychainService = "atdd-workflow.typesafe";
+const execFile = promisify(execute);
 const unavailable = (reason: string): Unavailable => ({ available: false, reason });
 
-function client(options: JudgmentOptions) {
+async function keychainCredential(): Promise<string | undefined> {
+  if (process.platform !== "darwin") return undefined;
+  const account = process.env.USER ?? process.env.LOGNAME;
+  if (!account) return undefined;
+  try {
+    const { stdout } = await execFile("/usr/bin/security", [
+      "find-generic-password", "-s", keychainService, "-a", account, "-w",
+    ], { encoding: "utf8", timeout: 1_000 });
+    return stdout.trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Resolve the optional Jev credential without writing it to workflow state. */
+export async function resolveJevApiKey(options: JudgmentOptions = {}): Promise<string | undefined> {
+  return process.env.TYPESAFE_API_KEY?.trim() || await (options.credential ?? keychainCredential)();
+}
+
+async function client(options: JudgmentOptions) {
   if (options.client) return options.client;
-  if (!process.env.TYPESAFE_API_KEY) return undefined;
-  return new TypeSafeClient({ logLevel: "off", timeout: 5_000, retry: { maxRetries: 0 } }) as unknown as JudgmentClient;
+  const apiKey = await resolveJevApiKey(options);
+  if (!apiKey) return undefined;
+  return new TypeSafeClient({ apiKey, logLevel: "off", timeout: 5_000, retry: { maxRetries: 0 } }) as unknown as JudgmentClient;
 }
 
 async function candidate(path: string) {
@@ -35,8 +60,8 @@ async function candidate(path: string) {
 
 export async function scout(input: ScoutInput, options: JudgmentOptions = {}): Promise<ScoutResponse> {
   if (!input.candidates.length) return unavailable("No candidate paths were supplied.");
-  const judge = client(options);
-  if (!judge) return unavailable("TYPESAFE_API_KEY is not configured; continue using repository evidence.");
+  const judge = await client(options);
+  if (!judge) return unavailable("Jev credentials are not configured; continue using repository evidence.");
   const candidates = await Promise.all(input.candidates.map(candidate));
   const questions = Object.fromEntries(candidates.map((entry, index) => [`candidate_${index}`, choice({
     question: "Is this file relevant to the current implementation goal?",
@@ -63,8 +88,8 @@ export async function scout(input: ScoutInput, options: JudgmentOptions = {}): P
 }
 
 export async function focusCheck(input: FocusInput, options: JudgmentOptions = {}): Promise<FocusResponse> {
-  const judge = client(options);
-  if (!judge) return unavailable("TYPESAFE_API_KEY is not configured; prefer the smaller reversible solution.");
+  const judge = await client(options);
+  if (!judge) return unavailable("Jev credentials are not configured; prefer the smaller reversible solution.");
   const questions = {
     scope: choice({
       question: "How necessary is the proposed action for the current task?",

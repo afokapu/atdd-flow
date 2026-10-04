@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { focusCheck, scout } from "../src/judgment";
+import { focusCheck, resolveJevApiKey, scout } from "../src/judgment";
 
 const response = (answers: Record<string, { choice: string; confidence: number }>) => ({ model: "jev-stub", answers });
 
@@ -50,4 +50,15 @@ test("judgment helper failures remain non-blocking", async () => {
   }, { client: { systemOne: async () => { throw new Error("provider unavailable"); } } });
   expect(result.available).toBe(false);
   if (!result.available) expect(result.reason).toContain("provider unavailable");
+});
+
+test("Jev credentials may come from the local credential source", async () => {
+  const original = process.env.TYPESAFE_API_KEY;
+  delete process.env.TYPESAFE_API_KEY;
+  try {
+    expect(await resolveJevApiKey({ credential: async () => "keychain-test-key" })).toBe("keychain-test-key");
+  } finally {
+    if (original === undefined) delete process.env.TYPESAFE_API_KEY;
+    else process.env.TYPESAFE_API_KEY = original;
+  }
 });

@@ -140,9 +140,11 @@ atdd-workflow focus-check decision-os c1-w2b \
   --action 'Add a generic retry orchestration service'
 ```
 
-Set `TYPESAFE_API_KEY` to use Jev. If it is absent, unavailable, uncertain, or too expensive for
-the task, the helper returns an unavailable result and the agent proceeds from repository evidence,
-preferring the smaller reversible solution.
+On macOS, Jev reads its key from the local Keychain item `atdd-workflow.typesafe` for the current
+account. `TYPESAFE_API_KEY` remains an explicit override for CI or temporary shells. The key is
+never written to Desk records, repository files, output, or Git. If neither source is available,
+or the helper is unavailable, uncertain, or too expensive for the task, the agent proceeds from
+repository evidence, preferring the smaller reversible solution.
 
 ## Use from a code repository
 
