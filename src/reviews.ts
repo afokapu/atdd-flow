@@ -266,7 +266,7 @@ export async function launchBehavioralReview(
   if (portfolio) {
     const candidates = availableModelCandidates(config, portfolio);
     if (!candidates.length) throw new Error("No enabled model in models.yaml has an available executable for behavioral review.");
-    const selection = await selectModel({
+    const selection = routed.routing.confidence < 0.75 ? undefined : await selectModel({
       seat: { address: reviewAddress(projectName, taskId), role: "reviewer", purpose: "Final behavioral reconciliation" },
       tasks: [{ id: taskId, title: task.title, status: task.status, ...(task.body ? { body: task.body } : {}), doneWhen: task.done_when.map((entry) => entry.text) }],
       candidates,
@@ -276,7 +276,7 @@ export async function launchBehavioralReview(
         signals: routed.routing.signals,
       },
     }, options);
-    const selected = selection.available
+    const selected = selection?.available
       ? required(candidates.find((entry) => entry.id === selection.selected_model), `selected model ${selection.selected_model}`)
       : candidates[0]!;
     const command = resolveModelCommand(config, selected);
