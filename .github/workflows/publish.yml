@@ -11,7 +11,6 @@ on:
       - package.json
       - README.md
       - LICENSE
-      - .github/workflows/publish.yml
   workflow_dispatch:
 
 concurrency:
@@ -24,7 +23,6 @@ permissions:
 
 jobs:
   publish:
-    if: ${{ vars.NPM_PUBLISH_ENABLED == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -51,10 +49,7 @@ jobs:
           echo "next=$next" >> "$GITHUB_OUTPUT"
       - run: npm version "${{ steps.version.outputs.next }}" --no-git-tag-version --allow-same-version
       - run: npm pack --dry-run
-      # `NPM_TOKEN` is needed only for the first release; later releases use OIDC.
       - run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       - name: Commit and tag release
         run: |
           git config user.name github-actions[bot]
