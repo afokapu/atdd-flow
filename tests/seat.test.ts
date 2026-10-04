@@ -359,3 +359,17 @@ test("a coordinator unlocks dependent tasks only after reviewing their proof", a
   await run(site, "task", "return", "demo", "W-api", "--by", coordinator);
   expect(await run(site, "task", "open", "demo", "W-api")).toContain("status: in_progress");
 });
+
+test("a task can preserve an exact source body through the canonical amend command", async () => {
+  const root = await mkdtemp(join(tmpdir(), "atdd-workflow-"));
+  roots.push(root);
+  const site = join(root, "site");
+  await run(root, "init", site);
+  await run(site, "project", "init", "demo");
+  await run(site, "spawn", "demo", "coordinator", "main", "--worktree", "/tmp/demo-main");
+  await run(site, "task", "add", "demo", "W-source", "--title", "Imported slice", "--coordinator", "coordinator@demo", "--body", "Temporary projection", "--done-when", "Coordinator accepts evidence.");
+  await run(site, "task", "amend", "demo", "W-source", "--body", "Exact source wording.", "--source", "repo@sha:docs/program.adoc#row-42");
+  const task = await run(site, "task", "open", "demo", "W-source");
+  expect(task).toContain("body: Exact source wording.");
+  expect(task).toContain("repo@sha:docs/program.adoc#row-42");
+});

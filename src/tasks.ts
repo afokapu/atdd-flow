@@ -110,6 +110,23 @@ export async function add(root: string, projectName: string, id: string, args: s
   console.log(id);
 }
 
+export async function amend(root: string, projectName: string, id: string, args: string[]) {
+  const task = await readTask(root, projectName, taskId(id));
+  const title = words(args, "--title");
+  const body = words(args, "--body");
+  const source = words(args, "--source");
+  const dependencies = words(args, "--depends-on");
+  if (!title && !body && !source && !dependencies) {
+    throw new Error("Provide --title, --body, --source, or --depends-on.");
+  }
+  if (title) task.title = title;
+  if (body) task.body = body;
+  if (source) task.source = source;
+  if (dependencies) task.depends_on = dependencies.split(",").filter(Boolean).map(taskId);
+  await writeTask(root, projectName, taskId(id), task);
+  console.log(`${id}  amended`);
+}
+
 async function transition(root: string, projectName: string, id: string, next: TaskStatus, by: string, retire = false) {
   const task = await readTask(root, projectName, id);
   const actor = await canonicalAddress(root, by);
