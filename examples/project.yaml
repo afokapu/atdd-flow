@@ -6,13 +6,11 @@ roles:
   coordinator:
     address: coordinator@{project}
     branch: main
-    agent: claude
     worktree: "{repository}"
   driver:
     address: driver.{name}@{project}
     branch: delivery/{name}
     base: main
-    agent: codex
     worktree: "{worktree_root}/{name}"
 groups:
   coordinators@resolver-os:
