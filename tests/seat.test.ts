@@ -334,6 +334,7 @@ test("legacy Desks may still pin a seat executable when no model portfolio exist
   await run(root, "init", site);
   await rm(join(site, "models.yaml"));
   await run(site, "project", "init", "demo");
+  expect(await readFile(join(site, "work", "demo", "project.yaml"), "utf8")).toContain("agent: codex");
   await run(site, "spawn", "demo", "driver", "receiver", "--worktree", "/tmp/demo-receiver", "--agent", "cat");
   expect(await run(site, "open", "driver.receiver@demo")).toContain("agent: cat");
 });
