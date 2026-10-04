@@ -8,12 +8,12 @@
         "@typesafe-ai/sdk": "^0.6.0",
       },
       "devDependencies": {
-        "@afokapu/atdd-bun": "^0.10.33",
+        "@afokapu/atdd-bun": "^0.10.35",
       },
     },
   },
   "packages": {
-    "@afokapu/atdd-bun": ["@afokapu/atdd-bun@0.10.33", "", { "dependencies": { "ajv": "^8.17.1", "ajv-formats": "^3.0.1" }, "bin": { "atdd-bun": "src/cli.ts" } }, "sha512-SJtfc6TYA4ROhyBUK2onFF2REB3tmaINVxWHO1p4xiZTikKXA3BNOw+me+Vx2dgk20p+5LZvCfUqs1k4VW5cig=="],
+    "@afokapu/atdd-bun": ["@afokapu/atdd-bun@0.10.35", "", { "dependencies": { "ajv": "^8.17.1", "ajv-formats": "^3.0.1" }, "bin": { "atdd-bun": "src/cli.ts" } }, "sha512-VMPs/R1/OnQhK/nOszde4g2nL4tvFRAr1qh2Ox/UBiUkHzEY8rmNsgobtbXXSskLzov8VZNj63PsHw0L3s5TbQ=="],
 
     "@typesafe-ai/sdk": ["@typesafe-ai/sdk@0.6.0", "", {}, "sha512-IddX+Q0XM+VagOUZFeP7wZjaO4SHMdvnh2zEBdrZZnXedWI3BNK1lKhMx3ayrkFWvVLbVcUHJy6AVZlY+e6Jaw=="],
 
