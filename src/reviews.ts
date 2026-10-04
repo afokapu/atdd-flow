@@ -333,20 +333,27 @@ export async function launchBehavioralReview(
 
   const application = required(words(args, "--application"), "--application");
   const placement = required(words(args, "--placement"), "--placement");
-  const output = await runOutput(launchCommand({
-    application,
-    placement,
-    name: reviewer.address,
-    worktree: reviewer.worktree,
-    agent,
-    args: modelArgs,
-    root,
-    seat: reviewer.address,
-    environment: {
-      ATDD_WORKFLOW_REVIEW_TASK: `${projectName}/${taskId}`,
-      ATDD_WORKFLOW_REVIEW_ID: attempt.id,
-    },
-  }));
+  let output: string;
+  try {
+    output = await runOutput(launchCommand({
+      application,
+      placement,
+      name: reviewer.address,
+      worktree: reviewer.worktree,
+      agent,
+      args: modelArgs,
+      root,
+      seat: reviewer.address,
+      environment: {
+        ATDD_WORKFLOW_REVIEW_TASK: `${projectName}/${taskId}`,
+        ATDD_WORKFLOW_REVIEW_ID: attempt.id,
+      },
+    }));
+  } catch (error) {
+    history.attempts.pop();
+    await writeBehavioralReviews(root, projectName, taskId, history);
+    throw error;
+  }
   const nativeAddress = launchedAddress(application, placement, output);
   await bind(root, reviewer.address, ["--application", application, "--address", nativeAddress], modelId);
   try {
