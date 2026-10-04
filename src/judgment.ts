@@ -235,8 +235,16 @@ export async function reviewTask(root: string, project: string, taskId: string, 
       const config = await readProject(root, project);
       const role = config.roles[owner.role];
       const base = role?.base ?? config.roles.coordinator?.branch ?? "main";
-      const output = await runOutput(["git", "diff", "--name-only", `${base}...HEAD`], owner.worktree);
-      changedFiles = output.split("\n").map((entry) => entry.trim()).filter(Boolean).slice(0, 100);
+      const outputs = await Promise.allSettled([
+        runOutput(["git", "diff", "--name-only", `${base}...HEAD`], owner.worktree),
+        runOutput(["git", "diff", "--name-only"], owner.worktree),
+        runOutput(["git", "diff", "--name-only", "--cached"], owner.worktree),
+        runOutput(["git", "ls-files", "--others", "--exclude-standard"], owner.worktree),
+      ]);
+      changedFiles = [...new Set(outputs.flatMap((output) => output.status === "fulfilled"
+        ? output.value.split("\n").map((entry) => entry.trim()).filter(Boolean)
+        : []
+      ))].slice(0, 100);
     } catch {
       changedFiles = undefined;
     }

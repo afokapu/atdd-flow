@@ -1,10 +1,20 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { focusCheck, resolveJevApiKey, reviewCheck, scout, selectModel } from "../src/judgment";
+import { focusCheck, resolveJevApiKey, reviewCheck, reviewTask, scout, selectModel } from "../src/judgment";
 
 const response = (answers: Record<string, { choice: string; confidence: number }>) => ({ model: "jev-stub", answers });
+
+async function git(cwd: string, ...args: string[]) {
+  const child = Bun.spawn(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited,
+  ]);
+  if (exitCode !== 0) throw new Error(`${stdout}${stderr}`);
+}
 
 test("scout returns read-only relevance judgments for candidate files", async () => {
   const root = await mkdtemp(join(tmpdir(), "atdd-workflow-judgment-"));
@@ -106,6 +116,49 @@ test("review-check treats low-confidence classification as residual uncertainty"
   }) } });
   expect(result.available).toBe(true);
   if (result.available) expect(result.route).toBe("ADVERSARIAL");
+});
+
+test("review-task supplies committed, dirty, and untracked worktree files to escape-risk routing", async () => {
+  const root = await mkdtemp(join(tmpdir(), "atdd-workflow-judgment-"));
+  const worktree = join(root, "repository");
+  try {
+    await git(root, "init", "-b", "main", worktree);
+    await git(worktree, "config", "user.email", "test@example.test");
+    await git(worktree, "config", "user.name", "Test");
+    await mkdir(join(worktree, "src"), { recursive: true });
+    await writeFile(join(worktree, "src", "authorization.ts"), "export const allowed = false;\n");
+    await git(worktree, "add", "src/authorization.ts");
+    await git(worktree, "commit", "-m", "initial");
+    await git(worktree, "switch", "-c", "delivery/review");
+    await writeFile(join(worktree, "src", "authorization.ts"), "export const allowed = true;\n");
+    await writeFile(join(worktree, "src", "new-policy.ts"), "export const policy = true;\n");
+
+    await mkdir(join(root, "work", "demo", "seats", "driver.review"), { recursive: true });
+    await mkdir(join(root, "work", "demo", "tasks"), { recursive: true });
+    await writeFile(join(root, "desk.yaml"), "schema: atdd-workflow/desk/v1\ndesk: test\napplication: tuios\n");
+    await writeFile(join(root, "work", "demo", "project.yaml"), "schema: atdd-workflow/project/v1\nproject: demo\nroles:\n  driver:\n    address: driver.{name}@{project}\n    branch: delivery/{name}\n    base: main\n");
+    await writeFile(join(root, "work", "demo", "seats", "driver.review", "seat.yaml"), `schema: atdd-workflow/seat/v2
+address: driver.review@demo
+role: driver
+project: demo
+worktree: ${worktree}
+branch: delivery/review
+`);
+    await writeFile(join(root, "work", "demo", "tasks", "auth.yaml"), "schema: atdd-workflow/task/v1\ntitle: Change authorization\nstatus: review\ncoordinator: coordinator@demo\nassignee: driver.review@demo\ndone_when:\n  - text: Authorized callers succeed\n    proof: integration suite\n");
+
+    let changedFiles: string[] | undefined;
+    await reviewTask(root, "demo", "auth", { client: { systemOne: async (request) => {
+      changedFiles = (request as { state: { task: { changedFiles?: string[] } } }).state.task.changedFiles;
+      return response({
+        specification: { choice: "CLOSED", confidence: 0.95 },
+        evidence: { choice: "DIRECT", confidence: 0.95 },
+        escape_risk: { choice: "LOCAL", confidence: 0.95 },
+      });
+    } } });
+    expect(changedFiles).toEqual(["src/authorization.ts", "src/new-policy.ts"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("model selection lets Jev choose the weakest sufficient configured candidate", async () => {
