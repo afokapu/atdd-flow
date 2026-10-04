@@ -1,258 +1,143 @@
 # ATDD Workflow
 
-`atdd-workflow` is a tiny, filesystem-first coordination tool for replaceable coding-agent seats and tasks. Its durable data lives in a **Desk**: a private registry of projects, seats, tasks, threads, and handoffs, separate from the code repositories it coordinates.
+`atdd-workflow` is a filesystem-first control plane for coordinated coding agents. It keeps durable coordination in a separate Git-backed **Desk**, not inside the code repositories and worktrees being changed.
 
-The durable protocol is YAML. A site is independent from the code repositories and worktrees it coordinates. TUIOS is the primary live application: it provides the operator's pane layout and queues a file-reading notification when a message arrives.
-
-No database, daemon, cloud account, or model-provider SDK is required.
-
-## Layout
+## The model
 
 ```text
-desk/
-├── desk.yaml
-├── work/
-│   └── resolver-os/
-│       ├── project.yaml
-│       ├── seats/
-│           └── driver.runtime/
-│               ├── seat.yaml
-│               └── checkpoint.yaml
-│       └── tasks/
-│           └── W-runtime-rollout.yaml
-└── threads/
-    └── T-<id>/
-        ├── thread.yaml
-        └── M-<id>.yaml
+Desk (private Git repository)             Code repositories / worktrees
+├── work/<project>/                       └── implementation only
+│   ├── project.yaml  policy
+│   ├── seats/        replaceable responsibilities and handoffs
+│   └── tasks/        delivery, criteria, and proof
+└── threads/          conversation and immutable messages
 ```
 
-`work/` is the responsibility view: a project's repository/worktree policy and its seats. `threads/` is the shared communication view, including cross-project threads. Messages are immutable YAML files; a seat's inbox is derived from threads addressed to it, rather than copied into per-seat folders.
+- A **seat** owns responsibility, branch, worktree, checkpoint, and host addresses; a **task** owns its brief, ownership, dependencies, criteria, and proof.
+- A **thread** owns messages, receipts, results, and decisions; a **host** owns panes and notifications—never durable state.
 
-Each seat may carry a one-line `purpose`, set with `atdd-workflow describe <address> --purpose <text>`. It is the human and agent-readable responsibility statement; it does not presume a fixed lane, branch, worktree, or host.
+A stable address, such as `driver.runtime@resolver-os`, survives a different pane, host, model, or replacement agent. A replacement reads its durable seat, task, checkpoint, and threads rather than predecessor-private context.
 
-`desk.yaml` may also declare address aliases when a project is consolidated or renamed. Aliases resolve at the CLI boundary; threads and checkpoints retain the canonical address, so a legacy name never creates a second seat. Existing `coordination.yaml` registries are read as legacy inputs and can be upgraded with `atdd-workflow desk migrate`.
+Workflow is a YAML protocol and CLI—not a database, daemon, agent runtime, or task-management SaaS. Git supplies history and replication; a multiplexer may wake an agent, but never owns state.
 
-`project.yaml` can describe optional named scopes—such as independent coordinator responsibilities within one repository—and their legacy aliases. A scope is explanatory metadata, not a lane system: it does not impose a branch, worktree, or lifecycle on a seat.
+## Install and create a Desk
 
-## Tasks
+Install locally in every code repository whose agents use Workflow:
 
-A task is a project-level YAML file, independent of seats and threads. It names its coordinator and optional assignee; a seat's task view is derived from those references. Tasks move through four deliberately small states:
+```sh
+bun add -d @afokapu/atdd-workflow@latest
+```
+
+The operator creates one private Desk for projects that coordinate together:
+
+```sh
+atdd-workflow init "$HOME/Github/desk" --git
+export ATDD_WORKFLOW_ROOT="$HOME/Github/desk"
+```
+
+Use `--root "$HOME/Github/desk"` for one-off commands. Keeping the Desk separate avoids code-branch conflicts and permits cross-repository work.
+
+## Configure worktrees and seats
+
+Create a project, then set its policy in `work/<project>/project.yaml`:
+
+```sh
+atdd-workflow project init resolver-os
+```
+
+```yaml
+repository: /Users/you/Github/resolver-os
+worktree_root: /Users/you/Github/worktrees/resolver-os
+roles:
+  coordinator: { address: coordinator@{project}, branch: main, agent: codex, worktree: '{repository}' }
+  driver: { address: driver.{name}@{project}, branch: delivery/{name}, base: main, agent: codex, worktree: '{worktree_root}/{name}' }
+```
+
+The operator or coordinator creates seats; drivers do not choose their policy:
+
+```sh
+atdd-workflow spawn resolver-os coordinator main --worktree /Users/you/Github/resolver-os
+atdd-workflow spawn resolver-os driver runtime
+```
+
+`spawn` creates missing driver worktrees through Git: this example creates `/Users/you/Github/worktrees/resolver-os/runtime` on `delivery/runtime`. ATDD Bun owns safe retirement, not creation. A seat can own several tasks.
+
+## Deliver work
 
 ```text
 todo → in_progress → review → done
 ```
 
-The driver starts a task, fills the proof beside each `done_when` criterion, and submits it for review. Only its coordinator can mark it done; a review can instead be returned to `in_progress`. Dependencies are task-local: a task starts only after every `depends_on` task is done. Tasks without unfinished dependencies are parallel-ready.
-
-When a driver has no remaining unfinished tasks, its coordinator may make housekeeping the final layer of completion with `task done --retire-assignee`. Workflow delegates this to `atdd-bun worktree finish --delete-branch` in that driver's worktree. ATDD Bun verifies that the linked worktree is clean and its branch is merged, removes the worktree, and deletes the local branch; any failure leaves the task in review and checkpoints the seat as blocked. Remote branches are intentionally retained because ATDD Bun's finish operation does not delete them.
-
-Install the repository's dependencies inside each driver worktree before work begins (for example, `bun install`). Retirement resolves `atdd-bun` from that worktree's local `node_modules/.bin`; it does not depend on an operator's global installation.
+The coordinator assigns; the driver implements, proves each criterion, and submits for review; only the coordinator marks the task done.
 
 ```sh
-atdd-workflow task add resolver-os W-runtime \
-  --title 'Complete runtime rollout' \
-  --coordinator coordinator@resolver-os \
-  --assignee driver.runtime@resolver-os \
-  --body 'Deliver the bounded runtime rollout.' \
-  --done-when 'Required checks pass' \
-  --done-when 'Coordinator accepts the result'
-atdd-workflow task start resolver-os W-runtime --by driver.runtime@resolver-os
-atdd-workflow task prove resolver-os W-runtime --by driver.runtime@resolver-os --item 1 --proof 'CI run 42: passed'
-atdd-workflow task review resolver-os W-runtime --by driver.runtime@resolver-os
-atdd-workflow task done resolver-os W-runtime --by coordinator@resolver-os
+atdd-workflow task add resolver-os runtime-rollout --title 'Complete runtime rollout' \
+  --coordinator coordinator@resolver-os --assignee driver.runtime@resolver-os \
+  --done-when 'Checks pass' --done-when 'Review accepted'
+atdd-workflow task start resolver-os runtime-rollout --by driver.runtime@resolver-os
+atdd-workflow task prove resolver-os runtime-rollout --by driver.runtime@resolver-os --item 1 --proof 'CI run 42'
+atdd-workflow task review resolver-os runtime-rollout --by driver.runtime@resolver-os
+atdd-workflow task done resolver-os runtime-rollout --by coordinator@resolver-os
 ```
 
-An item is effectively checked when its `proof` is present. Proof is a short durable reference—a PR, CI run, report, commit range, deployment, or thread message—not a new evidence database. The task body carries the full brief and can point to its source document. A thread may optionally link a task, but one is not created automatically for every task.
+Proof is a compact PR, CI run, report, commit range, deployment, or thread reference. Dependencies gate prerequisites; independent tasks are parallel-ready. Use `task block` only for a real external blocker, then checkpoint exact state and next action. For an idle driver’s final task, `task done ... --retire-assignee` delegates clean-and-merged worktree retirement to ATDD Bun.
 
-For a legacy migration, use `task import` only when an authoritative completion reference already exists. It records `done` directly from that proof without fabricating a driver, a start event, or a review event that never happened.
+## Communicate and hand over
+
+Threads are the durable inbox/outbox. Workflow persists a message before a best-effort host notification, so a closed pane, rate limit, or missed prompt cannot lose it.
 
 ```sh
-atdd-workflow task import resolver-os managed-runtime-pivot \
-  --source https://github.com/example/resolver-os/pull/69 \
-  --done-when 'Merged PR contains the accepted delivery evidence' \
-  --proof https://github.com/example/resolver-os/pull/69
+atdd-workflow thread start --with coordinator@resolver-os,driver.runtime@resolver-os \
+  --subject 'Runtime rollout' --task resolver-os/runtime-rollout
+atdd-workflow post T-... --from coordinator@resolver-os --to driver.runtime@resolver-os \
+  --expects-result --body 'Implement the task and return proof references.'
+atdd-workflow result T-... M-... --from driver.runtime@resolver-os --body 'CI run 42; PR #81.'
 ```
 
-## Bootstrap a Desk
+For a shared boundary: driver → coordinator → affected coordinator(s) → minimum agreement in a thread → driver. `--to all` broadcasts; requested results remain outstanding until every recipient replies. Checkpoints are short handoffs, not logs; update at responsibility transitions and before replacing an agent.
 
-The operator creates the Desk once—not a coordinator or driver during ordinary work. It is the registry for projects, seats, tasks, threads, and handoffs. Give it a name that describes its trust boundary, not the tool: for example, `desk` or `client-a-desk`. Start with one Desk for projects that need to coordinate together. Create another only for a different operator, access boundary, or retention policy; cross-Desk threads are deliberately not a v1 feature.
-
-```sh
-atdd-workflow init ~/Github/desk --git
-cd ~/Github/desk
-git add . && git commit -m 'chore: initialize Desk'
-gh repo create afokapu/desk --private --source . --remote origin --push
-```
-
-The Git repository is the local and remote history. The tool writes YAML; Git records, syncs, and restores it. Agents do not create or choose the repository. The operator supplies its path through the host configuration or each agent's launch environment:
+## Inspect, host, and guide agents
 
 ```sh
-export ATDD_WORKFLOW_ROOT="$HOME/Github/desk"
 atdd-workflow status
-# Equivalent for a one-off invocation:
-atdd-workflow --root ~/Github/desk status
+atdd-workflow status seat driver.runtime@resolver-os
+atdd-workflow open driver.runtime@resolver-os
 ```
 
-`status` is the operator briefing. It has a deliberate scope grammar rather
-than ambiguous positional identifiers:
+TUIOS is the primary live host; tmux and Herdr have notification adapters. TUIOS launch targets the named session, never the focused session:
 
 ```sh
-atdd-workflow status                                  # whole Desk
-atdd-workflow status project decision-os              # project briefing
-atdd-workflow status task decision-os c1-w2b          # task dossier
-atdd-workflow status seat driver.custody-trail@decision-os
-atdd-workflow status thread T-mutt8upr-ea27d3e9
+atdd-workflow attach driver.runtime@resolver-os --application tuios
+atdd-workflow launch driver.runtime@resolver-os --application tuios --placement resolver-os
 ```
 
-The Desk and project briefings put blocked, unassigned, review-ready,
-unreconciled, and waiting work first, then show workstream progress, active
-tasks, and ready work. Task, seat, and thread status commands present their
-assignment or participation, durable handoff context, evidence, dependencies,
-and next action. For a complete line-by-line audit, use
-`atdd-workflow status --all` or `atdd-workflow status project decision-os --all`.
+Launch starts the declared agent in its declared worktree, passes `ATDD_WORKFLOW_ROOT` and `ATDD_WORKFLOW_SEAT`, and asks it to read its seat. Other hosts remain correct without an adapter; their operator supplies that prompt.
 
-Every item in the briefing leads to an inspectable record: use
-`atdd-workflow task open <project> <task-id>`, `atdd-workflow open <seat-address>`,
-or `atdd-workflow thread open <thread-id>` for the corresponding durable YAML.
-
-## Optional focus helper
-
-The optional Jev helper is a read-only scouting aid, not a Workflow authority. It writes no YAML,
-does not assign work, and cannot decide correctness, proof, review, or task state. Core Workflow
-works without an API key or network access.
-
-Use `scout` only when the likely repository surface is genuinely unclear or broad:
-
-```sh
-atdd-workflow scout \
-  --goal 'Fix payment retry behavior' \
-  --path src/payment/retry.ts \
-  --path src/payment/provider.ts \
-  --path src/profile/avatar.ts
-```
-
-It returns JSON with `relevant` or `not_relevant` and confidence for each candidate. `focus-check`
-is reserved for likely scope expansion; it reads the named task and returns `REQUIRED`,
-`USEFUL_BUT_NOT_REQUIRED`, or `SPECULATIVE` with confidence:
-
-```sh
-atdd-workflow focus-check decision-os c1-w2b \
-  --action 'Add a generic retry orchestration service'
-```
-
-On macOS, Jev reads its key from the local Keychain item `atdd-workflow.typesafe` for the current
-account. `TYPESAFE_API_KEY` remains an explicit override for CI or temporary shells. The key is
-never written to Desk records, repository files, output, or Git. If neither source is available,
-or the helper is unavailable, uncertain, or too expensive for the task, the agent proceeds from
-repository evidence, preferring the smaller reversible solution.
-
-## Use from a code repository
-
-Install the CLI once as a development dependency in each coordinated code repository. Every agent working from that checkout then uses the same version; individual agents do not install their own copy.
-
-```sh
-bun add -d @afokapu/atdd-workflow
-bunx atdd-workflow --root ~/Github/desk status
-```
-
-Your TUIOS, tmux, Herdr, ChatGPT Desktop, or Claude launch arrangement should set `ATDD_WORKFLOW_ROOT` and the seat address. A live application is optional; the root path is the durable entry point.
-
-## ATDD Bun profile
-
-When the code repository also uses ATDD Bun, add the optional `workflow` profile after both packages are installed:
+With ATDD Bun, enable the Workflow profile:
 
 ```yaml
-# atdd-bun.yaml
 profiles: [planner, coder, tester, traceability, security, workflow]
 ```
 
-ATDD Bun remains the sole owner of `AGENTS.md` and `CLAUDE.md`. Its managed instruction block selects the `workflow` registry, which points to this package's lifecycle convention. That convention teaches drivers and coordinators to use the durable seat, task, thread, proof, review, handoff, and safe-retirement protocol; it does not create another agent file or a separate skill loader.
+The lifecycle convention makes agents read CLI help and durable records, prefer the smallest sufficient change, avoid speculative scope, work until review-ready or explicitly blocked, prove criteria, and coordinate boundaries through coordinators. ATDD Bun remains repository and merge authority.
 
-The convention begins by requiring an agent to run `atdd-workflow --help` before workflow action
-(`bunx atdd-workflow --help` when only the repository-local executable is available). Help output is
-the installed-version command authority, so agents do not invent syntax or rely on stale instructions.
+## Optional Jev helper
 
-## Releases
-
-Every package change merged to `main` runs tests, selects the next patch version, publishes `@afokapu/atdd-workflow` with provenance, commits that version, and tags it.
-
-Configure npm trusted publishing for `afokapu/atdd-workflow` with GitHub repository `afokapu/atdd-workflow`, workflow filename `publish.yml`, and permission to run `npm publish`. Every eligible merge to `main` then publishes through short-lived GitHub OIDC credentials; no NPM token or repository variable is stored.
-
-## First project
+Jev is read-only; it cannot mutate state, approve proof, or override ATDD Bun.
 
 ```sh
-atdd-workflow project init resolver-os
-atdd-workflow spawn resolver-os coordinator main --worktree /src/resolver-os
-atdd-workflow spawn resolver-os driver runtime --worktree /src/resolver-os-runtime
-atdd-workflow thread start \
-  --with coordinator@resolver-os,driver.runtime@resolver-os \
-  --subject 'Runtime rollout'
-atdd-workflow post T-... \
-  --from coordinator@resolver-os \
-  --to driver.runtime@resolver-os \
-  --expects-result \
-  --body 'Run the rollout checks and report the result.'
+atdd-workflow scout --goal 'Fix payment retry behavior' --path src/payment/retry.ts --path src/profile/avatar.ts
+atdd-workflow focus-check resolver-os runtime-rollout --action 'Add a generic retry orchestration service'
 ```
 
-The operator sets `repository` and `worktree_root` in `work/<project>/project.yaml`. Role templates derive driver paths from that policy; when `repository` is present, `atdd-workflow spawn` creates a missing non-main Git worktree on the role's configured branch and base. A command-line worktree override is available for an operator but should not be used by drivers.
+`scout` selects likely files. `focus-check` returns `REQUIRED`, `USEFUL_BUT_NOT_REQUIRED`, or `SPECULATIVE`. Use them only for broad scouting or likely scope expansion. If unavailable or uncertain, use repository evidence and prefer the smaller reversible solution.
 
-`post`, `receipt`, and `result` first persist a message and only then make a best-effort notification through the configured application adapter. A missed notification cannot lose the message; `status` and a future seat launch can rediscover it.
+On macOS, Jev reads its TypeSafe key only from Keychain item `atdd-workflow.typesafe`; `TYPESAFE_API_KEY` is a temporary or CI override. The secret is never written to Desk records, output, Git, npm, or GitHub.
 
-## Host integration
-
-TUIOS is the intended interactive application. A runtime binding names the active `application` and preserves an opaque native address for every application in which that seat has been hosted. The durable seat never depends on any of them. A posted message is queued as a concise instruction to read its durable YAML file when the active application has an adapter.
-
-```yaml
-runtime:
-  application: herdr # the currently active application
-  addresses:
-    herdr: w89e05ef9ff16:p2f1de975e7b0
-    tuios: decision-os-runtime/driver-runtime
-    tmux: workflow:2.1
-```
-
-Each value is owned by its application, not parsed as a Workflow identifier. Herdr uses its opaque pane locator such as `w…:p…`; tmux uses its normal target-pane syntax; TUIOS uses `session/window`, because its queue command requires both native values. Binding an address never erases addresses already recorded for other applications. The active application selects which bridge receives new-message notifications.
-
-The built-in notification bridges are TUIOS, Herdr, and tmux. You may also record a native ChatGPT Desktop, Claude Desktop, or future host address now; without a matching bridge, Workflow still persists the message and its handoff state but does not attempt a live wake-up.
+## Command reference
 
 ```sh
-atdd-workflow bind driver.runtime@decision-os \
-  --application herdr \
-  --address w89e05ef9ff16:p2f1de975e7b0
-atdd-workflow bind driver.runtime@decision-os \
-  --application tuios \
-  --address decision-os-runtime/driver-runtime
-atdd-workflow application use driver.runtime@decision-os herdr
+bunx atdd-workflow --help
 ```
 
-When the command runs inside a supported host, use deterministic discovery instead of copying an address yourself:
-
-```sh
-atdd-workflow attach driver.runtime@decision-os --application herdr
-```
-
-`attach` reads the host's own process metadata (`HERDR_PANE_ID`, `TMUX_PANE`, or the TUIOS session/window IDs), binds that native address, and makes that application active. It never infers an address from a pane title or whichever UI pane currently has focus.
-
-To create a new live pane, placement is mandatory. It is separate from the pane's later runtime address: it says where the host must create the pane, while the newly returned native address says which pane was created. The initial launcher supports TUIOS explicitly and never falls back to the active session.
-
-```sh
-atdd-workflow launch driver.runtime@decision-os \
-  --application tuios \
-  --placement decision-os
-```
-
-`launch` reads the seat's declared worktree and agent, opens the pane with `tuios -s decision-os --cwd <seat-worktree>`, passes `ATDD_WORKFLOW_ROOT` and `ATDD_WORKFLOW_SEAT` into the agent process, binds the new pane address, and queues the instruction to open the seat. Herdr and tmux may still attach to pre-existing panes; their launch adapters will be added only after their creation interfaces are verified for the host in use.
-
-The filesystem protocol does not depend on a multiplexer. An agent hosted elsewhere can participate when it has filesystem and shell access and is started with its seat address and the `atdd-workflow` CLI. Without a host adapter capable of injecting a notification, the seat remains correct and recoverable but has no automatic live wake-up; the host or operator must supply the prompt to inspect the seat.
-
-## Checkpoints
-
-`checkpoint.yaml` is one compact answer to “where is this seat now?” It is not a progress log and is not updated for ordinary commits, messages, or every merge. The current seat holder updates it at meaningful responsibility transitions: accepting or replanning work, becoming blocked, opening or closing a PR when that changes the next action, deployment/approval decisions, and always before a planned handover or rate-limit replacement.
-
-The holder writes it with `atdd-workflow checkpoint`; a coordinator may write it when assigning or formally taking over a seat. A merge requires an update only when it changes ownership, the remaining work, or the next action. The thread history keeps the detail; the checkpoint stays short enough for a replacement agent to read first.
-
-Use `status: unverified` for imported or recovered records until the current host, worktree, and responsibility have been reconciled. Historical handoff text alone is not evidence that a seat is still active.
-
-## Scope of this first version
-
-The first version handles local filesystems, deterministic addressing, project tasks and dependencies, shared threads, receipts/results, status derivation, seat spawning, runtime binding, and simple tmux/Herdr/TUIOS notification adapters. It deliberately does not run a daemon, poll for retries, synchronize across machines, or provide a browser UI.
+Installed help is the authoritative syntax for that version.
