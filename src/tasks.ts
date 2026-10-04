@@ -127,6 +127,32 @@ export async function amend(root: string, projectName: string, id: string, args:
   console.log(`${id}  amended`);
 }
 
+/**
+ * Records an already-completed task during a migration. Unlike `done`, this
+ * does not invent an assignee or a live lifecycle transition: the supplied
+ * evidence is the sole basis for the historical completion record.
+ */
+export async function importCompleted(root: string, projectName: string, id: string, args: string[]) {
+  const task = await readTask(root, projectName, taskId(id));
+  const proofs = values(args, "--proof");
+  if (!proofs.length) throw new Error("An imported completion needs at least one --proof reference.");
+
+  const criteria = values(args, "--done-when");
+  const texts = criteria.length ? criteria : task.done_when.map((entry) => entry.text);
+  if (texts.length !== proofs.length) {
+    throw new Error("Provide one --proof for every existing or supplied --done-when criterion.");
+  }
+  const doneWhen = texts.map((text, index) => ({ text, proof: proofs[index] }));
+
+  const source = words(args, "--source");
+  if (source) task.source = source;
+  task.status = "done";
+  task.done_when = doneWhen;
+  delete task.blocker;
+  await writeTask(root, projectName, taskId(id), task);
+  console.log(`${id}  imported done`);
+}
+
 async function transition(root: string, projectName: string, id: string, next: TaskStatus, by: string, retire = false) {
   const task = await readTask(root, projectName, id);
   const actor = await canonicalAddress(root, by);

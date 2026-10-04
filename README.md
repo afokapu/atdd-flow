@@ -64,6 +64,15 @@ atdd-workflow task done resolver-os W-runtime --by coordinator@resolver-os
 
 An item is effectively checked when its `proof` is present. Proof is a short durable reference—a PR, CI run, report, commit range, deployment, or thread message—not a new evidence database. The task body carries the full brief and can point to its source document. A thread may optionally link a task, but one is not created automatically for every task.
 
+For a legacy migration, use `task import` only when an authoritative completion reference already exists. It records `done` directly from that proof without fabricating a driver, a start event, or a review event that never happened.
+
+```sh
+atdd-workflow task import resolver-os managed-runtime-pivot \
+  --source https://github.com/example/resolver-os/pull/69 \
+  --done-when 'Merged PR contains the accepted delivery evidence' \
+  --proof https://github.com/example/resolver-os/pull/69
+```
+
 ## Bootstrap a coordination repository
 
 The operator creates this repository once—not a coordinator or driver during ordinary work. Give it a name that describes its trust boundary, not the tool: for example, `private-work-coordination` or `client-a-coordination`. Start with one repository for projects that need to coordinate together. Create another only for a different operator, access boundary, or retention policy; cross-repository threads are deliberately not a v1 feature.

@@ -77,6 +77,23 @@ test("an operator can initialize a standalone coordination Git repository", asyn
   expect(config).toContain("application: tuios");
 });
 
+test("a migration can record a completed task from authoritative proof without inventing a driver", async () => {
+  const root = await mkdtemp(join(tmpdir(), "atdd-workflow-"));
+  roots.push(root);
+  const site = join(root, "site");
+  await run(root, "init", site);
+  await run(site, "project", "init", "demo");
+  await run(site, "spawn", "demo", "coordinator", "main", "--worktree", "/tmp/demo-main");
+  await run(site, "task", "add", "demo", "legacy-delivery", "--title", "Legacy delivery", "--coordinator", "coordinator@demo", "--done-when", "Merged PR evidence is recorded.");
+
+  await run(site, "task", "import", "demo", "legacy-delivery", "--source", "https://example.test/pull/42", "--proof", "https://example.test/pull/42");
+
+  const record = await run(site, "task", "open", "demo", "legacy-delivery");
+  expect(record).toContain("status: done");
+  expect(record).toContain("https://example.test/pull/42");
+  expect(record).not.toContain("assignee:");
+});
+
 test("a configured driver worktree is created on its declared branch", async () => {
   const root = await mkdtemp(join(tmpdir(), "atdd-workflow-"));
   roots.push(root);

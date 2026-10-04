@@ -23,6 +23,7 @@ Usage:
   atdd-workflow checkpoint <address> --summary <text> --next <text> [--status active|standby|blocked|complete|unverified]
   atdd-workflow task add <project> <task-id> --title <text> --coordinator <address> [--assignee <address>] [--body <text>] [--source <reference>] [--depends-on <task-id,...>] --done-when <text> [--done-when <text> ...]
   atdd-workflow task amend <project> <task-id> [--title <text>] [--body <text>] [--source <reference>] [--depends-on <task-id,...>]
+  atdd-workflow task import <project> <task-id> --proof <reference> [--proof <reference> ...] [--done-when <text> ...] [--source <reference>]
   atdd-workflow task start|review|return <project> <task-id> --by <address>
   atdd-workflow task done <project> <task-id> --by <address> [--retire-assignee]
   atdd-workflow task prove <project> <task-id> --by <address> --item <number> --proof <reference>
@@ -69,6 +70,7 @@ async function main() {
       const [subcommand, projectName, taskId, ...tail] = rest;
       if (subcommand === "add") return tasks.add(root, required(projectName, "project"), required(taskId, "task id"), tail);
       if (subcommand === "amend") return tasks.amend(root, required(projectName, "project"), required(taskId, "task id"), tail);
+      if (subcommand === "import") return tasks.importCompleted(root, required(projectName, "project"), required(taskId, "task id"), tail);
       if (subcommand === "start") return tasks.start(root, required(projectName, "project"), required(taskId, "task id"), tail);
       if (subcommand === "review") return tasks.review(root, required(projectName, "project"), required(taskId, "task id"), tail);
       if (subcommand === "done") return tasks.done(root, required(projectName, "project"), required(taskId, "task id"), tail);
@@ -77,7 +79,7 @@ async function main() {
       if (subcommand === "block") return tasks.block(root, required(projectName, "project"), required(taskId, "task id"), tail);
       if (subcommand === "list") return tasks.list(root, required(projectName, "project"), rest.slice(2));
       if (subcommand === "open") return tasks.open(root, required(projectName, "project"), required(taskId, "task id"));
-      throw new Error("Use `atdd-workflow task add|amend|start|prove|review|return|done|block|list|open`.");
+      throw new Error("Use `atdd-workflow task add|amend|import|start|prove|review|return|done|block|list|open`.");
     },
     thread: async () => {
       const [subcommand, ...tail] = rest;
