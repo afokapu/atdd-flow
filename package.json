@@ -1,6 +1,6 @@
 {
   "name": "@afokapu/atdd-workflow",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Filesystem-first coordination for agent work: seats, tasks, threads, and handoffs.",
   "type": "module",
   "bin": {
