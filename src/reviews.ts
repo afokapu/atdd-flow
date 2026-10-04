@@ -50,7 +50,7 @@ export type BehavioralReviewAttempt = {
     };
   };
   reviewer: { address: string; model: string };
-  convention: { rule_id: string; path: string };
+  convention: { rule_id: string; path: string; package_version: string };
   input: {
     task: { title: string; body?: string; source?: string; done_when: Array<{ text: string; proof?: string }> };
     plan_artifacts: string[];
@@ -134,11 +134,14 @@ async function planArtifacts(worktree: string) {
 }
 
 async function convention(worktree: string) {
-  const file = join(worktree, "node_modules", "@afokapu", "atdd-bun", conventionRelativePath);
+  const packageRoot = join(worktree, "node_modules", "@afokapu", "atdd-bun");
+  const file = join(packageRoot, conventionRelativePath);
   if (!await exists(file)) {
     throw new Error(`Installed ATDD Bun does not provide ${conventionRule}; upgrade @afokapu/atdd-bun before final behavioral review.`);
   }
-  return { path: file, text: await readFile(file, "utf8") };
+  const packageJson = await readFile(join(packageRoot, "package.json"), "utf8");
+  const packageVersion = String(JSON.parse(packageJson).version ?? "unknown");
+  return { path: conventionRelativePath, absolutePath: file, packageVersion, text: await readFile(file, "utf8") };
 }
 
 function conservativeRouting(): Extract<ReviewRoutingResponse, { available: true }> {
@@ -307,7 +310,7 @@ export async function launchBehavioralReview(
       signals: routed.routing.signals,
     },
     reviewer: { address: reviewer.address, model: modelId },
-    convention: { rule_id: conventionRule, path: conventionSource.path },
+    convention: { rule_id: conventionRule, path: conventionSource.path, package_version: conventionSource.packageVersion },
     input: {
       task: {
         title: task.title,
