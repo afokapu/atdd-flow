@@ -73,11 +73,11 @@ models:
 ```
 
 Order is policy: strongest first, weakest last. Entries whose executable is unavailable, or whose
-`enabled` flag is false, are excluded. At launch, Jev sees the seat's active work and any review
-posture, then selects the weakest available model sufficient for that responsibility. An adversarial
-review is routed directly to the strongest available candidate. If Jev is unavailable or its model
-selection confidence is low, Workflow also conservatively launches the strongest available model. Older Desks without
-`models.yaml` continue to honor a legacy seat `agent` through the executable registry.
+`enabled` flag is false, are excluded. For ordinary phase work, Jev sees the seat's active work and
+selects the weakest available model sufficient for that responsibility. If model selection is unavailable
+or low-confidence, Workflow conservatively launches the strongest available model. Final behavioral
+review has its own bounded routing step described below. Older Desks without `models.yaml` continue
+to honor a legacy seat `agent` through the executable registry.
 
 ## Configure worktrees and seats
 
@@ -119,10 +119,13 @@ atdd-workflow task add resolver-os runtime-rollout --title 'Complete runtime rol
 atdd-workflow task start resolver-os runtime-rollout --by driver.runtime@resolver-os
 atdd-workflow task prove resolver-os runtime-rollout --by driver.runtime@resolver-os --item 1 --proof 'CI run 42'
 atdd-workflow task review resolver-os runtime-rollout --by driver.runtime@resolver-os
+atdd-workflow behavioral-review launch resolver-os runtime-rollout --by coordinator@resolver-os \
+  --application tuios --placement resolver-os --gate 'CI run 42'
+# the reviewer persists APPROVE, RETURN, or ESCALATE through behavioral-review record
 atdd-workflow task done resolver-os runtime-rollout --by coordinator@resolver-os
 ```
 
-Proof is a compact PR, CI run, report, commit range, deployment, or thread reference. Dependencies gate prerequisites; independent tasks are parallel-ready. Use `task block` only for a real external blocker, then checkpoint exact state and next action. For an idle driver’s final task, `task done ... --retire-assignee` delegates clean-and-merged worktree retirement to ATDD Bun.
+Proof is a compact PR, CI run, report, commit range, deployment, or thread reference. Dependencies gate prerequisites; independent tasks are parallel-ready. Use `task block` only for a real external blocker, then checkpoint exact state and next action. For deliveries explicitly governed by the `workflow` ATDD Bun profile, `review → done` additionally requires a durable final behavioral-review result with decision `APPROVE` for the current clean delivery commit. For an idle driver’s final task, `task done ... --retire-assignee` delegates clean-and-merged worktree retirement to ATDD Bun.
 
 ## Communicate and hand over
 
@@ -163,6 +166,34 @@ profiles: [planner, coder, tester, traceability, security, workflow]
 
 The lifecycle convention makes agents read CLI help and durable records, prefer the smallest sufficient change, avoid speculative scope, work until review-ready or explicitly blocked, prove criteria, and coordinate boundaries through coordinators. ATDD Bun remains repository and merge authority.
 
+### Final behavioral reconciliation
+
+Phase work does not add a writer/reviewer pair after every artifact. The next phase consumes and
+semantically challenges the previous phase while ATDD Bun provides deterministic enforcement. The
+explicit independent review is reserved for the terminal integration boundary:
+
+```text
+implementation → deterministic gates → task review → JEV routing
+               → behavioral reviewer → coordinator decision → done/merge
+```
+
+ATDD Bun owns the substantive method through
+`atdd-bun.review.behavioral-reconciliation`. Workflow first runs deterministic ATDD Bun gates; a red
+gate prevents reviewer launch. JEV then classifies only the required review surface
+(`LOCAL | ASSEMBLED | JOURNEY | SYSTEM`) plus bounded routing signals such as proof boundary,
+cross-path scope, consequence, and runtime observability. JEV does not decide correctness.
+
+Workflow selects the reviewer model from `models.yaml`, creates a task-scoped reviewer seat in the
+delivery worktree, injects the full installed ATDD Bun review convention into the reviewer prompt, and
+presents inputs in intent-first order. The reviewer records a structured result with
+`APPROVE | RETURN | ESCALATE`; it never mutates task state. Review attempts are retained in
+`work/<project>/tasks/<task>.reviews.yaml` and are bound to a clean delivery commit.
+
+`APPROVE` makes the task eligible for coordinator completion. `RETURN` is evidence for the
+coordinator to move `review → in_progress`. `ESCALATE` leaves the task in review (or the coordinator
+may explicitly block it) while authoritative intent is resolved. Only the coordinator can transition
+`review → done`.
+
 ## Optional Jev helper
 
 Jev is read-only; it cannot mutate state, approve proof, or override ATDD Bun.
@@ -173,12 +204,11 @@ atdd-workflow focus-check resolver-os runtime-rollout --action 'Add a generic re
 ```
 
 `scout` selects likely files. `focus-check` returns `REQUIRED`, `USEFUL_BUT_NOT_REQUIRED`, or `SPECULATIVE`.
-`review-check <project> <task-id>` classifies specification closure, proof directness, and escape risk,
-then deterministically returns `CONFORMANCE` or `ADVERSARIAL`; low-confidence review judgments
-escalate. Review posture also informs launch-time model selection. Use these helpers for bounded
-decisions, not as correctness authority. If scouting or focus judgment is unavailable, use repository
-evidence and prefer the smaller reversible solution; if review or model selection is unavailable,
-escalate conservatively.
+The final behavioral-review launcher also uses JEV System-1 for bounded routing questions only; low
+routing confidence becomes conservative `SYSTEM` routing. Use Jev judgments as routing advice, never
+as correctness or completion authority. If scouting or focus judgment is unavailable, use repository
+evidence and prefer the smaller reversible solution; if model selection is unavailable, escalate
+conservatively to the strongest available candidate.
 
 On macOS, Jev reads its TypeSafe key only from Keychain item `atdd-workflow.typesafe`; `TYPESAFE_API_KEY` is a temporary or CI override. The secret is never written to Desk records, output, Git, npm, or GitHub.
 
