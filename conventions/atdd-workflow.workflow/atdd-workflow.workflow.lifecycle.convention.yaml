@@ -111,9 +111,9 @@ content:
     the workflow; they do not own correctness or completion.
 
     New seats do not pin a model. The Desk's models.yaml is ordered strongest to weakest, and each launch
-    asks Jev for the weakest available model sufficient for the seat's current active work. Review posture
-    is part of that selection context. If Jev model selection is unavailable, use the strongest available
-    configured model. A legacy Desk without models.yaml may continue to use its pinned seat agent.
+    asks Jev for the weakest available model sufficient for the seat's current active work. An adversarial
+    review routes directly to the strongest available candidate. If Jev model selection is unavailable or
+    low-confidence, use the strongest available configured model. A legacy Desk without models.yaml may continue to use its pinned seat agent.
 
     A driver records proof for every done_when criterion, moves the completed task to review, and sends
     its coordinator a result. A coordinator uses conformance review when the specification is closed,
