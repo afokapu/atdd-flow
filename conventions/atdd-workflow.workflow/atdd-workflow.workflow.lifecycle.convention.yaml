@@ -38,6 +38,10 @@ content:
     delete a delivery branch, or force cleanup through raw Git. A failed retirement leaves the task in
     review and writes a blocked checkpoint for investigation.
 
+    Before working in or retiring a driver worktree, install that repository's local dependencies there.
+    Retirement resolves ATDD Bun from the worktree's local node_modules/.bin so it does not depend on a
+    developer's global executable installation.
+
     Use the atdd-workflow CLI to mutate workflow records. Read task, seat, checkpoint, and thread YAML
     before acting; do not treat terminal pane history, a multiplexer, or an agent's private memory as
     durable coordination state.

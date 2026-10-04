@@ -1,4 +1,5 @@
 import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 
@@ -140,8 +141,14 @@ export function fill(template: string, entries: Record<string, string>) {
   return template.replace(/\{(project|name|worktree_root|repository)\}/g, (_, key) => entries[key]);
 }
 
+function executable(command: string, cwd?: string) {
+  if (!cwd || command.includes("/")) return command;
+  const local = join(cwd, "node_modules", ".bin", command);
+  return existsSync(local) ? local : command;
+}
+
 async function execute(command: string[], cwd?: string) {
-  const result = Bun.spawn(command, { cwd, stdout: "pipe", stderr: "pipe" });
+  const result = Bun.spawn([executable(command[0]!, cwd), ...command.slice(1)], { cwd, stdout: "pipe", stderr: "pipe" });
   const [stdout, stderr, code] = await Promise.all([new Response(result.stdout).text(), new Response(result.stderr).text(), result.exited]);
   if (code !== 0) throw new Error(`${command[0]} failed: ${stderr.trim() || stdout.trim()}`);
   return stdout;

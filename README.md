@@ -46,6 +46,8 @@ The driver starts a task, fills the proof beside each `done_when` criterion, and
 
 When a driver has no remaining unfinished tasks, its coordinator may make housekeeping the final layer of completion with `task done --retire-assignee`. Workflow delegates this to `atdd-bun worktree finish --delete-branch` in that driver's worktree. ATDD Bun verifies that the linked worktree is clean and its branch is merged, removes the worktree, and deletes the local branch; any failure leaves the task in review and checkpoints the seat as blocked. Remote branches are intentionally retained because ATDD Bun's finish operation does not delete them.
 
+Install the repository's dependencies inside each driver worktree before work begins (for example, `bun install`). Retirement resolves `atdd-bun` from that worktree's local `node_modules/.bin`; it does not depend on an operator's global installation.
+
 ```sh
 atdd-workflow task add resolver-os W-runtime \
   --title 'Complete runtime rollout' \

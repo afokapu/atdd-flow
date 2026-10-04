@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { discoverAddress, launchCommand, launchedAddress, notificationCommand } from "../src/adapters";
@@ -287,8 +287,9 @@ test("task completion retires an idle driver through ATDD Bun housekeeping", asy
   await git(root, "init", "-b", "main", repository);
   await git(repository, "config", "user.email", "test@example.test");
   await git(repository, "config", "user.name", "Test");
+  await writeFile(join(repository, ".gitignore"), "node_modules/\n");
   await writeFile(join(repository, "atdd-bun.yaml"), `worktrees:\n  enabled: true\n  root: ../worktrees\n  primary_directory: repository\n  primary_branch: main\n  require_linked_worktree: true\n`);
-  await git(repository, "add", "atdd-bun.yaml");
+  await git(repository, "add", ".gitignore", "atdd-bun.yaml");
   await git(repository, "commit", "-m", "configure worktrees");
   await run(root, "init", site);
   await run(site, "project", "init", "demo");
@@ -311,6 +312,8 @@ roles:
 `);
   await run(site, "spawn", "demo", "coordinator", "main");
   await run(site, "spawn", "demo", "driver", "runtime");
+  await mkdir(join(worktrees, "runtime", "node_modules", ".bin"), { recursive: true });
+  await symlink(join(import.meta.dir, "..", "node_modules", ".bin", "atdd-bun"), join(worktrees, "runtime", "node_modules", ".bin", "atdd-bun"));
   const coordinator = "coordinator@demo";
   const driver = "driver.runtime@demo";
   await run(site, "task", "add", "demo", "W-runtime", "--title", "Retire runtime", "--coordinator", coordinator, "--assignee", driver, "--done-when", "Delivery branch is merged.");
