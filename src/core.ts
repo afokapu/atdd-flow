@@ -70,7 +70,7 @@ export type Checkpoint = {
 };
 
 export const now = () => new Date().toISOString();
-export const id = (prefix: "T" | "M") => `${prefix}-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`;
+export const id = (prefix: "T" | "M" | "R") => `${prefix}-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`;
 export const words = (args: string[], flag: string) => {
   const index = args.indexOf(flag);
   return index < 0 ? undefined : args[index + 1];
@@ -113,6 +113,7 @@ export const paths = (root: string) => ({
   checkpointFile: (address: string) => join(paths(root).seat(address), "checkpoint.yaml"),
   tasks: (project: string) => join(root, "work", project, "tasks"),
   taskFile: (project: string, task: string) => join(root, "work", project, "tasks", `${taskId(task)}.yaml`),
+  behavioralReviewFile: (project: string, task: string) => join(root, "work", project, "tasks", `${taskId(task)}.reviews.yaml`),
   threads: join(root, "threads"),
   thread: (threadId: string) => join(root, "threads", threadId),
   threadFile: (threadId: string) => join(root, "threads", threadId, "thread.yaml"),
