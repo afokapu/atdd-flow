@@ -6,6 +6,7 @@ import { addParticipant, openThread, post, receipt, result, startThread } from "
 import * as tasks from "./tasks";
 import { required, values, words } from "./core";
 import * as judgment from "./judgment";
+import * as reviews from "./reviews";
 import { status } from "./overview";
 
 const usage = `atdd-workflow — filesystem-first agent seats and tasks
@@ -42,7 +43,9 @@ Usage:
   atdd-workflow status [project <project>|task <project> <task-id>|seat <address>|thread <thread-id>] [--all]
   atdd-workflow scout --goal <text> --path <file> [--path <file> ...] [--question <text>]
   atdd-workflow focus-check <project> <task-id> --action <proposed action>
-  atdd-workflow review-check <project> <task-id>
+  atdd-workflow behavioral-review launch <project> <task-id> --by <coordinator> --application <application> --placement <native-container-address>
+  atdd-workflow behavioral-review record <project> <task-id> --by <reviewer-address> --file <result-yaml>
+  atdd-workflow behavioral-review open <project> <task-id>
   atdd-workflow open <address>
 
 Global:
@@ -114,11 +117,13 @@ async function main() {
       required(rest[1], "task id"),
       required(words(rest.slice(2), "--action"), "--action"),
     ), null, 2)),
-    "review-check": async () => console.log(JSON.stringify(await judgment.reviewTask(
-      root,
-      required(rest[0], "project"),
-      required(rest[1], "task id"),
-    ), null, 2)),
+    "behavioral-review": async () => {
+      const [subcommand, projectName, taskId, ...tail] = rest;
+      if (subcommand === "launch") return reviews.launchBehavioralReview(root, required(projectName, "project"), required(taskId, "task id"), tail);
+      if (subcommand === "record") return reviews.recordBehavioralReview(root, required(projectName, "project"), required(taskId, "task id"), tail);
+      if (subcommand === "open") return reviews.openBehavioralReview(root, required(projectName, "project"), required(taskId, "task id"));
+      throw new Error("Use `atdd-workflow behavioral-review launch|record|open <project> <task-id>`.");
+    },
     open: () => openSeat(root, required(rest[0], "address")),
   };
   const action = commands[command];
