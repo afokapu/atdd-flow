@@ -10,9 +10,15 @@ import {
 import { type ReviewRoute, reviewTask, selectModel } from "./judgment";
 import { seatTasks } from "./tasks";
 
-const defaultRoles = (): Record<string, Role> => ({
-  coordinator: { address: "coordinator@{project}", branch: "main", worktree: "{repository}" },
-  driver: { address: "driver.{name}@{project}", branch: "delivery/{name}", base: "main", worktree: "{worktree_root}/{name}" },
+const defaultRoles = (dynamicModels = true): Record<string, Role> => ({
+  coordinator: {
+    address: "coordinator@{project}", branch: "main", worktree: "{repository}",
+    ...(dynamicModels ? {} : { agent: "claude" }),
+  },
+  driver: {
+    address: "driver.{name}@{project}", branch: "delivery/{name}", base: "main", worktree: "{worktree_root}/{name}",
+    ...(dynamicModels ? {} : { agent: "codex" }),
+  },
 });
 
 const defaultExecutables = () => ({ claude: "claude", codex: "codex", pi: "pi", kimi: "kimi", glm: "glm" });
@@ -44,7 +50,7 @@ export async function migrate(root: string) {
 
 export async function initProject(root: string, name: string) {
   await desk(root);
-  const config: Project = { schema: "atdd-workflow/project/v1", project: name, roles: defaultRoles() };
+  const config: Project = { schema: "atdd-workflow/project/v1", project: name, roles: defaultRoles(Boolean(await modelPortfolio(root))) };
   await mkdir(paths(root).seats(name), { recursive: true });
   await atomicYaml(paths(root).projectFile(name), config);
   console.log(`Initialized project ${name}`);
