@@ -99,7 +99,10 @@ async function explicitWorkflowProfile(worktree: string) {
 
 export async function behavioralReviewRequired(root: string, task: Task) {
   if (!task.assignee) return false;
-  return explicitWorkflowProfile((await ownerForTask(root, task)).worktree);
+  const owner = await ownerForTask(root, task);
+  const config = await project(root, owner.project);
+  const policyRoot = config.repository ?? (await seat(root, task.coordinator)).worktree;
+  return explicitWorkflowProfile(policyRoot);
 }
 
 async function currentHead(worktree: string) {
