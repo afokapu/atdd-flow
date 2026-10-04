@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { launchedAddress, launchCommand, notify } from "./adapters";
 import {
   type Seat, atomicYaml, canonicalAddress, desk, exists, id, modelPortfolio, now, paths, project,
-  readYaml, required, runOutput, seat, yaml,
+  readYaml, required, runOutput, seat, words, yaml,
 } from "./core";
 import {
   type JudgmentOptions, type ReviewRoutingResponse, routeBehavioralReview, selectModel,
@@ -234,7 +234,7 @@ export async function launchBehavioralReview(
 ) {
   const task = await readTask(root, projectName, taskId);
   if (task.status !== "review") throw new Error(`Task ${taskId} must be in review before behavioral review.`);
-  const actor = await canonicalAddress(root, required(args[args.indexOf("--by") + 1], "--by"));
+  const actor = await canonicalAddress(root, required(words(args, "--by"), "--by"));
   if (actor !== task.coordinator) throw new Error(`Only ${task.coordinator} may launch final behavioral review for ${taskId}.`);
   if (!task.done_when.every((entry) => Boolean(entry.proof))) throw new Error(`Task ${taskId} is missing delivery proof.`);
 
@@ -322,8 +322,8 @@ export async function launchBehavioralReview(
   history.attempts.push(attempt);
   await writeBehavioralReviews(root, projectName, taskId, history);
 
-  const application = required(args[args.indexOf("--application") + 1], "--application");
-  const placement = required(args[args.indexOf("--placement") + 1], "--placement");
+  const application = required(words(args, "--application"), "--application");
+  const placement = required(words(args, "--placement"), "--placement");
   const output = await runOutput(launchCommand({
     application,
     placement,
@@ -398,11 +398,11 @@ export async function recordBehavioralReview(root: string, projectName: string, 
   if (task.status !== "review") throw new Error(`Task ${taskId} must still be in review when the behavioral result is recorded.`);
   const history = required(await readBehavioralReviews(root, projectName, taskId), `a pending behavioral review for ${taskId}`);
   const attempt = required([...history.attempts].reverse().find((entry) => entry.status === "pending"), `a pending behavioral review for ${taskId}`);
-  const actor = required(args[args.indexOf("--by") + 1], "--by");
+  const actor = required(words(args, "--by"), "--by");
   if (actor !== attempt.reviewer.address) throw new Error(`Only ${attempt.reviewer.address} may record review ${attempt.id}.`);
   const owner = await ownerForTask(root, task);
   if (await currentHead(owner.worktree) !== attempt.delivery_head) throw new Error("Delivery HEAD changed during behavioral review; launch a new review against the current delivery.");
-  const file = required(args[args.indexOf("--file") + 1], "--file");
+  const file = required(words(args, "--file"), "--file");
   const result = validateResult(yaml.parse(await readFile(file, "utf8")));
   attempt.status = "complete";
   attempt.completed_at = now();
