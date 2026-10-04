@@ -420,6 +420,7 @@ export async function recordBehavioralReview(root: string, projectName: string, 
   const actor = required(words(args, "--by"), "--by");
   if (actor !== attempt.reviewer.address) throw new Error(`Only ${attempt.reviewer.address} may record review ${attempt.id}.`);
   const owner = await ownerForTask(root, task);
+  await assertCleanDelivery(owner.worktree);
   if (await currentHead(owner.worktree) !== attempt.delivery_head) throw new Error("Delivery HEAD changed during behavioral review; launch a new review against the current delivery.");
   const file = required(words(args, "--file"), "--file");
   const result = validateResult(yaml.parse(await readFile(file, "utf8")));
