@@ -7,7 +7,7 @@ import {
   atomicYaml, canonicalAddress, desk, exists, fill, migrateDesk, modelPortfolio, now, paths, project, readYaml,
   required, run, runOutput, seat, words, yaml,
 } from "./core";
-import { type ReviewRoute, reviewTask, selectModel } from "./judgment";
+import { selectModel } from "./judgment";
 import { seatTasks } from "./tasks";
 
 const defaultRoles = (dynamicModels = true): Record<string, Role> => ({
@@ -125,35 +125,22 @@ export async function attach(root: string, address: string, args: string[]) {
   await bind(root, address, ["--application", application, "--address", nativeAddress]);
 }
 
-function modelIsAvailable(config: Desk, candidate: ModelCandidate) {
-  if (candidate.enabled === false) return false;
-  const executable = resolveExecutable(config, candidate.executable);
-  return executable.includes("/") ? existsSync(executable) : Boolean(Bun.which(executable));
+export function availableModelCandidates(config: Desk, portfolio: ModelPortfolio) {
+  return portfolio.models.filter((candidate) => {
+    if (candidate.enabled === false) return false;
+    const executable = resolveExecutable(config, candidate.executable);
+    return executable.includes("/") ? existsSync(executable) : Boolean(Bun.which(executable));
+  });
 }
 
-function resolveModelCommand(config: Desk, candidate: ModelCandidate) {
+export function resolveModelCommand(config: Desk, candidate: ModelCandidate) {
   return { agent: resolveExecutable(config, candidate.executable), args: candidate.args ?? [] };
 }
 
-async function reviewRouteForSeat(root: string, record: Seat): Promise<ReviewRoute | undefined> {
-  const reviews = (await seatTasks(root, record.project, record.address))
-    .filter((entry) => entry.task.status === "review" && entry.task.coordinator === record.address);
-  if (!reviews.length) return undefined;
-  let route: ReviewRoute = "CONFORMANCE";
-  for (const entry of reviews) {
-    const judgment = await reviewTask(root, record.project, entry.id);
-    if (!judgment.available || judgment.route === "ADVERSARIAL") return "ADVERSARIAL";
-    route = judgment.route;
-  }
-  return route;
-}
-
 async function chooseLaunchModel(root: string, config: Desk, record: Seat, portfolio: ModelPortfolio) {
-  const candidates = portfolio.models.filter((entry) => modelIsAvailable(config, entry));
+  const candidates = availableModelCandidates(config, portfolio);
   if (!candidates.length) throw new Error("No enabled model in models.yaml has an available executable.");
   const work = (await seatTasks(root, record.project, record.address)).filter((entry) => entry.task.status !== "done");
-  const reviewRoute = await reviewRouteForSeat(root, record);
-  if (reviewRoute === "ADVERSARIAL") return { candidate: candidates[0]!, reviewRoute };
   const selection = await selectModel({
     seat: { address: record.address, role: record.role, ...(record.purpose ? { purpose: record.purpose } : {}) },
     tasks: work.map((entry) => ({
@@ -165,21 +152,16 @@ async function chooseLaunchModel(root: string, config: Desk, record: Seat, portf
       ...(entry.task.blocker ? { blocker: entry.task.blocker } : {}),
     })),
     candidates,
-    ...(reviewRoute ? { reviewRoute } : {}),
   });
   if (!selection.available) {
     console.warn(`Model selection for ${record.address} unavailable: ${selection.reason} Falling back to strongest available model.`);
-    return { candidate: candidates[0]!, reviewRoute };
+    return candidates[0]!;
   }
-  return { candidate: required(candidates.find((entry) => entry.id === selection.selected_model), `selected model ${selection.selected_model}`), reviewRoute };
+  return required(candidates.find((entry) => entry.id === selection.selected_model), `selected model ${selection.selected_model}`);
 }
 
-export const launchNotice = (address: string, reviewRoute?: ReviewRoute) => {
-  const base = `SYSTEM: you are ${address}. Read your durable seat and assigned task with: atdd-workflow open ${address}. Continue assigned in_progress work until it is review-ready or explicitly blocked.`;
-  if (reviewRoute === "ADVERSARIAL") return `${base} For review work, assume the acceptance, tests, implementation, and proof may agree around a bad assumption; look for omitted correctness behavior before accepting conformance.`;
-  if (reviewRoute === "CONFORMANCE") return `${base} For review work, verify the supplied proof against done_when and existing repository invariants; do not reopen settled scope without concrete evidence.`;
-  return base;
-};
+export const launchNotice = (address: string) =>
+  `SYSTEM: you are ${address}. Read your durable seat and assigned task with: atdd-workflow open ${address}. Continue assigned in_progress work until it is review-ready or explicitly blocked.`;
 
 export async function launch(root: string, address: string, args: string[]) {
   const resolved = await canonicalAddress(root, address);
@@ -191,14 +173,12 @@ export async function launch(root: string, address: string, args: string[]) {
   let agent: string;
   let modelArgs: string[] = [];
   let selectedModel: string;
-  let reviewRoute: ReviewRoute | undefined;
   if (portfolio) {
     const selected = await chooseLaunchModel(root, config, record, portfolio);
-    const command = resolveModelCommand(config, selected.candidate);
+    const command = resolveModelCommand(config, selected);
     agent = command.agent;
     modelArgs = command.args;
-    selectedModel = selected.candidate.id;
-    reviewRoute = selected.reviewRoute;
+    selectedModel = selected.id;
   } else {
     const legacyAgent = required(record.agent, "models.yaml or a legacy seat agent");
     agent = resolveExecutable(config, legacyAgent);
@@ -210,7 +190,7 @@ export async function launch(root: string, address: string, args: string[]) {
   }));
   const nativeAddress = launchedAddress(application, placement, output);
   await bind(root, resolved, ["--application", application, "--address", nativeAddress], selectedModel);
-  const notice = launchNotice(resolved, reviewRoute);
+  const notice = launchNotice(resolved);
   try { await notify(application, nativeAddress, notice); }
   catch (error) { console.warn(`Launch notification for ${resolved} was not delivered: ${(error as Error).message}`); }
 }
