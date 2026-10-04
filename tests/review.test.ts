@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { assertAcceptedBehavioralReview, behavioralReviewRequired, recordBehavioralReview } from "../src/reviews";
+import { done } from "../src/tasks";
 
 async function git(cwd: string, ...args: string[]) {
   const child = Bun.spawn(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
@@ -108,11 +109,16 @@ function history(head: string, decision: "APPROVE" | "RETURN" | "ESCALATE") {
   };
 }
 
-test("Workflow-governed tasks require final behavioral review", async () => {
-  const { root, task } = await fixture();
+test("Workflow-governed tasks cannot transition review to done without accepted final review", async () => {
+  const { root, head, task } = await fixture();
   try {
     expect(await behavioralReviewRequired(root, task)).toBe(true);
     await expect(assertAcceptedBehavioralReview(root, "demo", "delivery", task)).rejects.toThrow("final behavioral review");
+    await expect(done(root, "demo", "delivery", ["--by", "coordinator@demo"])).rejects.toThrow("final behavioral review");
+
+    await writeFile(join(root, "work", "demo", "tasks", "delivery.reviews.yaml"), Bun.YAML.stringify(history(head, "APPROVE")));
+    await done(root, "demo", "delivery", ["--by", "coordinator@demo"]);
+    expect(await readFile(join(root, "work", "demo", "tasks", "delivery.yaml"), "utf8")).toContain("status: done");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
