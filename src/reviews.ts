@@ -106,6 +106,11 @@ async function currentHead(worktree: string) {
   return runOutput(["git", "rev-parse", "HEAD"], worktree);
 }
 
+async function assertCleanDelivery(worktree: string) {
+  const dirty = await runOutput(["git", "status", "--porcelain"], worktree);
+  if (dirty) throw new Error("Final behavioral review requires a clean committed delivery worktree.");
+}
+
 async function changedFiles(worktree: string, base: string) {
   const outputs = await Promise.allSettled([
     runOutput(["git", "diff", "--name-only", `${base}...HEAD`], worktree),
@@ -239,6 +244,7 @@ export async function launchBehavioralReview(
   if (!task.done_when.every((entry) => Boolean(entry.proof))) throw new Error(`Task ${taskId} is missing delivery proof.`);
 
   const owner = await ownerForTask(root, task);
+  await assertCleanDelivery(owner.worktree);
 
   let gateOutput: string;
   try {
@@ -423,5 +429,6 @@ export async function assertAcceptedBehavioralReview(root: string, projectName: 
   if (latest.status !== "complete" || !latest.result) throw new Error(`Task ${taskId} has no completed final behavioral review.`);
   if (latest.result.decision !== "APPROVE") throw new Error(`Task ${taskId} final behavioral review is ${latest.result.decision}, not APPROVE.`);
   const owner = await ownerForTask(root, task);
+  await assertCleanDelivery(owner.worktree);
   if (await currentHead(owner.worktree) !== latest.delivery_head) throw new Error(`Task ${taskId} changed after final behavioral review; review the current delivery before completion.`);
 }
