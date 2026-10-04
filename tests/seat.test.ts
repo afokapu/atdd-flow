@@ -327,14 +327,24 @@ test("a host-attached replacement preserves its durable work and wakes the curre
   expect(await run(site, "status")).not.toContain("waiting:");
 });
 
-test("a coordinator may choose the seat executable at spawn time", async () => {
+test("legacy Desks may still pin a seat executable when no model portfolio exists", async () => {
+  const root = await mkdtemp(join(tmpdir(), "atdd-workflow-"));
+  roots.push(root);
+  const site = join(root, "site");
+  await run(root, "init", site);
+  await rm(join(site, "models.yaml"));
+  await run(site, "project", "init", "demo");
+  await run(site, "spawn", "demo", "driver", "receiver", "--worktree", "/tmp/demo-receiver", "--agent", "cat");
+  expect(await run(site, "open", "driver.receiver@demo")).toContain("agent: cat");
+});
+
+test("portfolio Desks reject static model pins", async () => {
   const root = await mkdtemp(join(tmpdir(), "atdd-workflow-"));
   roots.push(root);
   const site = join(root, "site");
   await run(root, "init", site);
   await run(site, "project", "init", "demo");
-  await run(site, "spawn", "demo", "driver", "receiver", "--worktree", "/tmp/demo-receiver", "--agent", "cat");
-  expect(await run(site, "open", "driver.receiver@demo")).toContain("agent: cat");
+  expect(await fail(site, "spawn", "demo", "driver", "receiver", "--worktree", "/tmp/demo-receiver", "--agent", "cat")).toContain("models.yaml owns model allocation");
 });
 
 test("task completion retires an idle driver through ATDD Bun housekeeping", async () => {
