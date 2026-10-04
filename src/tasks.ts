@@ -38,7 +38,7 @@ async function allTasks(root: string, projectName: string): Promise<ListedTask[]
   let files: string[];
   try { files = await readdir(folder); }
   catch { return []; }
-  return Promise.all(files.filter((file) => file.endsWith(".yaml")).sort().map(async (file) => ({ id: file.slice(0, -5), task: await readTask(root, projectName, file.slice(0, -5)) })));
+  return Promise.all(files.filter((file) => file.endsWith(".yaml") && !file.endsWith(".reviews.yaml")).sort().map(async (file) => ({ id: file.slice(0, -5), task: await readTask(root, projectName, file.slice(0, -5)) })));
 }
 
 export async function seatTasks(root: string, projectName: string, address: string): Promise<ListedTask[]> {
@@ -179,6 +179,8 @@ async function transition(root: string, projectName: string, id: string, next: T
   if (next === "done") {
     if (actor !== task.coordinator) throw new Error(`Only ${task.coordinator} may complete task ${id}.`);
     if (!allProofs(task)) throw new Error(`Task ${id} is missing completion proof.`);
+    const { assertAcceptedBehavioralReview } = await import("./reviews");
+    await assertAcceptedBehavioralReview(root, projectName, id, task);
     if (retire) await retireAssignee(root, projectName, id, task);
   }
   task.status = next;

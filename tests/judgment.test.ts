@@ -1,20 +1,10 @@
 import { expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { focusCheck, resolveJevApiKey, reviewCheck, reviewTask, scout, selectModel } from "../src/judgment";
+import { focusCheck, resolveJevApiKey, routeBehavioralReview, scout, selectModel } from "../src/judgment";
 
 const response = (answers: Record<string, { choice: string; confidence: number }>) => ({ model: "jev-stub", answers });
-
-async function git(cwd: string, ...args: string[]) {
-  const child = Bun.spawn(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-    child.exited,
-  ]);
-  if (exitCode !== 0) throw new Error(`${stdout}${stderr}`);
-}
 
 test("scout returns read-only relevance judgments for candidate files", async () => {
   const root = await mkdtemp(join(tmpdir(), "atdd-workflow-judgment-"));
@@ -73,91 +63,54 @@ test("Jev credentials may come from the local credential source", async () => {
   }
 });
 
-
-test("review-check keeps closed direct local work on conformance review", async () => {
-  const result = await reviewCheck({
-    title: "Keep retry behavior stable",
-    doneWhen: [{ text: "Retry test passes", proof: "bun test tests/retry.test.ts" }],
+test("behavioral review routing classifies scope and risk without deciding correctness", async () => {
+  const result = await routeBehavioralReview({
+    title: "Change checkout authorization",
+    doneWhen: [{ text: "Authorized checkout succeeds", proof: "journey run 42" }],
+    changedFiles: ["src/checkout/auth.ts"],
+    planArtifacts: ["plan/_journeys/checkout.yaml", "plan/_trains/checkout.yaml"],
   }, { client: { systemOne: async () => response({
-    specification: { choice: "CLOSED", confidence: 0.96 },
-    evidence: { choice: "DIRECT", confidence: 0.93 },
-    escape_risk: { choice: "LOCAL", confidence: 0.91 },
+    classification: { choice: "JOURNEY", confidence: 0.93 },
+    behavior_effect: { choice: "BEHAVIOR_AFFECTING", confidence: 0.96 },
+    proof_boundary: { choice: "USER_JOURNEY", confidence: 0.95 },
+    cross_paths: { choice: "SINGLE", confidence: 0.90 },
+    consequence: { choice: "HIGH_CONSEQUENCE", confidence: 0.94 },
+    reconciliation: { choice: "SINGLE_PATH", confidence: 0.91 },
+    runtime: { choice: "AVAILABLE", confidence: 0.97 },
   }) } });
   expect(result).toEqual({
     available: true,
     model: "jev-stub",
-    route: "CONFORMANCE",
-    confidence: 0.91,
-    signals: { specification: "CLOSED", evidence: "DIRECT", escapeRisk: "LOCAL" },
+    classification: "JOURNEY",
+    confidence: 0.90,
+    signals: {
+      behaviorEffect: "BEHAVIOR_AFFECTING",
+      proofBoundary: "USER_JOURNEY",
+      crossesMultiplePaths: false,
+      consequence: "HIGH_CONSEQUENCE",
+      reconciliation: "SINGLE_PATH",
+      runtimeObservation: "AVAILABLE",
+    },
   });
 });
 
-test("review-check escalates shared or consequential uncertainty to adversarial review", async () => {
-  const result = await reviewCheck({
-    title: "Change authorization boundary",
-    doneWhen: [{ text: "Authorized callers succeed", proof: "integration suite" }],
+test("low-confidence behavioral routing conservatively becomes SYSTEM", async () => {
+  const result = await routeBehavioralReview({
+    title: "Unclear delivery",
+    doneWhen: [{ text: "Behavior remains correct", proof: "test run" }],
   }, { client: { systemOne: async () => response({
-    specification: { choice: "CLOSED", confidence: 0.95 },
-    evidence: { choice: "DIRECT", confidence: 0.92 },
-    escape_risk: { choice: "CROSS_BOUNDARY_OR_HIGH_CONSEQUENCE", confidence: 0.97 },
+    classification: { choice: "LOCAL", confidence: 0.95 },
+    behavior_effect: { choice: "BEHAVIOR_PRESERVING", confidence: 0.95 },
+    proof_boundary: { choice: "LOCAL_ACCEPTANCE", confidence: 0.95 },
+    cross_paths: { choice: "SINGLE", confidence: 0.95 },
+    consequence: { choice: "ORDINARY", confidence: 0.60 },
+    reconciliation: { choice: "SINGLE_PATH", confidence: 0.95 },
+    runtime: { choice: "AVAILABLE", confidence: 0.95 },
   }) } });
   expect(result.available).toBe(true);
-  if (result.available) expect(result.route).toBe("ADVERSARIAL");
-});
-
-test("review-check treats low-confidence classification as residual uncertainty", async () => {
-  const result = await reviewCheck({
-    title: "Small local change",
-    doneWhen: [{ text: "Unit test passes", proof: "test run" }],
-  }, { client: { systemOne: async () => response({
-    specification: { choice: "CLOSED", confidence: 0.94 },
-    evidence: { choice: "DIRECT", confidence: 0.70 },
-    escape_risk: { choice: "LOCAL", confidence: 0.91 },
-  }) } });
-  expect(result.available).toBe(true);
-  if (result.available) expect(result.route).toBe("ADVERSARIAL");
-});
-
-test("review-task supplies committed, dirty, and untracked worktree files to escape-risk routing", async () => {
-  const root = await mkdtemp(join(tmpdir(), "atdd-workflow-judgment-"));
-  const worktree = join(root, "repository");
-  try {
-    await git(root, "init", "-b", "main", worktree);
-    await git(worktree, "config", "user.email", "test@example.test");
-    await git(worktree, "config", "user.name", "Test");
-    await mkdir(join(worktree, "src"), { recursive: true });
-    await writeFile(join(worktree, "src", "authorization.ts"), "export const allowed = false;\n");
-    await git(worktree, "add", "src/authorization.ts");
-    await git(worktree, "commit", "-m", "initial");
-    await git(worktree, "switch", "-c", "delivery/review");
-    await writeFile(join(worktree, "src", "authorization.ts"), "export const allowed = true;\n");
-    await writeFile(join(worktree, "src", "new-policy.ts"), "export const policy = true;\n");
-
-    await mkdir(join(root, "work", "demo", "seats", "driver.review"), { recursive: true });
-    await mkdir(join(root, "work", "demo", "tasks"), { recursive: true });
-    await writeFile(join(root, "desk.yaml"), "schema: atdd-workflow/desk/v1\ndesk: test\napplication: tuios\n");
-    await writeFile(join(root, "work", "demo", "project.yaml"), "schema: atdd-workflow/project/v1\nproject: demo\nroles:\n  driver:\n    address: driver.{name}@{project}\n    branch: delivery/{name}\n    base: main\n");
-    await writeFile(join(root, "work", "demo", "seats", "driver.review", "seat.yaml"), `schema: atdd-workflow/seat/v2
-address: driver.review@demo
-role: driver
-project: demo
-worktree: ${worktree}
-branch: delivery/review
-`);
-    await writeFile(join(root, "work", "demo", "tasks", "auth.yaml"), "schema: atdd-workflow/task/v1\ntitle: Change authorization\nstatus: review\ncoordinator: coordinator@demo\nassignee: driver.review@demo\ndone_when:\n  - text: Authorized callers succeed\n    proof: integration suite\n");
-
-    let changedFiles: string[] | undefined;
-    await reviewTask(root, "demo", "auth", { client: { systemOne: async (request) => {
-      changedFiles = (request as { state: { task: { changedFiles?: string[] } } }).state.task.changedFiles;
-      return response({
-        specification: { choice: "CLOSED", confidence: 0.95 },
-        evidence: { choice: "DIRECT", confidence: 0.95 },
-        escape_risk: { choice: "LOCAL", confidence: 0.95 },
-      });
-    } } });
-    expect(changedFiles).toEqual(["src/authorization.ts", "src/new-policy.ts"]);
-  } finally {
-    await rm(root, { recursive: true, force: true });
+  if (result.available) {
+    expect(result.classification).toBe("SYSTEM");
+    expect(result.confidence).toBe(0.60);
   }
 });
 
@@ -183,7 +136,6 @@ test("a one-model portfolio does not spend a Jev call", async () => {
   expect(result).toEqual({ available: true, selected_model: "only", confidence: 1 });
   expect(called).toBe(false);
 });
-
 
 test("low-confidence model selection escalates instead of trusting a weak choice", async () => {
   const result = await selectModel({
