@@ -93,9 +93,15 @@ atdd-workflow status
 atdd-workflow --root ~/Github/desk status
 ```
 
-`status` is the operator overview: it prints every seat with its checkpoint state,
-every task across projects with its assignee, proof and unmet dependencies, then
-the open threads and outstanding results.
+`status` is the operator briefing: a compact Desk dashboard that puts blocked,
+unassigned, review-ready, unreconciled, and waiting work first; it then shows
+workstream progress, active tasks, and the next useful commands. For a complete,
+line-by-line audit of seats, tasks, proof, dependencies, threads, and outstanding
+results, use `atdd-workflow status --all`.
+
+Every item in the briefing leads to an inspectable record: use
+`atdd-workflow task open <project> <task-id>`, `atdd-workflow open <seat-address>`,
+or `atdd-workflow thread open <thread-id>` for the corresponding durable YAML.
 
 ## Use from a code repository
 

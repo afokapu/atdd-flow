@@ -2,7 +2,7 @@
 
 import { basename, resolve } from "node:path";
 import { init, initProject, spawn, bind, useApplication, attach, launch, describe, checkpoint, migrate, openSeat } from "./seats";
-import { addParticipant, post, receipt, result, startThread } from "./threads";
+import { addParticipant, openThread, post, receipt, result, startThread } from "./threads";
 import * as tasks from "./tasks";
 import { required } from "./core";
 import { status } from "./overview";
@@ -34,10 +34,11 @@ Usage:
   atdd-workflow task open <project> <task-id>
   atdd-workflow thread start --with <address,...> --subject <text> [--task <project/task-id>]
   atdd-workflow thread add <thread-id> <address>
+  atdd-workflow thread open <thread-id>
   atdd-workflow post <thread-id> --from <address> --to <all|address,...> --body <text> [--expects-result]
   atdd-workflow receipt <thread-id> <message-id> --from <address> [--body <text>]
   atdd-workflow result <thread-id> <message-id> --from <address> --body <text>
-  atdd-workflow status
+  atdd-workflow status [--all]
   atdd-workflow open <address>
 
 Global:
@@ -91,12 +92,13 @@ async function main() {
       const [subcommand, ...tail] = rest;
       if (subcommand === "start") return startThread(root, tail);
       if (subcommand === "add") return addParticipant(root, required(tail[0], "thread id"), required(tail[1], "address"));
-      throw new Error("Use `atdd-workflow thread start` or `atdd-workflow thread add`.");
+      if (subcommand === "open") return openThread(root, required(tail[0], "thread id"));
+      throw new Error("Use `atdd-workflow thread start|add|open`.");
     },
     post: () => post(root, required(rest[0], "thread id"), rest.slice(1)),
     receipt: () => receipt(root, required(rest[0], "thread id"), required(rest[1], "message id"), rest.slice(2)),
     result: () => result(root, required(rest[0], "thread id"), required(rest[1], "message id"), rest.slice(2)),
-    status: () => status(root),
+    status: () => status(root, rest),
     open: () => openSeat(root, required(rest[0], "address")),
   };
   const action = commands[command];

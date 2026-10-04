@@ -58,7 +58,7 @@ test("a request remains outstanding until its linked result exists", async () =>
   const request = await run(site, "post", thread, "--from", "coordinator@demo", "--to", "driver.runtime@demo", "--expects-result", "--body", "Run checks");
 
   await run(site, "receipt", thread, request, "--from", "driver.runtime@demo");
-  expect(await run(site, "status")).toContain(`waiting:${request}`);
+  expect(await run(site, "status", "--all")).toContain(`waiting:${request}`);
 
   await run(site, "result", thread, request, "--from", "driver.runtime@demo", "--body", "Checks pass");
   expect(await run(site, "status")).not.toContain("waiting:");
@@ -155,7 +155,7 @@ test("a broadcast request remains open until every targeted participant replies"
   const request = await run(site, "post", thread, "--from", "coordinator@demo", "--to", "all", "--expects-result", "--body", "Report status");
 
   await run(site, "result", thread, request, "--from", "driver.one@demo", "--body", "One complete");
-  expect(await run(site, "status")).toContain(`${request}@driver.two@demo`);
+  expect(await run(site, "status", "--all")).toContain(`${request}@driver.two@demo`);
   await run(site, "result", thread, request, "--from", "driver.two@demo", "--body", "Two complete");
   expect(await run(site, "status")).not.toContain("waiting:");
 });
@@ -203,7 +203,7 @@ test("a replacement agent resumes an outstanding seat and completes its work", a
   expect(resumedSeat).toContain(thread);
   expect(resumedSeat).toContain("Rate limit reached after receiving the rollout request.");
   expect(await readFile(join(site, "threads", thread, `${request}.yaml`), "utf8")).toContain("Finish the rollout after takeover.");
-  expect(await run(site, "status")).toContain(`${request}@${driver}`);
+  expect(await run(site, "status", "--all")).toContain(`${request}@${driver}`);
 
   await run(site, "result", thread, request, "--from", driver, "--body", "Rollout completed by replacement agent.");
   expect(await run(site, "status")).not.toContain("waiting:");
@@ -298,7 +298,7 @@ test("a host-attached replacement preserves its durable work and wakes the curre
   expect(resumed).toContain("herdr: w-test:p-replacement");
   expect(resumed).toContain("The first host reached its rate limit.");
   expect(resumed).toContain(thread);
-  expect(await run(site, "status")).toContain(`${request}@${driver}`);
+  expect(await run(site, "status", "--all")).toContain(`${request}@${driver}`);
 
   await run(site, "result", thread, request, "--from", driver, "--body", "Replacement completed the handoff.");
   expect(await run(site, "status")).not.toContain("waiting:");
@@ -405,8 +405,13 @@ test("status gives an operator one view of seats, tasks, and threads", async () 
   await run(site, "spawn", "demo", "coordinator", "main", "--worktree", "/tmp/demo-main");
   await run(site, "spawn", "demo", "driver", "runtime", "--worktree", "/tmp/demo-runtime");
   await run(site, "task", "add", "demo", "W-runtime", "--title", "Run runtime work", "--coordinator", "coordinator@demo", "--assignee", "driver.runtime@demo", "--done-when", "Coordinator accepts evidence.");
-  await run(site, "thread", "start", "--with", "coordinator@demo,driver.runtime@demo", "--subject", "Runtime handoff");
-  const output = await run(site, "status");
+  const thread = await run(site, "thread", "start", "--with", "coordinator@demo,driver.runtime@demo", "--subject", "Runtime handoff");
+  const dashboard = await run(site, "status");
+  expect(dashboard).toContain("DESK");
+  expect(dashboard).toContain("WORKSTREAMS");
+  expect(dashboard).toContain("atdd-workflow task open demo W-runtime");
+  expect(await run(site, "thread", "open", thread)).toContain("Runtime handoff");
+  const output = await run(site, "status", "--all");
   expect(output).toContain("SEATS");
   expect(output).toContain("driver.runtime@demo");
   expect(output).toContain("TASKS");

@@ -59,12 +59,17 @@ test("four repository lanes complete local and cross-coordinator threads", async
     const crossRequest = await seat(site, "post", crossThread, "--from", coordinators[0], "--to", "all", "--expects-result", "--body", "Confirm your lane status.");
     await Promise.all(coordinators.slice(1).map((coordinator) => seat(site, "result", crossThread, crossRequest, "--from", coordinator, "--body", "Lane ready.")));
 
-    const status = await seat(site, "status");
-    expect(status).not.toContain("waiting:");
-    expect(status).toContain("SEATS");
-    expect(status).toContain("TASKS");
-    expect(status).toContain("THREADS");
-    expect(status.split("\n").filter((line) => line.startsWith("T-"))).toHaveLength(5);
+    const dashboard = await seat(site, "status");
+    expect(dashboard).toContain("DESK");
+    expect(dashboard).toContain("WORKSTREAMS");
+    expect(dashboard).toContain("IN FLIGHT");
+    expect(dashboard).toContain("READY QUEUE");
+    expect(dashboard).not.toContain("waiting:");
+    const audit = await seat(site, "status", "--all");
+    expect(audit).toContain("SEATS");
+    expect(audit).toContain("TASKS");
+    expect(audit).toContain("THREADS");
+    expect(audit.split("\n").filter((line) => line.startsWith("T-"))).toHaveLength(5);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

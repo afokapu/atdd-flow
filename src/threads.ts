@@ -111,6 +111,12 @@ export async function addParticipant(root: string, threadId: string, address: st
   await atomicYaml(paths(root).threadFile(threadId), record);
 }
 
+export async function openThread(root: string, threadId: string) {
+  const record = await thread(root, threadId);
+  const all = await messages(root, threadId);
+  console.log(Bun.YAML.stringify({ ...record, messages: all }));
+}
+
 export async function receipt(root: string, threadId: string, messageId: string, args: string[]) {
   const from = await canonicalAddress(root, required(words(args, "--from"), "--from"));
   await replyTarget(root, threadId, messageId, from, false);
