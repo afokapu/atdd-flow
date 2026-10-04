@@ -130,3 +130,17 @@ test("a one-model portfolio does not spend a Jev call", async () => {
   expect(result).toEqual({ available: true, selected_model: "only", confidence: 1 });
   expect(called).toBe(false);
 });
+
+
+test("low-confidence model selection escalates instead of trusting a weak choice", async () => {
+  const result = await selectModel({
+    seat: { address: "driver.runtime@demo", role: "driver" },
+    tasks: [{ id: "retry", title: "Fix retry", status: "in_progress", doneWhen: ["Retry test passes"] }],
+    candidates: [
+      { id: "strong", executable: "strong-agent" },
+      { id: "economy", executable: "economy-agent" },
+    ],
+  }, { client: { systemOne: async () => response({ model: { choice: "economy", confidence: 0.60 } }) } });
+  expect(result.available).toBe(false);
+  if (!result.available) expect(result.reason).toContain("confidence is low");
+});
