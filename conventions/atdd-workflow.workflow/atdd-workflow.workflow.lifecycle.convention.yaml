@@ -43,11 +43,11 @@ terms:
   text: >-
     The models.yaml list of launchable model candidates, ordered strongest to weakest. Seats do not
     normally own a model; Jev selects the weakest available candidate sufficient for the current work.
-- term_id: adversarial_review
+- term_id: behavioral_review
   text: >-
-    A review posture used when specification closure, proof directness, boundary risk, or judgment
-    confidence leaves material residual uncertainty. It challenges shared assumptions rather than
-    merely checking conformance.
+    The independent final semantic reconciliation performed after deterministic gates and before a
+    Workflow-governed task may move from review to done. ATDD Bun owns the substantive review method;
+    Workflow owns routing, reviewer allocation, durable evidence, and lifecycle enforcement.
 content:
   summary: >-
     Use coordination records as the durable source of truth. Drivers implement the smallest effective
@@ -106,21 +106,48 @@ content:
     Use `atdd-workflow scout` only when repository scope is genuinely unclear or candidate files are
     numerous. Use `atdd-workflow focus-check` only before a likely scope expansion such as a new
     dependency, generalized abstraction, persistent schema, architecture change, adjacent refactor, or
-    unrelated defect. Use `atdd-workflow review-check` to distinguish bounded conformance review from
-    adversarial review when a task is ready for coordinator review. These read-only Jev judgments advise
-    the workflow; they do not own correctness or completion.
+    unrelated defect. These read-only Jev judgments advise scope; they do not own correctness or completion.
 
-    New seats do not pin a model. The Desk's models.yaml is ordered strongest to weakest, and each launch
-    asks Jev for the weakest available model sufficient for the seat's current active work. An adversarial
-    review routes directly to the strongest available candidate. If Jev model selection is unavailable or
-    low-confidence, use the strongest available configured model. A legacy Desk without models.yaml may continue to use its pinned seat agent.
+    New seats do not pin a model. The Desk's models.yaml is ordered strongest to weakest, and ordinary
+    launches ask Jev for the weakest available model sufficient for the seat's current active work. If
+    Jev model selection is unavailable or low-confidence, use the strongest available configured model.
+    A legacy Desk without models.yaml may continue to use its pinned seat agent.
+
+    Do not add a writer/reviewer pair after every development phase. The next phase consumes and
+    semantically challenges the prior phase while active ATDD Bun conventions provide deterministic
+    enforcement. Reserve the explicit independent semantic reviewer for the final integration boundary.
 
     A driver records proof for every done_when criterion, moves the completed task to review, and sends
-    its coordinator a result. A coordinator uses conformance review when the specification is closed,
-    proof is direct, risk is local, and Jev is sufficiently confident. Otherwise use adversarial review:
-    assume acceptance, tests, implementation, and proof may agree around a bad assumption and look for
-    omitted correctness behavior. The coordinator returns inadequate work to in_progress and alone may
-    mark a reviewed task done.
+    its coordinator a result. Before a final behavioral reviewer is launched, Workflow runs the
+    deterministic ATDD Bun gates in the delivery worktree. If a strict gate is red, do not invoke the
+    semantic reviewer; return the discrepancy to the appropriate implementation phase.
+
+    After deterministic gates pass, Jev may answer only bounded routing questions for final review. It
+    classifies the required review surface as LOCAL, ASSEMBLED, JOURNEY, or SYSTEM and supplies routing
+    signals such as behavior-affecting versus behavior-preserving intent, highest relevant proof
+    boundary, cross-path scope, consequence, reconciliation shape, runtime observability, and confidence.
+    Jev must not approve a delivery, decide semantic correctness, mutate task state, or redefine intent.
+    Low-confidence routing is treated conservatively as SYSTEM.
+
+    Workflow maps the bounded routing result through models.yaml to select a reviewer model, creates a
+    task-scoped reviewer responsibility in the delivery worktree, and provides the reviewer inputs in
+    this order: task criteria/source; relevant plan artifacts; deterministic gate evidence; executable
+    proof; runtime/worktree; then implementation/diff context. The complete installed
+    atdd-bun.review.behavioral-reconciliation convention is the authoritative review method and must be
+    included in the reviewer prompt. Workflow must not duplicate that methodology in its own convention.
+
+    The reviewer records durable structured evidence containing intent sources, expected behavior,
+    exercised boundary and evidence, observed behavior, reconciliation findings, a decision of APPROVE,
+    RETURN, or ESCALATE, rationale, and confidence. The reviewer does not mutate task state. APPROVE
+    makes the current clean delivery commit eligible for coordinator completion. RETURN is evidence for
+    the coordinator to move review back to in_progress. ESCALATE leaves the task in review, or the
+    coordinator may explicitly block it, until authoritative intent is resolved. Only the coordinator
+    may move review to done.
+
+    For repositories explicitly governed by the workflow profile, Workflow deterministically prevents
+    review -> done unless the latest behavioral-review attempt is complete, records APPROVE, and matches
+    the current clean delivery commit. These checks prove that the required review occurred and applies
+    to the delivery being completed; they do not prove the reviewer's semantic judgment is correct.
 
     A driver seat may own more than one task. A coordinator uses
     `atdd-workflow task done <project> <task> --by <coordinator> --retire-assignee` only when every
@@ -146,8 +173,8 @@ content:
   - A driver may continue independent work while waiting for a boundary decision.
   - A task may be completed normally without retiring its assignee when that driver still has work.
   - A live host may notify an agent to inspect its seat, but it never owns the durable state.
-  - An optional Jev scouting, focus, review, or model-selection judgment may advise execution, but it
-    never owns task state, proof, correctness, or completion authority.
+  - An optional Jev scouting, focus, final-review-routing, or model-selection judgment may advise
+    execution, but it never owns task state, proof, correctness, or completion authority.
 metadata:
   aliases:
   - ATDD-WORKFLOW-LIFECYCLE
