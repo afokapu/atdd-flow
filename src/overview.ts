@@ -294,7 +294,7 @@ async function seatDashboard(root: string, address: string) {
   const owned = (await tasks(root, entry.project)).filter((item) => item.task.assignee === resolved || item.task.coordinator === resolved);
   const threadList = (await threads(root)).filter((item) => item.record.participants.includes(resolved));
   const checkpoint = entry.checkpoint;
-  header(`SEAT / ${resolved}`, record.desk, `${entry.record.role}${dot}${entry.record.agent}${dot}${checkpoint?.status ?? "unverified"}`, record.application);
+  header(`SEAT / ${resolved}`, record.desk, `${entry.record.role}${dot}${entry.record.runtime?.model ?? entry.record.agent ?? "dynamic"}${dot}${checkpoint?.status ?? "unverified"}`, record.application);
   console.log(`\n  ${entry.record.purpose ?? muted("No responsibility statement recorded.")}`);
   rule("CHECKPOINT", checkpoint?.status ?? "UNVERIFIED");
   if (!checkpoint) console.log(`  ${muted("No checkpoint has been written for this seat.")}`);
@@ -348,7 +348,7 @@ async function threadDashboard(root: string, threadId: string) {
 async function printSeats(root: string, projectName: string) {
   for (const entry of await seats(root, projectName)) {
     const { record, checkpoint } = entry;
-    console.log(`${record.address}  ${record.role}  ${record.agent}  ${checkpoint?.status ?? "unverified"}${record.purpose ? `  ${record.purpose}` : ""}`);
+    console.log(`${record.address}  ${record.role}  ${record.runtime?.model ?? record.agent ?? "dynamic"}  ${checkpoint?.status ?? "unverified"}${record.purpose ? `  ${record.purpose}` : ""}`);
   }
 }
 

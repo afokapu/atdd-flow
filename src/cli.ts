@@ -17,7 +17,7 @@ Usage:
   atdd-workflow init <desk-directory> [--git]
   atdd-workflow desk migrate
   atdd-workflow project init <project>
-  atdd-workflow spawn <project> <role> <name> [--worktree <path>] [--branch <branch>] [--agent <executable>]
+  atdd-workflow spawn <project> <role> <name> [--worktree <path>] [--branch <branch>] [--agent <legacy-executable>]
   atdd-workflow bind <address> [--application <application>] --address <native-address>
   atdd-workflow attach <address> [--application <application>]
   atdd-workflow launch <address> --application <application> --placement <native-container-address>
@@ -42,6 +42,7 @@ Usage:
   atdd-workflow status [project <project>|task <project> <task-id>|seat <address>|thread <thread-id>] [--all]
   atdd-workflow scout --goal <text> --path <file> [--path <file> ...] [--question <text>]
   atdd-workflow focus-check <project> <task-id> --action <proposed action>
+  atdd-workflow review-check <project> <task-id>
   atdd-workflow open <address>
 
 Global:
@@ -112,6 +113,11 @@ async function main() {
       required(rest[0], "project"),
       required(rest[1], "task id"),
       required(words(rest.slice(2), "--action"), "--action"),
+    ), null, 2)),
+    "review-check": async () => console.log(JSON.stringify(await judgment.reviewTask(
+      root,
+      required(rest[0], "project"),
+      required(rest[1], "task id"),
     ), null, 2)),
     open: () => openSeat(root, required(rest[0], "address")),
   };

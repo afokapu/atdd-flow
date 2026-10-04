@@ -53,10 +53,31 @@ executables:
   kimi: /Users/you/.kimi-code/bin/kimi
 ```
 
-A seat's `agent` is the executable name, such as `claude` or `codex`.
-Every `atdd-workflow launch` resolves that name through this Desk-wide map
-before creating its host window. Older Desks without `executables` continue
-to treat `agent` as a literal command.
+The executable registry is transport configuration, not model allocation. New seats do not pin an
+agent. Instead, `models.yaml` declares the launchable model portfolio in descending capability order:
+
+```yaml
+schema: atdd-workflow/models/v1
+models:
+  - id: frontier
+    executable: claude
+    args: [--model, opus]
+  - id: standard
+    executable: claude
+    args: [--model, sonnet]
+  - id: codex
+    executable: codex
+  - id: glm
+    executable: glm
+    enabled: false
+```
+
+Order is policy: strongest first, weakest last. Entries whose executable is unavailable, or whose
+`enabled` flag is false, are excluded. At launch, Jev sees the seat's active work and any review
+posture, then selects the weakest available model sufficient for that responsibility. An adversarial
+review is routed directly to the strongest available candidate. If Jev is unavailable or its model
+selection confidence is low, Workflow also conservatively launches the strongest available model. Older Desks without
+`models.yaml` continue to honor a legacy seat `agent` through the executable registry.
 
 ## Configure worktrees and seats
 
@@ -70,8 +91,8 @@ atdd-workflow project init resolver-os
 repository: /Users/you/Github/resolver-os
 worktree_root: /Users/you/Github/worktrees/resolver-os
 roles:
-  coordinator: { address: coordinator@{project}, branch: main, agent: codex, worktree: '{repository}' }
-  driver: { address: driver.{name}@{project}, branch: delivery/{name}, base: main, agent: codex, worktree: '{worktree_root}/{name}' }
+  coordinator: { address: coordinator@{project}, branch: main, worktree: '{repository}' }
+  driver: { address: driver.{name}@{project}, branch: delivery/{name}, base: main, worktree: '{worktree_root}/{name}' }
 ```
 
 The operator or coordinator creates seats; drivers do not choose their policy:
@@ -132,7 +153,7 @@ atdd-workflow attach driver.runtime@resolver-os --application tuios
 atdd-workflow launch driver.runtime@resolver-os --application tuios --placement resolver-os
 ```
 
-Launch starts the declared agent in its declared worktree, passes `ATDD_WORKFLOW_ROOT` and `ATDD_WORKFLOW_SEAT`, and asks it to read its seat. Other hosts remain correct without an adapter; their operator supplies that prompt.
+Launch selects a model from `models.yaml`, starts that model's executable in the seat's declared worktree, passes `ATDD_WORKFLOW_ROOT` and `ATDD_WORKFLOW_SEAT`, records the selected model on the live runtime binding, and asks the agent to read its seat. Other hosts remain correct without an adapter; their operator supplies that prompt.
 
 With ATDD Bun, enable the Workflow profile:
 
@@ -151,7 +172,13 @@ atdd-workflow scout --goal 'Fix payment retry behavior' --path src/payment/retry
 atdd-workflow focus-check resolver-os runtime-rollout --action 'Add a generic retry orchestration service'
 ```
 
-`scout` selects likely files. `focus-check` returns `REQUIRED`, `USEFUL_BUT_NOT_REQUIRED`, or `SPECULATIVE`. Use them only for broad scouting or likely scope expansion. If unavailable or uncertain, use repository evidence and prefer the smaller reversible solution.
+`scout` selects likely files. `focus-check` returns `REQUIRED`, `USEFUL_BUT_NOT_REQUIRED`, or `SPECULATIVE`.
+`review-check <project> <task-id>` classifies specification closure, proof directness, and escape risk,
+then deterministically returns `CONFORMANCE` or `ADVERSARIAL`; low-confidence review judgments
+escalate. Review posture also informs launch-time model selection. Use these helpers for bounded
+decisions, not as correctness authority. If scouting or focus judgment is unavailable, use repository
+evidence and prefer the smaller reversible solution; if review or model selection is unavailable,
+escalate conservatively.
 
 On macOS, Jev reads its TypeSafe key only from Keychain item `atdd-workflow.typesafe`; `TYPESAFE_API_KEY` is a temporary or CI override. The secret is never written to Desk records, output, Git, npm, or GitHub.
 
