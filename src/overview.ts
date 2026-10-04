@@ -280,8 +280,29 @@ async function taskDashboard(root: string, projectName: string, taskId: string) 
   rule("RELATED THREADS", String(threadList.length));
   if (!threadList.length) console.log(`  ${muted("No thread links directly to this task.")}`);
   for (const thread of threadList) console.log(`  ${thread.record.id}  ${thread.record.subject}${thread.pending.length ? `  ${tone(`${thread.pending.length} waiting`, "WAITING")}` : ""}`);
+  const { behavioralReviewRequired, readBehavioralReviews } = await import("./reviews");
+  const reviewRequired = await behavioralReviewRequired(root, entry.task);
+  const reviewHistory = await readBehavioralReviews(root, projectName, taskId);
+  const latestReview = reviewHistory?.attempts.at(-1);
+  rule("FINAL BEHAVIORAL REVIEW", latestReview?.result?.decision ?? latestReview?.status?.toUpperCase() ?? (reviewRequired ? "REQUIRED" : "OPTIONAL"));
+  if (!latestReview) console.log(`  ${muted(reviewRequired ? "No final behavioral review has been launched." : "No final behavioral review is required by current Workflow governance.")}`);
+  if (latestReview) {
+    console.log(`  ${latestReview.id}  ${latestReview.routing.classification}  ${latestReview.reviewer.model}  ${latestReview.status}`);
+    if (latestReview.result) console.log(`  ${latestReview.result.decision}  ${truncate(latestReview.result.rationale, terminalWidth() - 12)}`);
+  }
+
   rule("NEXT");
-  console.log(`  ${entry.task.status === "review" ? `Coordinator: review and complete with \`atdd-workflow task done ${projectName} ${taskId} --by ${entry.task.coordinator}\`.` : entry.task.blocker ? "Resolve the recorded blocker before changing state." : entry.waiting.length ? "Complete the unmet dependencies first." : entry.task.assignee ? `Driver: start with \`atdd-workflow task start ${projectName} ${taskId} --by ${entry.task.assignee}\`.` : "Coordinator: assign a driver before this task can start."}`);
+  let next: string;
+  if (entry.task.blocker) next = "Resolve the recorded blocker before changing state.";
+  else if (entry.waiting.length) next = "Complete the unmet dependencies first.";
+  else if (entry.task.status === "review" && reviewRequired && !latestReview) next = `Coordinator: launch final review with \`atdd-workflow behavioral-review launch ${projectName} ${taskId} --by ${entry.task.coordinator} --application <application> --placement <container>.\``;
+  else if (entry.task.status === "review" && latestReview?.status === "pending") next = `Await reviewer ${latestReview.reviewer.address}; inspect with \`atdd-workflow behavioral-review open ${projectName} ${taskId}.\``;
+  else if (entry.task.status === "review" && latestReview?.result?.decision === "RETURN") next = `Coordinator: return the task with \`atdd-workflow task return ${projectName} ${taskId} --by ${entry.task.coordinator}.\``;
+  else if (entry.task.status === "review" && latestReview?.result?.decision === "ESCALATE") next = "Coordinator: resolve authoritative intent; keep the task in review or block it explicitly.";
+  else if (entry.task.status === "review") next = `Coordinator: complete with \`atdd-workflow task done ${projectName} ${taskId} --by ${entry.task.coordinator}.\``;
+  else if (entry.task.assignee) next = `Driver: start with \`atdd-workflow task start ${projectName} ${taskId} --by ${entry.task.assignee}.\``;
+  else next = "Coordinator: assign a driver before this task can start.";
+  console.log(`  ${next}`);
 }
 
 async function seatDashboard(root: string, address: string) {
