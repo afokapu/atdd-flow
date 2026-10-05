@@ -5,6 +5,7 @@ import { init, initProject, spawn, bind, useApplication, attach, launch, describ
 import { addParticipant, openThread, post, receipt, result, startThread } from "./threads";
 import * as tasks from "./tasks";
 import { required, values, words } from "./core";
+import { addressBook } from "./address-book";
 import * as judgment from "./judgment";
 import * as reviews from "./reviews";
 import { status } from "./overview";
@@ -49,6 +50,7 @@ Usage:
   atdd-flow behavioral-review record <project> <task-id> --by <reviewer-address> --file <result-yaml>
   atdd-flow behavioral-review open <project> <task-id>
   atdd-flow open <address>
+  atdd-flow address-book
 
 Global:
   atdd-flow --root <desk-directory> <command>
@@ -132,6 +134,7 @@ async function main() {
       throw new Error("Use `atdd-flow behavioral-review launch|record|open <project> <task-id>`.");
     },
     open: () => openSeat(root, required(rest[0], "address")),
+    "address-book": () => addressBook(root),
   };
   const action = commands[command];
   if (!action) throw new Error(`Unknown command: ${command}`);

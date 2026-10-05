@@ -62,6 +62,13 @@ content:
     Start from the current seat, checkpoint, assigned tasks, and relevant thread records. A replacement
     agent resumes from those records; it does not depend on a conversation with its predecessor.
 
+    `operator@desk` is the human authority, not an autonomous agent identity. Never post, approve,
+    or make a decision while claiming that address unless the human operator actually supplied it.
+    Main seats are the normal repository-main integration gateway to the operator. Coordinators may
+    escalate a concrete decision or incident directly to the operator. Drivers send normal work
+    messages to their coordinator; they do not directly message the operator or main seat. A receipt
+    or result addresses the seat that made the request, not every historical participant in the thread.
+
     A driver starts only its assigned ready task. Treat the task's done_when criteria as the required
     delivery scope. Prefer existing repository patterns, components, dependencies, contracts, and
     abstractions. When multiple implementations are correct, choose the smallest effective change that

@@ -198,6 +198,57 @@ test("a receipt or result must reply to a message addressed to its sender", asyn
   await run(site, "result", thread, request, "--from", "driver.one@demo", "--body", "Done.");
 });
 
+test("a driver routes through its coordinator and replies only to the requesting seat", async () => {
+  const root = await mkdtemp(join(tmpdir(), "atdd-workflow-"));
+  roots.push(root);
+  const site = join(root, "site");
+  await run(root, "init", site);
+  await run(site, "project", "init", "demo");
+  await run(site, "project", "init", "desk");
+  await writeFile(join(site, "work", "demo", "project.yaml"), `schema: atdd-workflow/project/v1
+project: demo
+roles:
+  main:
+    address: main@{project}
+    branch: main
+    worktree: /tmp/demo-main
+  coordinator:
+    address: coordinator@{project}
+    branch: main
+    worktree: /tmp/demo-main
+  driver:
+    address: driver.{name}@{project}
+    branch: delivery/{name}
+    worktree: /tmp/demo-{name}
+`);
+  await writeFile(join(site, "work", "desk", "project.yaml"), `schema: atdd-workflow/project/v1
+project: desk
+roles:
+  operator:
+    address: operator@{project}
+    branch: main
+    worktree: /tmp/desk
+`);
+  await run(site, "spawn", "demo", "main", "main");
+  await run(site, "spawn", "demo", "coordinator", "main");
+  await run(site, "spawn", "demo", "driver", "one");
+  await run(site, "spawn", "desk", "operator", "desk");
+
+  const thread = await run(site, "thread", "start", "--with", "operator@desk,main@demo,coordinator@demo,driver.one@demo", "--subject", "Routing");
+  expect(await fail(site, "post", thread, "--from", "driver.one@demo", "--to", "operator@desk", "--body", "Escalate.")).toContain("may not directly address operator@desk");
+  expect(await fail(site, "post", thread, "--from", "driver.one@demo", "--to", "main@demo", "--body", "Escalate.")).toContain("may message only a coordinator");
+  await run(site, "post", thread, "--from", "driver.one@demo", "--to", "coordinator@demo", "--body", "Blocked on a shared decision.");
+  await run(site, "post", thread, "--from", "main@demo", "--to", "operator@desk", "--body", "Integration decision needed.");
+  await run(site, "post", thread, "--from", "coordinator@demo", "--to", "operator@desk", "--body", "Incident escalation.");
+
+  const request = await run(site, "post", thread, "--from", "coordinator@demo", "--to", "driver.one@demo", "--expects-result", "--body", "Return evidence.");
+  const receipt = await run(site, "receipt", thread, request, "--from", "driver.one@demo");
+  const receiptRecord = await readFile(join(site, "threads", thread, `${receipt}.yaml`), "utf8");
+  expect(receiptRecord).toContain("to: [coordinator@demo]");
+  expect(receiptRecord).not.toContain("operator@desk");
+  expect(receiptRecord).not.toContain("main@demo");
+});
+
 test("a replacement agent resumes an outstanding seat and completes its work", async () => {
   const root = await mkdtemp(join(tmpdir(), "atdd-workflow-"));
   roots.push(root);

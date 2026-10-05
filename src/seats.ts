@@ -179,7 +179,7 @@ async function chooseLaunchModel(root: string, config: Desk, record: Seat, portf
 }
 
 export const launchNotice = (address: string) =>
-  `SYSTEM: you are ${address}. Read your durable seat and assigned task with: atdd-flow open ${address}. Use the installed atdd-flow command; never use bunx to replace it or run atdd-flow init against an existing Desk. If your native pane binding differs from the Desk record, report it to the operator or coordinator. Continue assigned in_progress work until it is review-ready or explicitly blocked.`;
+  `SYSTEM: you are ${address}. Read your durable seat and assigned task with: atdd-flow open ${address}. Use the installed atdd-flow command; never use bunx to replace it or run atdd-flow init against an existing Desk. Routing: operator@desk is the human authority; drivers report to coordinators, and main seats are the normal technical gateway to the operator. Continue assigned in_progress work until it is review-ready or explicitly blocked.`;
 
 /** Pi loads this extension inside its own process, so it can wake without host text injection. */
 export const piExtensionPath = () => join(import.meta.dir, "..", "extensions", "pi", "index.ts");

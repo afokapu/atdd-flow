@@ -36,6 +36,7 @@ async function replyTarget(root: string, threadId: string, messageId: string, fr
   const recipients = target.to === "all" ? record.participants.filter((address) => address !== target.from) : target.to;
   if (!recipients.includes(from)) throw new Error(`${from} was not a recipient of message ${messageId}.`);
   if (needsResult && !target.expects_result) throw new Error(`Message ${messageId} does not expect a result.`);
+  return target;
 }
 
 async function seatsByRole(root: string, projectName: string, role: string) {
@@ -61,6 +62,18 @@ async function resolveRecipients(root: string, value: string, participants: stri
   return [...new Set(expanded.flat())];
 }
 
+async function assertRoute(root: string, from: string, recipients: string[]) {
+  if (from === "operator@desk") return;
+  const sender = await seat(root, from);
+  const targets = await Promise.all(recipients.map((address) => seat(root, address)));
+  if (targets.some((target) => target.address === "operator@desk") && !["main", "coordinator"].includes(sender.role)) {
+    throw new Error(`${from} may not directly address operator@desk; route through the responsible coordinator and main seat.`);
+  }
+  if (sender.role === "driver" && targets.some((target) => target.role !== "coordinator")) {
+    throw new Error(`${from} may message only a coordinator; coordinators and main seats handle further escalation.`);
+  }
+}
+
 async function inject(root: string, address: string, message: Message, threadId: string) {
   const target = await seat(root, address);
   const runtime = target.runtime;
@@ -81,6 +94,7 @@ async function post(root: string, threadId: string, args: string[], overrides: P
   const toValue = overrides.to ?? words(args, "--to") ?? "all";
   const recipients = Array.isArray(toValue) ? toValue : await resolveRecipients(root, toValue, record.participants);
   if (recipients.some((address) => !record.participants.includes(address))) throw new Error("Recipients must be thread participants.");
+  await assertRoute(root, from, recipients.filter((address) => address !== from));
   const message: Message = {
     schema: "atdd-workflow/message/v1", id: id("M"), from, to: toValue === "all" ? "all" : recipients,
     kind: overrides.kind ?? "message",
@@ -120,14 +134,14 @@ export async function openThread(root: string, threadId: string) {
 
 export async function receipt(root: string, threadId: string, messageId: string, args: string[]) {
   const from = await canonicalAddress(root, required(words(args, "--from"), "--from"));
-  await replyTarget(root, threadId, messageId, from, false);
-  return post(root, threadId, args, { from, kind: "receipt", in_reply_to: messageId, body: words(args, "--body") ?? `Received ${messageId}.` });
+  const target = await replyTarget(root, threadId, messageId, from, false);
+  return post(root, threadId, args, { from, to: [target.from], kind: "receipt", in_reply_to: messageId, body: words(args, "--body") ?? `Received ${messageId}.` });
 }
 
 export async function result(root: string, threadId: string, messageId: string, args: string[]) {
   const from = await canonicalAddress(root, required(words(args, "--from"), "--from"));
-  await replyTarget(root, threadId, messageId, from, true);
-  return post(root, threadId, args, { from, kind: "result", in_reply_to: messageId, body: required(words(args, "--body"), "--body") });
+  const target = await replyTarget(root, threadId, messageId, from, true);
+  return post(root, threadId, args, { from, to: [target.from], kind: "result", in_reply_to: messageId, body: required(words(args, "--body"), "--body") });
 }
 
 export async function status(root: string) {
