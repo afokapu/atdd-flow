@@ -272,7 +272,7 @@ test("host adapters discover native addresses from host-provided environment", (
   expect(discoverAddress("tuios", { TUIOS_SESSION: "session-1", TUIOS_WINDOW_ID: "window-7" })).toBe("session-1/window-7");
   expect(() => discoverAddress("herdr", {})).toThrow("HERDR_PANE_ID");
   expect(() => discoverAddress("claude", {})).toThrow("No deterministic discovery adapter");
-  expect(notificationCommand("herdr", "w1:p2", "read mail")).toEqual(["herdr", "pane", "send-text", "w1:p2", "read mail"]);
+  expect(notificationCommand("herdr", "w1:p2", "read mail", "forge")).toEqual(["herdr", "--session", "forge", "agent", "prompt", "w1:p2", "read mail"]);
   expect(notificationCommand("tuios", "session-1/window-7", "read mail")).toEqual(["tuios", "queue", "-s", "session-1", "-w", "window-7", "read mail"]);
   expect(launchCommand({ application: "tuios", placement: "etdd-os", name: "driver.runtime@etdd", worktree: "/worktrees/runtime", agent: "codex", root: "/coordination", seat: "driver.runtime@etdd" })).toEqual([
     "tuios", "new-window", "driver.runtime@etdd", "-s", "etdd-os", "--cwd", "/worktrees/runtime", "--no-focus", "--print-id", "--",
@@ -326,7 +326,7 @@ test("a host-attached replacement preserves its durable work and wakes the curre
 
   const thread = await run(site, "thread", "start", "--with", `${coordinator},${driver}`, "--subject", "Host-attached handoff");
   const request = await runWithEnvironment(site, host("w-test:p-coordinator"), "post", thread, "--from", coordinator, "--to", driver, "--expects-result", "--body", "Complete the handoff.");
-  expect(await readFile(notificationLog, "utf8")).toContain(`pane\nsend-text\nw-test:p-old\nSYSTEM: new thread mail ${request}`);
+  expect(await readFile(notificationLog, "utf8")).toContain(`agent\nprompt\nw-test:p-old\nSYSTEM: new thread mail ${request}`);
   await run(site, "receipt", thread, request, "--from", driver);
   await run(site, "checkpoint", driver, "--status", "blocked", "--summary", "The first host reached its rate limit.", "--next", "Replacement host must complete the handoff.");
 
