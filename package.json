@@ -1,6 +1,6 @@
 {
   "name": "@afokapu/atdd-flow",
-  "version": "0.2.3",
+  "version": "0.3.0",
   "description": "Filesystem-first Desk registry for projects, seats, tasks, threads, and handoffs.",
   "type": "module",
   "bin": {
@@ -14,6 +14,7 @@
   "files": [
     "bin",
     "conventions",
+    "extensions",
     "src",
     "README.md",
     "LICENSE"
@@ -42,6 +43,7 @@
     "@afokapu/atdd-bun": "^0.10.44"
   },
   "dependencies": {
-    "@typesafe-ai/sdk": "^0.6.0"
+    "@typesafe-ai/sdk": "^0.6.0",
+    "yaml": "2.9.0"
   }
 }

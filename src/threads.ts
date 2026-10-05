@@ -65,6 +65,7 @@ async function inject(root: string, address: string, message: Message, threadId:
   const target = await seat(root, address);
   const runtime = target.runtime;
   if (!runtime) return;
+  if (runtime.wake === "native") return;
   const nativeAddress = runtime.addresses[runtime.application];
   if (!nativeAddress) return;
   const file = paths(root).message(threadId, message.id);

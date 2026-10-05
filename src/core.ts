@@ -47,7 +47,8 @@ export type Project = {
  * are opaque application-owned locators: Workflow records and returns them,
  * while the relevant bridge is responsible for using their native format.
  */
-export type Runtime = { application: string; addresses: Record<string, string>; attached_at?: string; model?: string };
+/** `native` means the agent runtime wakes itself from the durable Desk. */
+export type Runtime = { application: string; addresses: Record<string, string>; attached_at?: string; model?: string; wake?: "host" | "native" };
 export type Seat = {
   schema: string;
   address: string;
