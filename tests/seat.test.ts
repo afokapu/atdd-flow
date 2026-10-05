@@ -375,6 +375,22 @@ test("a native-wake runtime keeps durable mail but skips host text injection", a
   expect(await run(site, "open", driver)).toContain("wake: native");
 });
 
+test("binding an existing seat may update its legacy launch agent", async () => {
+  const root = await mkdtemp(join(tmpdir(), "atdd-workflow-"));
+  roots.push(root);
+  const site = join(root, "site");
+  await run(root, "init", site);
+  await rm(join(site, "models.yaml"));
+  await run(site, "project", "init", "demo");
+  await run(site, "spawn", "demo", "driver", "receiver", "--worktree", "/tmp/demo-receiver");
+
+  await run(site, "bind", "driver.receiver@demo", "--application", "herdr", "--address", "w-test:p-pi", "--agent", "pi", "--wake", "native");
+
+  const opened = await run(site, "open", "driver.receiver@demo");
+  expect(opened).toContain("agent: pi");
+  expect(opened).toContain("wake: native");
+});
+
 test("legacy Desks may still pin a seat executable when no model portfolio exists", async () => {
   const root = await mkdtemp(join(tmpdir(), "atdd-workflow-"));
   roots.push(root);
