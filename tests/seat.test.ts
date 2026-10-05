@@ -542,6 +542,34 @@ test("a task can preserve an exact source body through the canonical amend comma
 });
 
 
+test("only a task coordinator can atomically assign an unassigned todo task", async () => {
+  const root = await mkdtemp(join(tmpdir(), "atdd-workflow-"));
+  roots.push(root);
+  const site = join(root, "site");
+  await run(root, "init", site);
+  await run(site, "project", "init", "demo");
+  await run(site, "spawn", "demo", "coordinator", "main", "--worktree", "/tmp/demo-main");
+  await run(site, "spawn", "demo", "driver", "one", "--worktree", "/tmp/demo-one");
+  await run(site, "spawn", "demo", "driver", "two", "--worktree", "/tmp/demo-two");
+  const coordinator = "coordinator@demo";
+  const firstDriver = "driver.one@demo";
+  const secondDriver = "driver.two@demo";
+  await run(site, "task", "add", "demo", "W-staff", "--title", "Staff delivery", "--coordinator", coordinator, "--body", "Preserve this body.", "--source", "repo@sha:program#row", "--done-when", "Coordinator accepts evidence.");
+  const before = Bun.YAML.parse(await readFile(join(site, "work", "demo", "tasks", "W-staff.yaml"), "utf8"));
+
+  expect(await run(site, "--help")).toContain("task assign <project> <task-id> --assignee <address> --by <coordinator-address>");
+  expect(await fail(site, "task", "assign", "demo", "W-staff", "--assignee", firstDriver, "--by", firstDriver)).toContain(`Only ${coordinator} may assign`);
+  expect(await fail(site, "task", "assign", "demo", "W-staff", "--assignee", "driver.missing@demo", "--by", coordinator)).toContain("ENOENT");
+  expect(Bun.YAML.parse(await readFile(join(site, "work", "demo", "tasks", "W-staff.yaml"), "utf8"))).toEqual(before);
+
+  expect(await run(site, "task", "assign", "demo", "W-staff", "--assignee", firstDriver, "--by", coordinator)).toBe(`W-staff  assigned  ${firstDriver}`);
+  expect(Bun.YAML.parse(await readFile(join(site, "work", "demo", "tasks", "W-staff.yaml"), "utf8"))).toEqual({ ...before, assignee: firstDriver });
+  expect(await fail(site, "task", "assign", "demo", "W-staff", "--assignee", secondDriver, "--by", coordinator)).toContain(`already assigned to ${firstDriver}`);
+
+  await run(site, "task", "start", "demo", "W-staff", "--by", firstDriver);
+  expect(await fail(site, "task", "assign", "demo", "W-staff", "--assignee", secondDriver, "--by", coordinator)).toContain("can only be assigned while todo");
+});
+
 test("new project roles leave model allocation to the Desk portfolio", async () => {
   const root = await mkdtemp(join(tmpdir(), "atdd-workflow-"));
   roots.push(root);

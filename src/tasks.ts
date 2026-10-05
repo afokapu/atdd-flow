@@ -116,6 +116,19 @@ export async function add(root: string, projectName: string, id: string, args: s
   console.log(id);
 }
 
+export async function assign(root: string, projectName: string, id: string, args: string[]) {
+  const task = await readTask(root, projectName, taskId(id));
+  const actor = await canonicalAddress(root, required(words(args, "--by"), "--by"));
+  if (actor !== task.coordinator) throw new Error(`Only ${task.coordinator} may assign task ${id}.`);
+  if (task.status !== "todo") throw new Error(`Task ${id} can only be assigned while todo.`);
+  if (task.assignee) throw new Error(`Task ${id} is already assigned to ${task.assignee}.`);
+  const assignee = await canonicalAddress(root, required(words(args, "--assignee"), "--assignee"));
+  await seat(root, assignee);
+  task.assignee = assignee;
+  await writeTask(root, projectName, id, task);
+  console.log(`${id}  assigned  ${assignee}`);
+}
+
 export async function amend(root: string, projectName: string, id: string, args: string[]) {
   const task = await readTask(root, projectName, taskId(id));
   const title = words(args, "--title");
