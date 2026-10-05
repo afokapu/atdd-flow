@@ -36,6 +36,9 @@ export function resolveExecutable(config: Desk, agent: string) {
 }
 
 export async function init(root: string, name: string, args: string[]) {
+  if (await exists(paths(root).desk)) {
+    throw new Error(`Desk registry already exists at ${paths(root).desk}; refusing to overwrite it. Use an existing Desk command, or choose a new directory.`);
+  }
   const config = { schema: "atdd-workflow/desk/v1" as const, desk: name, application: "tuios", executables: defaultExecutables() };
   await Promise.all([mkdir(paths(root).work, { recursive: true }), mkdir(paths(root).threads, { recursive: true })]);
   await Promise.all([atomicYaml(paths(root).desk, config), atomicYaml(paths(root).models, defaultModels())]);
@@ -161,7 +164,7 @@ async function chooseLaunchModel(root: string, config: Desk, record: Seat, portf
 }
 
 export const launchNotice = (address: string) =>
-  `SYSTEM: you are ${address}. Read your durable seat and assigned task with: atdd-flow open ${address}. Continue assigned in_progress work until it is review-ready or explicitly blocked.`;
+  `SYSTEM: you are ${address}. Read your durable seat and assigned task with: atdd-flow open ${address}. Use the installed atdd-flow command; never use bunx to replace it or run atdd-flow init against an existing Desk. If your native pane binding differs from the Desk record, report it to the operator or coordinator. Continue assigned in_progress work until it is review-ready or explicitly blocked.`;
 
 export async function launch(root: string, address: string, args: string[]) {
   const resolved = await canonicalAddress(root, address);
@@ -191,7 +194,7 @@ export async function launch(root: string, address: string, args: string[]) {
   const nativeAddress = launchedAddress(application, placement, output);
   await bind(root, resolved, ["--application", application, "--address", nativeAddress], selectedModel);
   const notice = launchNotice(resolved);
-  try { await notify(application, nativeAddress, notice); }
+  try { await notify(application, nativeAddress, notice, config.herdr_session); }
   catch (error) { console.warn(`Launch notification for ${resolved} was not delivered: ${(error as Error).message}`); }
 }
 

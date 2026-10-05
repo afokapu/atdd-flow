@@ -360,7 +360,7 @@ export async function launchBehavioralReview(
   const nativeAddress = launchedAddress(application, placement, output);
   await bind(root, reviewer.address, ["--application", application, "--address", nativeAddress], modelId);
   try {
-    await notify(application, nativeAddress, reviewerNotice(projectName, taskId, attempt, conventionSource.text));
+    await notify(application, nativeAddress, reviewerNotice(projectName, taskId, attempt, conventionSource.text), config.herdr_session);
   } catch (error) {
     console.warn(`Behavioral review notification for ${reviewer.address} was not delivered: ${(error as Error).message}`);
   }
