@@ -14,6 +14,8 @@ export type Desk = {
   schema: "atdd-workflow/desk/v1";
   desk: string;
   application: string;
+  /** Native Herdr session used for Desk notifications when application is herdr. */
+  herdr_session?: string;
   /** Named commands that model portfolio entries may resolve through. */
   executables?: Record<string, string>;
   aliases?: Record<string, string>;

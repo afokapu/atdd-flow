@@ -84,6 +84,18 @@ test("an operator can initialize a standalone Desk Git repository", async () => 
   expect(models.indexOf("id: claude")).toBeLessThan(models.indexOf("id: codex"));
 });
 
+test("initialization refuses to overwrite an existing Desk registry", async () => {
+  const root = await mkdtemp(join(tmpdir(), "atdd-workflow-"));
+  roots.push(root);
+  const coordination = join(root, "desk");
+
+  await run(root, "init", coordination);
+  const original = await readFile(join(coordination, "desk.yaml"), "utf8");
+
+  expect(await fail(root, "init", coordination)).toContain("refusing to overwrite");
+  expect(await readFile(join(coordination, "desk.yaml"), "utf8")).toBe(original);
+});
+
 test("a legacy coordination registry upgrades to a Desk without changing its aliases", async () => {
   const root = await mkdtemp(join(tmpdir(), "atdd-workflow-"));
   roots.push(root);
@@ -271,6 +283,8 @@ test("host adapters discover native addresses from host-provided environment", (
     "/usr/bin/env", "ATDD_WORKFLOW_ROOT=/coordination", "ATDD_WORKFLOW_SEAT=coordinator@etdd", "claude", "--model", "sonnet",
   ]);
   expect(launchNotice("driver.runtime@etdd")).toContain("Read your durable seat and assigned task");
+  expect(launchNotice("driver.runtime@etdd")).toContain("never use bunx to replace it");
+  expect(launchNotice("driver.runtime@etdd")).toContain("existing Desk");
   expect(launchNotice("driver.runtime@etdd")).toContain("Continue assigned in_progress work until it is review-ready or explicitly blocked.");
   expect(launchedAddress("tuios", "etdd-os", "window-7\n")).toBe("etdd-os/window-7");
   expect(() => launchCommand({ application: "herdr", placement: "w1", name: "driver", worktree: "/work", agent: "codex", root: "/coordination", seat: "driver@demo" })).toThrow("No deterministic launch adapter");

@@ -1,7 +1,7 @@
 import { readdir } from "node:fs/promises";
 import { notify } from "./adapters";
 import {
-  atomicYaml, canonicalAddress, has, id, now, paths, project, readYaml,
+  atomicYaml, canonicalAddress, desk, has, id, now, paths, project, readYaml,
   required, seat, words,
 } from "./core";
 
@@ -69,7 +69,7 @@ async function inject(root: string, address: string, message: Message, threadId:
   if (!nativeAddress) return;
   const file = paths(root).message(threadId, message.id);
   const notice = `SYSTEM: new thread mail ${message.id} from ${message.from}. Read ${file}`;
-  try { await notify(runtime.application, nativeAddress, notice); }
+  try { await notify(runtime.application, nativeAddress, notice, (await desk(root)).herdr_session); }
   catch (error) { console.warn(`Notification for ${address} was not delivered: ${(error as Error).message}`); }
 }
 
