@@ -17,4 +17,6 @@ test("workflow lifecycle convention remains valid and carries the focus discipli
   expect(convention.content.normative_text).toContain("atdd-bun.review.behavioral-reconciliation");
   expect(convention.content.normative_text).toContain("LOCAL, ASSEMBLED, JOURNEY, or SYSTEM");
   expect(convention.content.normative_text).toContain("review -> done");
+  expect(convention.content.normative_text).toContain("`operator@desk` is the human authority");
+  expect(convention.content.normative_text).toMatch(/Drivers send normal work\s+messages to their coordinator/);
 });
