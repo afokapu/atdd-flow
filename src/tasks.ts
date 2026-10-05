@@ -240,6 +240,17 @@ export async function block(root: string, projectName: string, id: string, args:
   console.log(`${id}  blocked`);
 }
 
+export async function unblock(root: string, projectName: string, id: string, args: string[]) {
+  const task = await readTask(root, projectName, taskId(id));
+  const actor = await canonicalAddress(root, required(words(args, "--by"), "--by"));
+  if (actor !== task.coordinator) throw new Error(`Only ${task.coordinator} may unblock task ${id}.`);
+  if (task.status !== "in_progress") throw new Error(`Task ${id} can only be unblocked while in_progress.`);
+  if (!task.blocker) throw new Error(`Task ${id} has no blocker to clear.`);
+  delete task.blocker;
+  await writeTask(root, projectName, id, task);
+  console.log(`${id}  unblocked`);
+}
+
 export async function list(root: string, projectName: string, args: string[]) {
   const coordinator = words(args, "--coordinator") ? await canonicalAddress(root, required(words(args, "--coordinator"), "--coordinator")) : undefined;
   const assignee = words(args, "--assignee") ? await canonicalAddress(root, required(words(args, "--assignee"), "--assignee")) : undefined;
