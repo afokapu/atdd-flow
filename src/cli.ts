@@ -27,6 +27,7 @@ Usage:
   atdd-flow describe <address> --purpose <one-line responsibility>
   atdd-flow checkpoint <address> --summary <text> --next <text> [--status active|standby|blocked|complete|unverified]
   atdd-flow task add <project> <task-id> --title <text> --coordinator <address> [--assignee <address>] [--body <text>] [--source <reference>] [--depends-on <task-id,...>] --done-when <text> [--done-when <text> ...]
+  atdd-flow task assign <project> <task-id> --assignee <address> --by <coordinator-address>
   atdd-flow task amend <project> <task-id> [--title <text>] [--body <text>] [--source <reference>] [--depends-on <task-id,...>]
   atdd-flow task import <project> <task-id> --proof <reference> [--proof <reference> ...] [--done-when <text> ...] [--source <reference>]
   atdd-flow task start|review|return <project> <task-id> --by <address>
@@ -88,6 +89,7 @@ async function main() {
     task: async () => {
       const [subcommand, projectName, taskId, ...tail] = rest;
       if (subcommand === "add") return tasks.add(root, required(projectName, "project"), required(taskId, "task id"), tail);
+      if (subcommand === "assign") return tasks.assign(root, required(projectName, "project"), required(taskId, "task id"), tail);
       if (subcommand === "amend") return tasks.amend(root, required(projectName, "project"), required(taskId, "task id"), tail);
       if (subcommand === "import") return tasks.importCompleted(root, required(projectName, "project"), required(taskId, "task id"), tail);
       if (subcommand === "start") return tasks.start(root, required(projectName, "project"), required(taskId, "task id"), tail);
@@ -98,7 +100,7 @@ async function main() {
       if (subcommand === "block") return tasks.block(root, required(projectName, "project"), required(taskId, "task id"), tail);
       if (subcommand === "list") return tasks.list(root, required(projectName, "project"), rest.slice(2));
       if (subcommand === "open") return tasks.open(root, required(projectName, "project"), required(taskId, "task id"));
-      throw new Error("Use `atdd-flow task add|amend|import|start|prove|review|return|done|block|list|open`.");
+      throw new Error("Use `atdd-flow task add|assign|amend|import|start|prove|review|return|done|block|list|open`.");
     },
     thread: async () => {
       const [subcommand, ...tail] = rest;
