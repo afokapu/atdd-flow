@@ -98,6 +98,7 @@ export async function bind(root: string, address: string, args: string[], select
   const record = await seat(root, resolved);
   const config = await desk(root);
   const application = words(args, "--application") ?? config.application;
+  const requestedAgent = words(args, "--agent");
   const requestedWake = words(args, "--wake");
   if (requestedWake && requestedWake !== "host" && requestedWake !== "native") throw new Error("Wake must be host or native.");
   const selectedWake = wake ?? requestedWake as Runtime["wake"] | undefined;
@@ -112,6 +113,9 @@ export async function bind(root: string, address: string, args: string[], select
     ...(selectedModel ? { model: selectedModel } : {}),
     ...(selectedWake ? { wake: selectedWake } : {}),
   };
+  // Legacy Desks use this field as the executable chosen by a later `launch`.
+  // Keep it aligned when an existing seat is deliberately re-homed to Pi.
+  if (requestedAgent) record.agent = requestedAgent;
   await atomicYaml(paths(root).seatFile(resolved), record);
   console.log(`Bound ${resolved} to ${application}:${nativeAddress}`);
 }

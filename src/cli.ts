@@ -19,7 +19,7 @@ Usage:
   atdd-flow desk migrate
   atdd-flow project init <project>
   atdd-flow spawn <project> <role> <name> [--worktree <path>] [--branch <branch>] [--agent <legacy-executable>]
-  atdd-flow bind <address> [--application <application>] --address <native-address> [--wake host|native]
+  atdd-flow bind <address> [--application <application>] --address <native-address> [--agent <executable>] [--wake host|native]
   atdd-flow attach <address> [--application <application>] [--wake host|native]
   atdd-flow pi extension-path
   atdd-flow launch <address> --application <application> --placement <native-container-address>
