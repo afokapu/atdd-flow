@@ -27,10 +27,11 @@ export function discoverAddress(application: string, environment: Environment = 
 export function notificationCommand(application: string, address: string, notice: string, herdrSession?: string): string[] | undefined {
   const commands: Record<string, () => string[] | undefined> = {
     tmux: () => ["tmux", "send-keys", "-t", address, notice, "Enter"],
-    // A Herdr pane id is the canonical runtime address. `pane send-text` is
-    // supported by both standalone Herdr and TUIOS's embedded Herdr server;
-    // `agent send` is not available on every embedded-server version.
-    herdr: () => ["herdr", ...(herdrSession ? ["--session", herdrSession] : []), "pane", "send-text", address, notice],
+    // Herdr resolves the live agent from its stable pane address and submits
+    // an ordered prompt through its agent-control API. Do not fall back to
+    // pane text injection: a Desk message remains durable when an older host
+    // cannot provide agent.prompt.
+    herdr: () => ["herdr", ...(herdrSession ? ["--session", herdrSession] : []), "agent", "prompt", address, notice],
     tuios: () => {
       const separator = address.indexOf("/");
       if (separator < 1 || separator === address.length - 1) return undefined;
