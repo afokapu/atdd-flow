@@ -384,10 +384,13 @@ test("binding an existing seat may update its legacy launch agent", async () => 
   await run(site, "project", "init", "demo");
   await run(site, "spawn", "demo", "driver", "receiver", "--worktree", "/tmp/demo-receiver");
 
-  await run(site, "bind", "driver.receiver@demo", "--application", "herdr", "--address", "w-test:p-pi", "--agent", "pi", "--wake", "native");
+  const replacement = join(root, "replacement-worktree");
+  await mkdir(replacement);
+  await run(site, "bind", "driver.receiver@demo", "--application", "herdr", "--address", "w-test:p-pi", "--agent", "pi", "--worktree", replacement, "--wake", "native");
 
   const opened = await run(site, "open", "driver.receiver@demo");
   expect(opened).toContain("agent: pi");
+  expect(opened).toContain(`worktree: ${replacement}`);
   expect(opened).toContain("wake: native");
 });
 
