@@ -35,6 +35,7 @@ Usage:
   atdd-flow task done <project> <task-id> --by <address> [--retire-assignee]
   atdd-flow task prove <project> <task-id> --by <address> --item <number> --proof <reference>
   atdd-flow task block <project> <task-id> --by <address> --reason <text>
+  atdd-flow task unblock <project> <task-id> --by <coordinator-address>
   atdd-flow task list <project> [--coordinator <address>] [--assignee <address>]
   atdd-flow task open <project> <task-id>
   atdd-flow thread start --with <address,...> --subject <text> [--task <project/task-id>]
@@ -100,9 +101,10 @@ async function main() {
       if (subcommand === "return") return tasks.returnToWork(root, required(projectName, "project"), required(taskId, "task id"), tail);
       if (subcommand === "prove") return tasks.prove(root, required(projectName, "project"), required(taskId, "task id"), tail);
       if (subcommand === "block") return tasks.block(root, required(projectName, "project"), required(taskId, "task id"), tail);
+      if (subcommand === "unblock") return tasks.unblock(root, required(projectName, "project"), required(taskId, "task id"), tail);
       if (subcommand === "list") return tasks.list(root, required(projectName, "project"), rest.slice(2));
       if (subcommand === "open") return tasks.open(root, required(projectName, "project"), required(taskId, "task id"));
-      throw new Error("Use `atdd-flow task add|assign|amend|import|start|prove|review|return|done|block|list|open`.");
+      throw new Error("Use `atdd-flow task add|assign|amend|import|start|prove|review|return|done|block|unblock|list|open`.");
     },
     thread: async () => {
       const [subcommand, ...tail] = rest;
