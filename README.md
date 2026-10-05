@@ -163,6 +163,39 @@ atdd-flow launch driver.runtime@resolver-os --application tuios --placement reso
 
 Launch selects a model from `models.yaml`, starts that model's executable in the seat's declared worktree, passes `ATDD_WORKFLOW_ROOT` and `ATDD_WORKFLOW_SEAT`, records the selected model on the live runtime binding, and asks the agent to read its seat. Other hosts remain correct without an adapter; their operator supplies that prompt.
 
+### Pi-native Desk mail
+
+When Flow launches the `pi` executable, it automatically loads its bundled Pi extension. Pi remains a normal, interactive agent in its host pane, but the extension watches the immutable Desk mail files and wakes Pi internally with `pi.sendMessage()`—not terminal text injection.
+
+The Pi seat records both concepts independently:
+
+```yaml
+runtime:
+  application: herdr # or tuios
+  addresses:
+    herdr: w9:p1
+  model: pi
+  wake: native
+```
+
+`application` identifies the visible pane. `wake: native` tells Flow not to also send a host prompt; the Pi extension reads `ATDD_WORKFLOW_ROOT` and `ATDD_WORKFLOW_SEAT`, observes final `M-*.yaml` files, filters recipients, and queues a follow-up turn that tells Pi which durable file to read. Other agents keep `wake: host` and use their normal host notification adapter.
+
+Pi’s native wake-up is intentionally lightweight: no daemon, duplicate mailbox, or separate extension installation. The extension is shipped inside the Flow package. Its in-memory message-id guard tolerates duplicate filesystem events; the Desk thread files remain the source of truth.
+
+To host Pi in Herdr, create a pane with the durable Desk and seat identity, then start Pi with the extension supplied by the installed Flow package:
+
+```sh
+PI_EXTENSION="$(atdd-flow pi extension-path)"
+herdr pane split --current --direction right --cwd /path/to/worktree --no-focus \
+  --env ATDD_WORKFLOW_ROOT=/path/to/desk \
+  --env ATDD_WORKFLOW_SEAT=driver.runtime@resolver-os
+# Use the pane id returned above.
+herdr agent start pi-runtime --kind pi --pane <pane-id> -- --extension "$PI_EXTENSION"
+atdd-flow --root /path/to/desk attach driver.runtime@resolver-os --application herdr --wake native
+```
+
+Pi receives its identity and startup task from the extension itself. Its normal TUI remains visible and manually usable; incoming Desk mail wakes it through Pi's native message API.
+
 With ATDD Bun, enable the Workflow profile:
 
 ```yaml

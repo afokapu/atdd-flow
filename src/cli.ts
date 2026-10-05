@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import { basename, resolve } from "node:path";
-import { init, initProject, spawn, bind, useApplication, attach, launch, describe, checkpoint, migrate, openSeat } from "./seats";
+import { init, initProject, spawn, bind, useApplication, attach, launch, describe, checkpoint, migrate, openSeat, piExtensionPath } from "./seats";
 import { addParticipant, openThread, post, receipt, result, startThread } from "./threads";
 import * as tasks from "./tasks";
 import { required, values, words } from "./core";
@@ -19,8 +19,9 @@ Usage:
   atdd-flow desk migrate
   atdd-flow project init <project>
   atdd-flow spawn <project> <role> <name> [--worktree <path>] [--branch <branch>] [--agent <legacy-executable>]
-  atdd-flow bind <address> [--application <application>] --address <native-address>
-  atdd-flow attach <address> [--application <application>]
+  atdd-flow bind <address> [--application <application>] --address <native-address> [--wake host|native]
+  atdd-flow attach <address> [--application <application>] [--wake host|native]
+  atdd-flow pi extension-path
   atdd-flow launch <address> --application <application> --placement <native-container-address>
   atdd-flow application use <address> <application>
   atdd-flow describe <address> --purpose <one-line responsibility>
@@ -73,6 +74,10 @@ async function main() {
     spawn: () => spawn(root, required(rest[0], "project"), required(rest[1], "role"), required(rest[2], "name"), rest.slice(3)),
     bind: () => bind(root, required(rest[0], "address"), rest.slice(1)),
     attach: () => attach(root, required(rest[0], "address"), rest.slice(1)),
+    pi: async () => {
+      if (rest[0] === "extension-path") return console.log(piExtensionPath());
+      throw new Error("Use `atdd-flow pi extension-path`.");
+    },
     launch: () => launch(root, required(rest[0], "address"), rest.slice(1)),
     application: async () => {
       if (rest[0] === "use") return useApplication(root, required(rest[1], "address"), required(rest[2], "application"));

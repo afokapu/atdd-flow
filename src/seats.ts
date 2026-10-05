@@ -1,9 +1,9 @@
 import { existsSync } from "node:fs";
 import { mkdir, readdir } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { discoverAddress, launchedAddress, launchCommand, notify } from "./adapters";
 import {
-  type Checkpoint, type Desk, type ModelCandidate, type ModelPortfolio, type Project, type Role, type Seat,
+  type Checkpoint, type Desk, type ModelCandidate, type ModelPortfolio, type Project, type Role, type Runtime, type Seat,
   atomicYaml, canonicalAddress, desk, exists, fill, migrateDesk, modelPortfolio, now, paths, project, readYaml,
   required, run, runOutput, seat, words, yaml,
 } from "./core";
@@ -93,11 +93,14 @@ export async function spawn(root: string, projectName: string, roleName: string,
   console.log(address);
 }
 
-export async function bind(root: string, address: string, args: string[], selectedModel?: string) {
+export async function bind(root: string, address: string, args: string[], selectedModel?: string, wake?: Runtime["wake"]) {
   const resolved = await canonicalAddress(root, address);
   const record = await seat(root, resolved);
   const config = await desk(root);
   const application = words(args, "--application") ?? config.application;
+  const requestedWake = words(args, "--wake");
+  if (requestedWake && requestedWake !== "host" && requestedWake !== "native") throw new Error("Wake must be host or native.");
+  const selectedWake = wake ?? requestedWake as Runtime["wake"] | undefined;
   if (!/^[a-z][a-z0-9_-]*$/.test(application)) throw new Error(`Application must use lowercase letters, numbers, underscores, or hyphens: ${application}`);
   const nativeAddress = required(words(args, "--address"), "--address");
   const addresses = record.runtime?.addresses ?? {};
@@ -107,6 +110,7 @@ export async function bind(root: string, address: string, args: string[], select
     addresses: { ...addresses, [application]: nativeAddress },
     attached_at: now(),
     ...(selectedModel ? { model: selectedModel } : {}),
+    ...(selectedWake ? { wake: selectedWake } : {}),
   };
   await atomicYaml(paths(root).seatFile(resolved), record);
   console.log(`Bound ${resolved} to ${application}:${nativeAddress}`);
@@ -125,7 +129,8 @@ export async function useApplication(root: string, address: string, application:
 export async function attach(root: string, address: string, args: string[]) {
   const application = words(args, "--application") ?? (await desk(root)).application;
   const nativeAddress = discoverAddress(application);
-  await bind(root, address, ["--application", application, "--address", nativeAddress]);
+  const wake = words(args, "--wake");
+  await bind(root, address, ["--application", application, "--address", nativeAddress, ...(wake ? ["--wake", wake] : [])]);
 }
 
 export function availableModelCandidates(config: Desk, portfolio: ModelPortfolio) {
@@ -166,6 +171,11 @@ async function chooseLaunchModel(root: string, config: Desk, record: Seat, portf
 export const launchNotice = (address: string) =>
   `SYSTEM: you are ${address}. Read your durable seat and assigned task with: atdd-flow open ${address}. Use the installed atdd-flow command; never use bunx to replace it or run atdd-flow init against an existing Desk. If your native pane binding differs from the Desk record, report it to the operator or coordinator. Continue assigned in_progress work until it is review-ready or explicitly blocked.`;
 
+/** Pi loads this extension inside its own process, so it can wake without host text injection. */
+export const piExtensionPath = () => join(import.meta.dir, "..", "extensions", "pi", "index.ts");
+export const isPiExecutable = (agent: string) => basename(agent) === "pi";
+export const piLaunchArgs = (agent: string, args: string[]) => isPiExecutable(agent) ? [...args, "--extension", piExtensionPath()] : args;
+
 export async function launch(root: string, address: string, args: string[]) {
   const resolved = await canonicalAddress(root, address);
   const record = await seat(root, resolved);
@@ -187,12 +197,15 @@ export async function launch(root: string, address: string, args: string[]) {
     agent = resolveExecutable(config, legacyAgent);
     selectedModel = legacyAgent;
   }
+  const wake: Runtime["wake"] = isPiExecutable(agent) ? "native" : "host";
+  modelArgs = piLaunchArgs(agent, modelArgs);
   const output = await runOutput(launchCommand({
     application, placement, name: resolved, worktree: record.worktree,
     agent, args: modelArgs, root, seat: resolved,
   }));
   const nativeAddress = launchedAddress(application, placement, output);
-  await bind(root, resolved, ["--application", application, "--address", nativeAddress], selectedModel);
+  await bind(root, resolved, ["--application", application, "--address", nativeAddress], selectedModel, wake);
+  if (wake === "native") return;
   const notice = launchNotice(resolved);
   try { await notify(application, nativeAddress, notice, config.herdr_session); }
   catch (error) { console.warn(`Launch notification for ${resolved} was not delivered: ${(error as Error).message}`); }

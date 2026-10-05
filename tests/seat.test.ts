@@ -3,7 +3,8 @@ import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { discoverAddress, launchCommand, launchedAddress, notificationCommand } from "../src/adapters";
-import { launchNotice, resolveExecutable } from "../src/seats";
+import { addressedTo } from "../extensions/pi/index";
+import { isPiExecutable, launchNotice, piLaunchArgs, resolveExecutable } from "../src/seats";
 
 const roots: string[] = [];
 const cli = join(import.meta.dir, "..", "src", "cli.ts");
@@ -274,6 +275,12 @@ test("host adapters discover native addresses from host-provided environment", (
   expect(() => discoverAddress("claude", {})).toThrow("No deterministic discovery adapter");
   expect(notificationCommand("herdr", "w1:p2", "read mail", "forge")).toEqual(["herdr", "--session", "forge", "agent", "prompt", "w1:p2", "read mail"]);
   expect(notificationCommand("tuios", "session-1/window-7", "read mail")).toEqual(["tuios", "queue", "-s", "session-1", "-w", "window-7", "read mail"]);
+  expect(isPiExecutable("/opt/homebrew/bin/pi")).toBe(true);
+  expect(piLaunchArgs("/opt/homebrew/bin/pi", ["--model", "fast"]).slice(-2)).toEqual(["--extension", expect.stringMatching(/extensions\/pi\/index\.ts$/)]);
+  expect(piLaunchArgs("codex", ["--model", "fast"])).toEqual(["--model", "fast"]);
+  expect(addressedTo({ from: "coordinator@demo", to: ["driver.pi@demo"] }, { participants: ["coordinator@demo", "driver.pi@demo"] }, "driver.pi@demo")).toBe(true);
+  expect(addressedTo({ from: "coordinator@demo", to: "all" }, { participants: ["coordinator@demo", "driver.pi@demo"] }, "driver.pi@demo")).toBe(true);
+  expect(addressedTo({ from: "driver.pi@demo", to: "all" }, { participants: ["coordinator@demo", "driver.pi@demo"] }, "driver.pi@demo")).toBe(false);
   expect(launchCommand({ application: "tuios", placement: "etdd-os", name: "driver.runtime@etdd", worktree: "/worktrees/runtime", agent: "codex", root: "/coordination", seat: "driver.runtime@etdd" })).toEqual([
     "tuios", "new-window", "driver.runtime@etdd", "-s", "etdd-os", "--cwd", "/worktrees/runtime", "--no-focus", "--print-id", "--",
     "/usr/bin/env", "ATDD_WORKFLOW_ROOT=/coordination", "ATDD_WORKFLOW_SEAT=driver.runtime@etdd", "codex",
@@ -339,6 +346,33 @@ test("a host-attached replacement preserves its durable work and wakes the curre
 
   await run(site, "result", thread, request, "--from", driver, "--body", "Replacement completed the handoff.");
   expect(await run(site, "status")).not.toContain("waiting:");
+});
+
+test("a native-wake runtime keeps durable mail but skips host text injection", async () => {
+  const root = await mkdtemp(join(tmpdir(), "atdd-workflow-"));
+  roots.push(root);
+  const site = join(root, "coordination");
+  const bin = join(root, "bin");
+  const notificationLog = join(root, "herdr-notifications.txt");
+  const fakeHerdr = join(bin, "herdr");
+  await mkdir(bin);
+  await writeFile(fakeHerdr, `#!/bin/sh\nprintf '%s\\n' "$@" >> '${notificationLog}'\n`);
+  await chmod(fakeHerdr, 0o755);
+  const host = { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}`, HERDR_PANE_ID: "w-test:p-native" };
+
+  await run(root, "init", site);
+  await run(site, "project", "init", "demo");
+  await run(site, "spawn", "demo", "coordinator", "main", "--worktree", "/tmp/demo-main");
+  await run(site, "spawn", "demo", "driver", "pi", "--worktree", "/tmp/demo-pi");
+  const coordinator = "coordinator@demo";
+  const driver = "driver.pi@demo";
+  await runWithEnvironment(site, host, "attach", driver, "--application", "herdr", "--wake", "native");
+
+  const thread = await run(site, "thread", "start", "--with", `${coordinator},${driver}`, "--subject", "Native wake");
+  const message = await run(site, "post", thread, "--from", coordinator, "--to", driver, "--body", "Read native mail.");
+  expect(await Bun.file(join(site, "threads", thread, `${message}.yaml`)).exists()).toBe(true);
+  expect(await Bun.file(notificationLog).exists()).toBe(false);
+  expect(await run(site, "open", driver)).toContain("wake: native");
 });
 
 test("legacy Desks may still pin a seat executable when no model portfolio exists", async () => {
