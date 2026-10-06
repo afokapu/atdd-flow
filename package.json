@@ -1,6 +1,6 @@
 {
   "name": "@afokapu/atdd-flow",
-  "version": "0.3.6",
+  "version": "0.3.7",
   "description": "Filesystem-first Desk registry for projects, seats, tasks, threads, and handoffs.",
   "type": "module",
   "bin": {
