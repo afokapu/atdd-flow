@@ -81,8 +81,10 @@ async function inject(root: string, address: string, message: Message, threadId:
   if (runtime.wake === "native") return;
   const nativeAddress = runtime.addresses[runtime.application];
   if (!nativeAddress) return;
-  const file = paths(root).message(threadId, message.id);
-  const notice = `SYSTEM: new thread mail ${message.id} from ${message.from}. Read ${file}`;
+  const record = await thread(root, threadId);
+  const recipients = message.to === "all" ? "all" : message.to.join(", ");
+  const subject = record.subject.replace(/\s+/g, " ").trim();
+  const notice = `SYSTEM: Flow mail ${message.id} | thread ${threadId} (${subject}) | ${message.from} → ${recipients}. Read: atdd-flow message read ${message.id}`;
   try { await notify(runtime.application, nativeAddress, notice, (await desk(root)).herdr_session); }
   catch (error) { console.warn(`Notification for ${address} was not delivered: ${(error as Error).message}`); }
 }
@@ -130,6 +132,28 @@ export async function openThread(root: string, threadId: string) {
   const record = await thread(root, threadId);
   const all = await messages(root, threadId);
   console.log(Bun.YAML.stringify({ ...record, messages: all }));
+}
+
+/** Reads one durable message without loading or printing its whole thread. */
+export async function readMessage(root: string, messageId: string) {
+  if (!/^M-[A-Za-z0-9_-]+$/.test(messageId)) throw new Error(`Invalid message id: ${messageId}.`);
+  const folders = await readdir(paths(root).threads, { withFileTypes: true });
+  const matches = await Promise.all(folders
+    .filter((entry) => entry.isDirectory() && entry.name.startsWith("T-"))
+    .map(async (entry) => {
+      const file = paths(root).message(entry.name, messageId);
+      try { return { thread: await thread(root, entry.name), message: await readYaml<Message>(file) }; }
+      catch { return undefined; }
+    }));
+  const found = matches.filter((entry): entry is NonNullable<typeof entry> => Boolean(entry));
+  if (!found.length) throw new Error(`Message ${messageId} does not exist in this Desk.`);
+  if (found.length > 1) throw new Error(`Message ${messageId} is ambiguous across threads: ${found.map((entry) => entry.thread.id).join(", ")}.`);
+  const entry = found[0];
+  console.log(Bun.YAML.stringify({
+    schema: "atdd-workflow/message-read/v1",
+    thread: { id: entry.thread.id, subject: entry.thread.subject },
+    message: entry.message,
+  }));
 }
 
 export async function receipt(root: string, threadId: string, messageId: string, args: string[]) {

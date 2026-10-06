@@ -2,7 +2,7 @@
 
 import { basename, resolve } from "node:path";
 import { init, initProject, spawn, bind, useApplication, attach, launch, describe, checkpoint, migrate, openSeat, piExtensionPath } from "./seats";
-import { addParticipant, openThread, post, receipt, result, startThread } from "./threads";
+import { addParticipant, openThread, post, readMessage, receipt, result, startThread } from "./threads";
 import * as tasks from "./tasks";
 import { required, values, words } from "./core";
 import { addressBook } from "./address-book";
@@ -41,6 +41,7 @@ Usage:
   atdd-flow thread start --with <address,...> --subject <text> [--task <project/task-id>]
   atdd-flow thread add <thread-id> <address>
   atdd-flow thread open <thread-id>
+  atdd-flow message read <message-id>
   atdd-flow post <thread-id> --from <address> --to <all|address,...> --body <text> [--expects-result]
   atdd-flow receipt <thread-id> <message-id> --from <address> [--body <text>]
   atdd-flow result <thread-id> <message-id> --from <address> --body <text>
@@ -112,6 +113,10 @@ async function main() {
       if (subcommand === "add") return addParticipant(root, required(tail[0], "thread id"), required(tail[1], "address"));
       if (subcommand === "open") return openThread(root, required(tail[0], "thread id"));
       throw new Error("Use `atdd-flow thread start|add|open`.");
+    },
+    message: async () => {
+      if (rest[0] === "read") return readMessage(root, required(rest[1], "message id"));
+      throw new Error("Use `atdd-flow message read <message-id>`.");
     },
     post: () => post(root, required(rest[0], "thread id"), rest.slice(1)),
     receipt: () => receipt(root, required(rest[0], "thread id"), required(rest[1], "message id"), rest.slice(2)),

@@ -178,7 +178,15 @@ runtime:
   wake: native
 ```
 
-`application` identifies the visible pane. `wake: native` tells Flow not to also send a host prompt; the Pi extension reads `ATDD_WORKFLOW_ROOT` and `ATDD_WORKFLOW_SEAT`, observes final `M-*.yaml` files, filters recipients, and queues a follow-up turn that tells Pi which durable file to read. Other agents keep `wake: host` and use their normal host notification adapter.
+`application` identifies the visible pane. `wake: native` tells Flow not to also send a host prompt; the Pi extension reads `ATDD_WORKFLOW_ROOT` and `ATDD_WORKFLOW_SEAT`, observes final `M-*.yaml` files, filters recipients, and queues a compact follow-up containing the thread subject, sender, recipients, thread/message IDs, and `atdd-flow message read <message-id>`. It never embeds the message body. Other agents keep `wake: host` and receive the same compact notification through their normal host adapter.
+
+Read one durable message without loading its complete thread:
+
+```sh
+atdd-flow message read M-...
+```
+
+The output includes only the message and its thread ID/subject; Flow rejects missing or ambiguous message IDs.
 
 Pi’s native wake-up is intentionally lightweight: no daemon, duplicate mailbox, or separate extension installation. The extension is shipped inside the Flow package. Its in-memory message-id guard tolerates duplicate filesystem events; the Desk thread files remain the source of truth.
 
