@@ -4,8 +4,8 @@ import { join } from "node:path";
 import { parse } from "yaml";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-type Thread = { participants?: unknown };
-type Mail = { id?: unknown; from?: unknown; to?: unknown };
+type Thread = { participants?: unknown; subject?: unknown };
+type Mail = { id?: unknown; from?: unknown; to?: unknown; subject?: unknown };
 
 const finalMail = /^M-[^.]+\.yaml$/;
 
@@ -19,6 +19,15 @@ export function addressedTo(mail: Mail, thread: Thread, seat: string) {
   if (mail.from === seat) return false;
   if (Array.isArray(mail.to)) return mail.to.includes(seat);
   return mail.to === "all" && participants(thread).includes(seat);
+}
+
+/** A compact wake notice; the durable message body is read only on demand. */
+export function mailNotice(threadId: string, mail: Mail) {
+  const id = typeof mail.id === "string" ? mail.id : "unknown";
+  const subject = typeof mail.subject === "string" ? mail.subject : undefined;
+  const from = typeof mail.from === "string" ? mail.from : "unknown";
+  const recipients = mail.to === "all" ? "all" : Array.isArray(mail.to) ? mail.to.join(", ") : "unknown";
+  return `SYSTEM: Flow mail ${id} | thread ${threadId}${subject ? ` (${subject})` : ""} | ${from} → ${recipients}. Read: atdd-flow message read ${id}`;
 }
 
 /**
@@ -55,7 +64,7 @@ export default function (pi: ExtensionAPI) {
         delivered.add(key);
         pi.sendMessage({
           customType: "atdd-flow-mail",
-          content: `SYSTEM: new Flow mail ${id}. Read ${file}`,
+          content: mailNotice(threadId, { ...mail, id, subject: typeof thread.subject === "string" ? thread.subject : undefined }),
           display: true,
           details: { thread: threadId, message: id, path: file },
         }, { triggerTurn: true, deliverAs: "followUp" });

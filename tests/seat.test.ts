@@ -3,7 +3,7 @@ import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { discoverAddress, launchCommand, launchedAddress, notificationCommand } from "../src/adapters";
-import { addressedTo } from "../extensions/pi/index";
+import { addressedTo, mailNotice } from "../extensions/pi/index";
 import { isPiExecutable, launchNotice, piLaunchArgs, resolveExecutable } from "../src/seats";
 
 const roots: string[] = [];
@@ -64,6 +64,31 @@ test("a request remains outstanding until its linked result exists", async () =>
 
   await run(site, "result", thread, request, "--from", "driver.runtime@demo", "--body", "Checks pass");
   expect(await run(site, "status")).not.toContain("waiting:");
+});
+
+test("a message can be read directly without opening its entire thread", async () => {
+  const root = await mkdtemp(join(tmpdir(), "atdd-workflow-"));
+  roots.push(root);
+  const site = join(root, "site");
+  await run(root, "init", site);
+  await run(site, "project", "init", "demo");
+  await run(site, "spawn", "demo", "coordinator", "main", "--worktree", "/tmp/demo-main");
+  await run(site, "spawn", "demo", "driver", "runtime", "--worktree", "/tmp/demo-runtime");
+  const thread = await run(site, "thread", "start", "--with", "coordinator@demo,driver.runtime@demo", "--subject", "Direct mail");
+  const first = await run(site, "post", thread, "--from", "coordinator@demo", "--to", "driver.runtime@demo", "--body", "Read only this message.");
+  await run(site, "post", thread, "--from", "coordinator@demo", "--to", "driver.runtime@demo", "--body", "Do not include this message.");
+
+  const output = await run(site, "message", "read", first);
+  expect(output).toContain("schema: atdd-workflow/message-read/v1");
+  expect(output).toContain(`id: ${thread}`);
+  expect(output).toContain("Read only this message.");
+  expect(output).not.toContain("Do not include this message.");
+  expect(await fail(site, "message", "read", "M-missing")).toContain("does not exist");
+
+  const duplicate = await readFile(join(site, "threads", thread, `${first}.yaml`), "utf8");
+  const other = await run(site, "thread", "start", "--with", "coordinator@demo,driver.runtime@demo", "--subject", "Duplicate id");
+  await writeFile(join(site, "threads", other, `${first}.yaml`), duplicate);
+  expect(await fail(site, "message", "read", first)).toContain("ambiguous across threads");
 });
 
 test("an operator can initialize a standalone Desk Git repository", async () => {
@@ -332,6 +357,7 @@ test("host adapters discover native addresses from host-provided environment", (
   expect(addressedTo({ from: "coordinator@demo", to: ["driver.pi@demo"] }, { participants: ["coordinator@demo", "driver.pi@demo"] }, "driver.pi@demo")).toBe(true);
   expect(addressedTo({ from: "coordinator@demo", to: "all" }, { participants: ["coordinator@demo", "driver.pi@demo"] }, "driver.pi@demo")).toBe(true);
   expect(addressedTo({ from: "driver.pi@demo", to: "all" }, { participants: ["coordinator@demo", "driver.pi@demo"] }, "driver.pi@demo")).toBe(false);
+  expect(mailNotice("T-thread", { id: "M-message", from: "coordinator@demo", to: ["driver.pi@demo"], subject: "Compact mail" })).toBe("SYSTEM: Flow mail M-message | thread T-thread (Compact mail) | coordinator@demo → driver.pi@demo. Read: atdd-flow message read M-message");
   expect(launchCommand({ application: "tuios", placement: "etdd-os", name: "driver.runtime@etdd", worktree: "/worktrees/runtime", agent: "codex", root: "/coordination", seat: "driver.runtime@etdd" })).toEqual([
     "tuios", "new-window", "driver.runtime@etdd", "-s", "etdd-os", "--cwd", "/worktrees/runtime", "--no-focus", "--print-id", "--",
     "/usr/bin/env", "ATDD_WORKFLOW_ROOT=/coordination", "ATDD_WORKFLOW_SEAT=driver.runtime@etdd", "codex",
@@ -384,7 +410,10 @@ test("a host-attached replacement preserves its durable work and wakes the curre
 
   const thread = await run(site, "thread", "start", "--with", `${coordinator},${driver}`, "--subject", "Host-attached handoff");
   const request = await runWithEnvironment(site, host("w-test:p-coordinator"), "post", thread, "--from", coordinator, "--to", driver, "--expects-result", "--body", "Complete the handoff.");
-  expect(await readFile(notificationLog, "utf8")).toContain(`agent\nprompt\nw-test:p-old\nSYSTEM: new thread mail ${request}`);
+  const notice = await readFile(notificationLog, "utf8");
+  expect(notice).toContain(`agent\nprompt\nw-test:p-old\nSYSTEM: Flow mail ${request}`);
+  expect(notice).toContain(`thread ${thread} (Host-attached handoff)`);
+  expect(notice).toContain(`Read: atdd-flow message read ${request}`);
   await run(site, "receipt", thread, request, "--from", driver);
   await run(site, "checkpoint", driver, "--status", "blocked", "--summary", "The first host reached its rate limit.", "--next", "Replacement host must complete the handoff.");
 
