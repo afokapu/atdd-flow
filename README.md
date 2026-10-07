@@ -190,7 +190,9 @@ atdd-flow message read M-...
 
 The output includes only the message and its thread ID/subject; Flow rejects missing or ambiguous message IDs.
 
-Pi’s native wake-up is intentionally lightweight: no daemon, duplicate mailbox, or separate extension installation. The extension is shipped inside the Flow package. Its in-memory message-id guard tolerates duplicate filesystem events; the Desk thread files remain the source of truth.
+Pi’s native wake-up is intentionally lightweight: no daemon, duplicate mailbox, or separate extension installation. The extension is shipped inside the Flow package. Desk thread files remain the source of truth.
+
+Native mail is loss-tolerant rather than watcher-dependent. On session start/reload, the extension reconciles addressed immutable `M-*.yaml` files after its per-seat Desk watermark (`.atdd-flow/pi-inbox/<encoded-seat>.yaml`), then repeats a bounded reconciliation periodically. It orders mail by `created_at` and message ID, serializes watcher and scan work, and advances the watermark only after Pi accepts the message. `fs.watch` on thread folders remains a low-latency fast path; a lost event, unavailable watcher, or restarted Pi is recovered by reconciliation. Existing Pi processes still require `/reload` or restart after a Flow package upgrade to load the bundled extension.
 
 To host Pi in Herdr, create a pane with the durable Desk and seat identity, then start Pi with the extension supplied by the installed Flow package:
 

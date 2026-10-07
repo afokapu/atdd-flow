@@ -2,9 +2,9 @@ import { afterEach, expect, test } from "bun:test";
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { discoverAddress, notificationCommand } from "../src/adapters";
-import { addressedTo, mailNotice } from "../extensions/pi/index";
-import { resolveExecutable } from "../src/seats";
+import { discoverAddress, launchCommand, launchedAddress, notificationCommand } from "../src/adapters";
+import { addressedTo, createInboxReconciler, mailNotice } from "../extensions/pi/index";
+import { isPiExecutable, launchNotice, piLaunchArgs, resolveExecutable } from "../src/seats";
 
 const roots: string[] = [];
 const cli = join(import.meta.dir, "..", "src", "cli.ts");
@@ -89,6 +89,38 @@ test("a message can be read directly without opening its entire thread", async (
   const other = await run(site, "thread", "start", "--with", "coordinator@demo,driver.runtime@demo", "--subject", "Duplicate id");
   await writeFile(join(site, "threads", other, `${first}.yaml`), duplicate);
   expect(await fail(site, "message", "read", first)).toContain("ambiguous across threads");
+});
+
+test("durable inbox reconciliation recovers missed mail without duplicate delivery", async () => {
+  const root = await mkdtemp(join(tmpdir(), "atdd-workflow-"));
+  roots.push(root);
+  const site = join(root, "site");
+  await run(root, "init", site);
+  await run(site, "project", "init", "demo");
+  await run(site, "spawn", "demo", "coordinator", "main", "--worktree", "/tmp/demo-main");
+  await run(site, "spawn", "demo", "driver", "pi", "--worktree", "/tmp/demo-pi");
+  const seat = "driver.pi@demo";
+  const thread = await run(site, "thread", "start", "--with", `coordinator@demo,${seat}`, "--subject", "Durable inbox");
+  const first = await run(site, "post", thread, "--from", "coordinator@demo", "--to", seat, "--body", "Missed while Pi was offline.");
+  const delivered: string[] = [];
+  const initial = createInboxReconciler({ root: site, seat, deliver: async (mail) => { delivered.push(mail.id as string); } });
+  await initial.reconcile();
+  expect(delivered).toEqual([first]);
+
+  const second = await run(site, "post", thread, "--from", "coordinator@demo", "--to", seat, "--body", "Reject once.");
+  const third = await run(site, "post", thread, "--from", "coordinator@demo", "--to", seat, "--body", "Deliver after the retry.");
+  const failed = createInboxReconciler({ root: site, seat, batchSize: 2, deliver: async (mail) => {
+    if (mail.id === second) throw new Error("Pi rejected delivery");
+    delivered.push(mail.id as string);
+  } });
+  await failed.reconcile();
+  expect(delivered).toEqual([first]);
+
+  const restarted = createInboxReconciler({ root: site, seat, batchSize: 2, deliver: async (mail) => { delivered.push(mail.id as string); } });
+  await restarted.reconcile();
+  await restarted.reconcile();
+  expect(delivered).toEqual([first, second, third]);
+  expect(await readFile(join(site, ".atdd-flow", "pi-inbox", "driver.pi%40demo.yaml"), "utf8")).toContain(`id: ${third}`);
 });
 
 test("an operator can initialize a standalone Desk Git repository", async () => {
