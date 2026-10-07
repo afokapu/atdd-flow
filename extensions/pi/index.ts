@@ -8,7 +8,13 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 type Thread = { id?: unknown; participants?: unknown; subject?: unknown };
 export type Mail = { id?: unknown; from?: unknown; to?: unknown; subject?: unknown; created_at?: unknown };
 type InboxMail = Mail & { id: string; created_at: string };
-type Watermark = { schema: "atdd-flow/pi-inbox-watermark/v1"; seat: string; watermark?: { created_at: string; id: string } };
+type Watermark = {
+  schema: "atdd-flow/pi-inbox-watermark/v1";
+  seat: string;
+  /** Progress metadata only: eligibility is determined by durable per-message acknowledgements. */
+  watermark?: { created_at: string; id: string };
+  acknowledged?: Array<{ thread: string; id: string }>;
+};
 
 type InboxOptions = {
   root: string;
@@ -55,26 +61,36 @@ function compareMail(left: Pick<InboxMail, "created_at" | "id">, right: Pick<Inb
   return left.created_at.localeCompare(right.created_at) || left.id.localeCompare(right.id);
 }
 
-async function readWatermark(root: string, seat: string) {
+async function readInboxState(root: string, seat: string) {
   try {
     const value = parse(await readFile(watermarkPath(root, seat), "utf8")) as Watermark;
-    if (value?.schema !== "atdd-flow/pi-inbox-watermark/v1" || value.seat !== seat) return undefined;
-    if (value.watermark && (typeof value.watermark.id !== "string" || typeof value.watermark.created_at !== "string")) return undefined;
-    return value.watermark;
+    if (value?.schema !== "atdd-flow/pi-inbox-watermark/v1" || value.seat !== seat) return {};
+    const watermark = value.watermark && typeof value.watermark.id === "string" && typeof value.watermark.created_at === "string"
+      ? value.watermark : undefined;
+    const acknowledged = (value.acknowledged ?? []).filter((entry) => typeof entry?.thread === "string" && typeof entry?.id === "string");
+    return { watermark, acknowledged };
   } catch {
-    return undefined;
+    return {};
   }
 }
 
-async function persistWatermark(root: string, seat: string, watermark: Watermark["watermark"]) {
+async function persistInboxState(root: string, seat: string, watermark: Watermark["watermark"], acknowledged: Set<string>) {
   const file = watermarkPath(root, seat);
   await mkdir(dirname(file), { recursive: true });
   const temporary = join(dirname(file), `.${encodeURIComponent(seat)}.${randomUUID()}.tmp`);
-  await writeFile(temporary, stringify({ schema: "atdd-flow/pi-inbox-watermark/v1", seat, ...(watermark ? { watermark } : {}) }), "utf8");
+  const entries = [...acknowledged].map((key) => {
+    const divider = key.indexOf("/");
+    return { thread: key.slice(0, divider), id: key.slice(divider + 1) };
+  });
+  await writeFile(temporary, stringify({
+    schema: "atdd-flow/pi-inbox-watermark/v1", seat,
+    ...(watermark ? { watermark } : {}),
+    ...(entries.length ? { acknowledged: entries } : {}),
+  }), "utf8");
   await rename(temporary, file);
 }
 
-async function pendingMail(root: string, seat: string, watermark: Watermark["watermark"]) {
+async function pendingMail(root: string, seat: string) {
   const threads = join(root, "threads");
   let folders: fs.Dirent[];
   try { folders = await readdir(threads, { withFileTypes: true }); }
@@ -86,7 +102,8 @@ async function pendingMail(root: string, seat: string, watermark: Watermark["wat
       const files = await readdir(directory);
       const mail = await Promise.all(files.filter((file) => finalMail.test(file)).map(async (file) => {
         const value = parse(await readFile(join(directory, file), "utf8")) as Mail;
-        return validMail(value) && addressedTo(value, thread, seat) ? { mail: value, thread, path: join(directory, file) } : undefined;
+        return validMail(value) && addressedTo(value, thread, seat)
+          ? { mail: value, thread, threadId: folder.name, path: join(directory, file) } : undefined;
       }));
       return mail.filter((entry): entry is NonNullable<typeof entry> => Boolean(entry));
     } catch {
@@ -94,12 +111,11 @@ async function pendingMail(root: string, seat: string, watermark: Watermark["wat
       return [];
     }
   }));
-  return entries.flat().filter((entry) => !watermark || compareMail(entry.mail, watermark) > 0)
-    .sort((left, right) => compareMail(left.mail, right.mail));
+  return entries.flat().sort((left, right) => compareMail(left.mail, right.mail));
 }
 
 /**
- * Reconciles immutable Desk mail after a persisted per-seat watermark.
+ * Reconciles immutable Desk mail after durable per-message acknowledgements.
  * Delivery is serialized so fs.watch, startup, and periodic scans cannot reorder it.
  */
 export function createInboxReconciler({ root, seat, deliver, batchSize = defaultBatchSize, intervalMs = defaultIntervalMs }: InboxOptions) {
@@ -109,26 +125,30 @@ export function createInboxReconciler({ root, seat, deliver, batchSize = default
   const threadWatchers = new Map<string, fs.FSWatcher>();
   let interval: ReturnType<typeof setInterval> | undefined;
   const delivered = new Set<string>();
+  const acknowledged = new Set<string>();
   let serial = Promise.resolve();
 
   const reconcileNow = async () => {
     if (!loaded) {
-      watermark = await readWatermark(root, seat);
+      const state = await readInboxState(root, seat);
+      watermark = state.watermark;
+      for (const entry of state.acknowledged ?? []) acknowledged.add(`${entry.thread}/${entry.id}`);
       loaded = true;
     }
-    const entries = await pendingMail(root, seat, watermark);
-    for (const entry of entries.slice(0, batchSize)) {
-      const key = `${entry.thread.id ?? entry.path}/${entry.mail.id}`;
+    const entries = await pendingMail(root, seat);
+    for (const entry of entries.filter((candidate) => !acknowledged.has(`${candidate.threadId}/${candidate.mail.id}`)).slice(0, batchSize)) {
+      const key = `${entry.threadId}/${entry.mail.id}`;
       if (delivered.has(key)) continue;
       try {
         await deliver(entry.mail, entry.thread, entry.path);
       } catch {
-        // Do not advance past a message Pi did not accept; retry it before later mail.
+        // Do not acknowledge or advance past a message Pi did not accept; retry it before later mail.
         return;
       }
       delivered.add(key);
-      watermark = { created_at: entry.mail.created_at, id: entry.mail.id };
-      await persistWatermark(root, seat, watermark);
+      acknowledged.add(key);
+      if (!watermark || compareMail(entry.mail, watermark) > 0) watermark = { created_at: entry.mail.created_at, id: entry.mail.id };
+      await persistInboxState(root, seat, watermark, acknowledged);
     }
   };
 

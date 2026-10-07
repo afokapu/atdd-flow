@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { discoverAddress, launchCommand, launchedAddress, notificationCommand } from "../src/adapters";
@@ -120,7 +120,19 @@ test("durable inbox reconciliation recovers missed mail without duplicate delive
   await restarted.reconcile();
   await restarted.reconcile();
   expect(delivered).toEqual([first, second, third]);
-  expect(await readFile(join(site, ".atdd-flow", "pi-inbox", "driver.pi%40demo.yaml"), "utf8")).toContain(`id: ${third}`);
+
+  const delayedThread = await run(site, "thread", "start", "--with", `coordinator@demo,${seat}`, "--subject", "Delayed first mail");
+  const delayed = await run(site, "post", delayedThread, "--from", "coordinator@demo", "--to", seat, "--body", "Created first but hidden.");
+  const delayedFile = join(site, "threads", delayedThread, `${delayed}.yaml`);
+  const hiddenFile = join(site, "threads", delayedThread, `.${delayed}.hidden`);
+  await rename(delayedFile, hiddenFile);
+  const laterThread = await run(site, "thread", "start", "--with", `coordinator@demo,${seat}`, "--subject", "Visible later mail");
+  const later = await run(site, "post", laterThread, "--from", "coordinator@demo", "--to", seat, "--body", "Visible while the first mail is hidden.");
+  await restarted.reconcile();
+  await rename(hiddenFile, delayedFile);
+  await restarted.reconcile();
+  expect(delivered).toEqual([first, second, third, later, delayed]);
+  expect(await readFile(join(site, ".atdd-flow", "pi-inbox", "driver.pi%40demo.yaml"), "utf8")).toContain(`id: ${later}`);
 });
 
 test("an operator can initialize a standalone Desk Git repository", async () => {
