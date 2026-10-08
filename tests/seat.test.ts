@@ -100,6 +100,7 @@ test("durable inbox reconciliation recovers missed mail without duplicate delive
   await run(site, "spawn", "demo", "coordinator", "main", "--worktree", "/tmp/demo-main");
   await run(site, "spawn", "demo", "driver", "pi", "--worktree", "/tmp/demo-pi");
   const seat = "driver.pi@demo";
+  await run(site, "bind", seat, "--application", "herdr", "--address", "w-test:p-native", "--wake", "native");
   const thread = await run(site, "thread", "start", "--with", `coordinator@demo,${seat}`, "--subject", "Durable inbox");
   const first = await run(site, "post", thread, "--from", "coordinator@demo", "--to", seat, "--body", "Missed while Pi was offline.");
   const delivered: string[] = [];
@@ -131,8 +132,8 @@ test("durable inbox reconciliation recovers missed mail without duplicate delive
   await restarted.reconcile();
   await rename(hiddenFile, delayedFile);
   await restarted.reconcile();
-  expect(delivered).toEqual([first, second, third, later, delayed]);
-  expect(await readFile(join(site, ".atdd-flow", "pi-inbox", "driver.pi%40demo.yaml"), "utf8")).toContain(`id: ${later}`);
+  expect(delivered).toEqual([first, second, third, delayed, later]);
+  expect(await Bun.file(join(site, ".atdd-flow", "pi-inbox", "driver.pi%40demo", "pending", `${later}.yaml`)).exists()).toBe(false);
 });
 
 test("an operator can initialize a standalone Desk Git repository", async () => {
