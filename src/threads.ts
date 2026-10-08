@@ -2,7 +2,7 @@ import { readdir } from "node:fs/promises";
 import { notify } from "./adapters";
 import {
   atomicYaml, canonicalAddress, desk, has, id, now, paths, project, readYaml,
-  required, seat, words,
+  required, runtimeAddress, seat, words,
 } from "./core";
 
 export type Thread = { schema: string; id: string; subject: string; participants: string[]; state: "open" | "closed"; summary?: string; task?: string };
@@ -79,13 +79,15 @@ async function inject(root: string, address: string, message: Message, threadId:
   const runtime = target.runtime;
   if (!runtime) return;
   if (runtime.wake === "native") return;
-  const nativeAddress = runtime.addresses[runtime.application];
-  if (!nativeAddress) return;
+  const storedAddress = runtime.addresses[runtime.application];
+  if (!storedAddress) return;
+  const config = await desk(root);
+  const locator = runtimeAddress(runtime.application, storedAddress, config.herdr_session);
   const record = await thread(root, threadId);
   const recipients = message.to === "all" ? "all" : message.to.join(", ");
   const subject = record.subject.replace(/\s+/g, " ").trim();
   const notice = `SYSTEM: Flow mail ${message.id} | thread ${threadId} (${subject}) | ${message.from} → ${recipients}. Read: atdd-flow message read ${message.id}`;
-  try { await notify(runtime.application, nativeAddress, notice, (await desk(root)).herdr_session); }
+  try { await notify(runtime.application, locator.address, notice, locator.session); }
   catch (error) { console.warn(`Notification for ${address} was not delivered: ${(error as Error).message}`); }
 }
 

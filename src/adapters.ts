@@ -24,6 +24,11 @@ export function discoverAddress(application: string, environment: Environment = 
   return discover();
 }
 
+/** Herdr pane ids are only unique inside a session, so new bindings record both. */
+export function discoverHerdrLocator(environment: Environment = process.env) {
+  return { session: value(environment, "HERDR_SESSION", "Herdr"), pane: value(environment, "HERDR_PANE_ID", "Herdr") };
+}
+
 export function notificationCommand(application: string, address: string, notice: string, herdrSession?: string): string[] | undefined {
   const commands: Record<string, () => string[] | undefined> = {
     tmux: () => ["tmux", "send-keys", "-t", address, notice, "Enter"],

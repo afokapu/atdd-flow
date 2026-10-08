@@ -163,6 +163,23 @@ atdd-flow launch driver.runtime@resolver-os --application tuios --placement reso
 
 Launch selects a model from `models.yaml`, starts that model's executable in the seat's declared worktree, passes `ATDD_WORKFLOW_ROOT` and `ATDD_WORKFLOW_SEAT`, records the selected model on the live runtime binding, and asks the agent to read its seat. Other hosts remain correct without an adapter; their operator supplies that prompt.
 
+### Optional Herdr worktree projection
+
+`multiplexer/herdr.yaml` is a compact, instance-free policy: it describes only primary versus linked worktree role placement. The Desk remains authoritative for projects, seats, tasks, branches, and worktrees. Herdr is an optional display/runtime projection and never becomes a second registry.
+
+An operator must select the target session explicitly, or run from a Herdr pane that supplies `HERDR_SESSION`; Flow never chooses a Desk-wide or focused session. Status is read-only and apply uses `--no-focus`:
+
+```sh
+atdd-flow multiplexer status herdr --session forge
+atdd-flow multiplexer apply herdr --session forge
+# Inside a Herdr pane, the inherited HERDR_SESSION is sufficient:
+atdd-flow multiplexer apply herdr
+```
+
+For each Desk project, apply reconciles the declared repository checkout as workspace `{project}` and gives every main/coordinator seat using it a tab and pane named `{seat.address}`. Linked coordinator worktrees and drivers with a non-done assigned task become linked-worktree workspaces named `{seat.address}`, with an equally named tab and pane. Unbound worktrees are ignored. Apply neither focuses, closes, nor guesses about other workspaces or sessions.
+
+New Herdr attachments store both the inherited session and pane id. Older scalar pane bindings remain readable and use their legacy Desk session only when one exists, so a bare `w1:p1` from one session cannot be mistaken for the same pane in another newly attached session.
+
 ### Pi-native Desk mail
 
 When Flow launches the `pi` executable, it automatically loads its bundled Pi extension. Pi remains a normal, interactive agent in its host pane, but the extension watches the immutable Desk mail files and wakes Pi internally with `pi.sendMessage()`—not terminal text injection.

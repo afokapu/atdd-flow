@@ -17,7 +17,8 @@
     "extensions",
     "src",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "multiplexer"
   ],
   "keywords": [
     "atdd",
