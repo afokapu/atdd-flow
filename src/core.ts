@@ -48,7 +48,15 @@ export type Project = {
  * while the relevant bridge is responsible for using their native format.
  */
 /** `native` means the agent runtime wakes itself from the durable Desk. */
-export type Runtime = { application: string; addresses: Record<string, string>; attached_at?: string; model?: string; wake?: "host" | "native" };
+export type HerdrLocator = { session: string; pane: string };
+/** Strings are legacy native addresses; new Herdr bindings retain their session. */
+export type RuntimeAddress = string | HerdrLocator;
+export type Runtime = { application: string; addresses: Record<string, RuntimeAddress>; attached_at?: string; model?: string; wake?: "host" | "native" };
+
+export function runtimeAddress(application: string, value: RuntimeAddress, legacyHerdrSession?: string) {
+  if (application !== "herdr" || typeof value === "string") return { address: value, ...(application === "herdr" && legacyHerdrSession ? { session: legacyHerdrSession } : {}) };
+  return { address: value.pane, session: value.session };
+}
 export type Seat = {
   schema: string;
   address: string;

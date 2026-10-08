@@ -1,11 +1,11 @@
 import { existsSync } from "node:fs";
 import { mkdir, readdir } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
-import { discoverAddress, launchedAddress, launchCommand, notify } from "./adapters";
+import { discoverAddress, discoverHerdrLocator, launchedAddress, launchCommand, notify } from "./adapters";
 import {
   type Checkpoint, type Desk, type ModelCandidate, type ModelPortfolio, type Project, type Role, type Runtime, type Seat,
   atomicYaml, canonicalAddress, desk, exists, fill, migrateDesk, modelPortfolio, now, paths, project, readYaml,
-  required, run, runOutput, seat, words, yaml,
+  required, run, runOutput, runtimeAddress, seat, words, yaml,
 } from "./core";
 import { selectModel } from "./judgment";
 import { seatTasks } from "./tasks";
@@ -105,11 +105,13 @@ export async function bind(root: string, address: string, args: string[], select
   const selectedWake = wake ?? requestedWake as Runtime["wake"] | undefined;
   if (!/^[a-z][a-z0-9_-]*$/.test(application)) throw new Error(`Application must use lowercase letters, numbers, underscores, or hyphens: ${application}`);
   const nativeAddress = required(words(args, "--address"), "--address");
+  const requestedSession = words(args, "--session");
   const addresses = record.runtime?.addresses ?? {};
+  const runtimeBinding = application === "herdr" && requestedSession ? { session: requestedSession, pane: nativeAddress } : nativeAddress;
   record.runtime = {
     ...record.runtime,
     application,
-    addresses: { ...addresses, [application]: nativeAddress },
+    addresses: { ...addresses, [application]: runtimeBinding },
     attached_at: now(),
     ...(selectedModel ? { model: selectedModel } : {}),
     ...(selectedWake ? { wake: selectedWake } : {}),
@@ -130,17 +132,20 @@ export async function useApplication(root: string, address: string, application:
   const resolved = await canonicalAddress(root, address);
   const record = await seat(root, resolved);
   const runtime = required(record.runtime, `a runtime binding for ${resolved}`);
-  if (!runtime.addresses[application]) throw new Error(`${resolved} has no ${application} address. Bind it first.`);
+  const stored = runtime.addresses[application];
+  if (!stored) throw new Error(`${resolved} has no ${application} address. Bind it first.`);
   record.runtime = { ...runtime, application, attached_at: now() };
   await atomicYaml(paths(root).seatFile(resolved), record);
-  console.log(`Using ${application}:${record.runtime.addresses[application]} for ${resolved}`);
+  const locator = runtimeAddress(application, stored, (await desk(root)).herdr_session);
+  console.log(`Using ${application}:${locator.session ? `${locator.session}/` : ""}${locator.address} for ${resolved}`);
 }
 
 export async function attach(root: string, address: string, args: string[]) {
   const application = words(args, "--application") ?? (await desk(root)).application;
   const nativeAddress = discoverAddress(application);
   const wake = words(args, "--wake");
-  await bind(root, address, ["--application", application, "--address", nativeAddress, ...(wake ? ["--wake", wake] : [])]);
+  const session = application === "herdr" ? discoverHerdrLocator().session : undefined;
+  await bind(root, address, ["--application", application, "--address", nativeAddress, ...(session ? ["--session", session] : []), ...(wake ? ["--wake", wake] : [])]);
 }
 
 export function availableModelCandidates(config: Desk, portfolio: ModelPortfolio) {
@@ -247,6 +252,10 @@ export async function openSeat(root: string, address: string) {
   const resolved = await canonicalAddress(root, address);
   const record = await seat(root, resolved);
   console.log(yaml.print(record));
+  // Keep the native pane visible to scripts and operators that consumed the
+  // legacy scalar form while the durable record now carries its session too.
+  const herdr = record.runtime?.addresses.herdr;
+  if (herdr && typeof herdr !== "string") console.log(`herdr: ${herdr.pane} (session: ${herdr.session})`);
   const checkpointFile = paths(root).checkpointFile(resolved);
   if (await exists(checkpointFile)) console.log(yaml.print(await readYaml<Checkpoint>(checkpointFile)));
   const threadIds = await readdir(paths(root).threads);

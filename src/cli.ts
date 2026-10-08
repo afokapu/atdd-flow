@@ -9,6 +9,7 @@ import { addressBook } from "./address-book";
 import * as judgment from "./judgment";
 import * as reviews from "./reviews";
 import { status } from "./overview";
+import { multiplexer } from "./multiplexer";
 
 const usage = `atdd-flow — filesystem-first agent seats and tasks
 
@@ -20,11 +21,12 @@ Usage:
   atdd-flow desk migrate
   atdd-flow project init <project>
   atdd-flow spawn <project> <role> <name> [--worktree <path>] [--branch <branch>] [--agent <legacy-executable>]
-  atdd-flow bind <address> [--application <application>] --address <native-address> [--agent <executable>] [--worktree <path>] [--wake host|native]
+  atdd-flow bind <address> [--application <application>] --address <native-address> [--session <name>] [--agent <executable>] [--worktree <path>] [--wake host|native]
   atdd-flow attach <address> [--application <application>] [--wake host|native]
   atdd-flow pi extension-path
   atdd-flow launch <address> --application <application> --placement <native-container-address>
   atdd-flow application use <address> <application>
+  atdd-flow multiplexer status|apply herdr [--session <name>]
   atdd-flow describe <address> --purpose <one-line responsibility>
   atdd-flow checkpoint <address> --summary <text> --next <text> [--status active|standby|blocked|complete|unverified]
   atdd-flow task add <project> <task-id> --title <text> --coordinator <address> [--assignee <address>] [--body <text>] [--source <reference>] [--depends-on <task-id,...>] --done-when <text> [--done-when <text> ...]
@@ -88,6 +90,7 @@ async function main() {
       if (rest[0] === "use") return useApplication(root, required(rest[1], "address"), required(rest[2], "application"));
       throw new Error("Use `atdd-flow application use <address> <application>`.");
     },
+    multiplexer: () => multiplexer(root, rest),
     describe: () => describe(root, required(rest[0], "address"), rest.slice(1)),
     checkpoint: () => checkpoint(root, required(rest[0], "address"), rest.slice(1)),
     task: async () => {

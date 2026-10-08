@@ -1,0 +1,17 @@
+schema: atdd-workflow/multiplexer/herdr/v1
+projection:
+  primary:
+    worktree: primary
+    workspace_label: "{project}"
+    seats:
+      roles: [main, coordinator]
+      tab_label: "{seat.address}"
+      pane_label: "{seat.address}"
+  linked_worktree:
+    worktree: linked
+    seats:
+      coordinator: always
+      driver: active_or_assigned
+      workspace_label: "{seat.address}"
+      tab_label: "{seat.address}"
+      pane_label: "{seat.address}"
