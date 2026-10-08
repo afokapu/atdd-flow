@@ -75,16 +75,57 @@ async function assertRoute(root: string, from: string, recipients: string[]) {
   }
 }
 
+type PendingReference = { thread: string; message: string; created_at: string };
+type PendingSegment = { schema: "atdd-flow/pi-inbox-segment/v1"; entries: PendingReference[]; next?: string };
+type PendingQueue = { schema: "atdd-flow/pi-inbox-queue/v1"; head?: string; tail?: string };
+const pendingSegmentSize = 32;
+
+function inboxDirectory(root: string, address: string) {
+  return join(root, ".atdd-flow", "pi-inbox", encodeURIComponent(address));
+}
+
+/** The queue is a bounded linked index: recovery reads only its head segment, never Desk history. */
+async function enqueueNativeMail(root: string, address: string, reference: PendingReference) {
+  const directory = inboxDirectory(root, address);
+  const statePath = join(directory, "queue.yaml");
+  let queue: PendingQueue;
+  try { queue = await readYaml<PendingQueue>(statePath); }
+  catch { queue = { schema: "atdd-flow/pi-inbox-queue/v1" }; }
+  const entriesPath = (segment: string) => join(directory, "pending", `${segment}.yaml`);
+  if (queue.tail) {
+    try {
+      const tail = await readYaml<PendingSegment>(entriesPath(queue.tail));
+      if (Array.isArray(tail.entries) && tail.entries.length < pendingSegmentSize) {
+        tail.entries.push(reference);
+        tail.entries.sort((left, right) => left.created_at.localeCompare(right.created_at) || left.message.localeCompare(right.message));
+        await atomicYaml(entriesPath(queue.tail), tail);
+        return;
+      }
+      const next = `S-${reference.message}`;
+      await atomicYaml(entriesPath(next), { schema: "atdd-flow/pi-inbox-segment/v1", entries: [reference] } satisfies PendingSegment);
+      tail.next = next;
+      await atomicYaml(entriesPath(queue.tail), tail);
+      queue.tail = next;
+      await atomicYaml(statePath, queue);
+      return;
+    } catch { /* A missing/corrupt tail is retained for reconciliation; start an independent segment. */ }
+  }
+  const segment = `S-${reference.message}`;
+  await atomicYaml(entriesPath(segment), { schema: "atdd-flow/pi-inbox-segment/v1", entries: [reference] } satisfies PendingSegment);
+  queue.head ??= segment;
+  queue.tail = segment;
+  await atomicYaml(statePath, queue);
+}
+
 async function inject(root: string, address: string, message: Message, threadId: string) {
   const target = await seat(root, address);
   const runtime = target.runtime;
-  if (!runtime) return;
-  if (runtime.wake === "native") {
-    await atomicYaml(join(root, ".atdd-flow", "pi-inbox", encodeURIComponent(address), "pending", `${message.id}.yaml`), {
-      schema: "atdd-flow/pi-inbox-reference/v1", thread: threadId, message: message.id, created_at: message.created_at,
-    });
-    return;
+  // A Pi-designated seat may be temporarily unbound; persist its wake reference before any runtime exists.
+  if (runtime?.wake === "native" || target.agent === "pi") {
+    await enqueueNativeMail(root, address, { thread: threadId, message: message.id, created_at: message.created_at });
+    if (!runtime || runtime.wake === "native") return;
   }
+  if (!runtime) return;
   const nativeAddress = runtime.addresses[runtime.application];
   if (!nativeAddress) return;
   const record = await thread(root, threadId);

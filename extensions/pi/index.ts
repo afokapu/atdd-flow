@@ -1,16 +1,17 @@
 import * as fs from "node:fs";
-import { opendir, readFile, unlink } from "node:fs/promises";
-import { join } from "node:path";
-import { parse } from "yaml";
+import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
+import { parse, stringify } from "yaml";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 type Thread = { id?: unknown; participants?: unknown; subject?: unknown };
 export type Mail = { id?: unknown; from?: unknown; to?: unknown; subject?: unknown; created_at?: unknown };
 type InboxMail = Mail & { id: string; created_at: string };
 type PendingReference = { schema?: unknown; thread?: unknown; message?: unknown; created_at?: unknown };
+type PendingSegment = { schema?: unknown; entries?: unknown; next?: unknown };
+type PendingQueue = { schema?: unknown; head?: unknown; tail?: unknown };
 type InboxOptions = { root: string; seat: string; deliver: (mail: InboxMail, thread: Thread, path: string) => void | Promise<void>; batchSize?: number; intervalMs?: number };
 
-const finalMail = /^M-[^.]+\.yaml$/;
 const defaultBatchSize = 32;
 const defaultIntervalMs = 30_000;
 
@@ -33,8 +34,19 @@ export function mailNotice(threadId: string, mail: Mail) {
   return `SYSTEM: Flow mail ${id} | thread ${threadId}${subject ? ` (${subject})` : ""} | ${from} → ${recipients}. Read: atdd-flow message read ${id}`;
 }
 
-function pendingDirectory(root: string, seat: string) {
-  return join(root, ".atdd-flow", "pi-inbox", encodeURIComponent(seat), "pending");
+function inboxDirectory(root: string, seat: string) {
+  return join(root, ".atdd-flow", "pi-inbox", encodeURIComponent(seat));
+}
+
+function pendingDirectory(root: string, seat: string) { return join(inboxDirectory(root, seat), "pending"); }
+function queuePath(root: string, seat: string) { return join(inboxDirectory(root, seat), "queue.yaml"); }
+function segmentPath(root: string, seat: string, segment: string) { return join(pendingDirectory(root, seat), `${segment}.yaml`); }
+
+async function atomicYaml(path: string, value: unknown) {
+  await mkdir(dirname(path), { recursive: true });
+  const temporary = join(dirname(path), `.${basename(path)}.${crypto.randomUUID()}.tmp`);
+  await writeFile(temporary, stringify(value), "utf8");
+  await rename(temporary, path);
 }
 
 function validMail(value: Mail): value is InboxMail {
@@ -43,6 +55,14 @@ function validMail(value: Mail): value is InboxMail {
 
 function validReference(value: PendingReference): value is Required<Pick<PendingReference, "thread" | "message" | "created_at">> {
   return typeof value.thread === "string" && typeof value.message === "string" && typeof value.created_at === "string";
+}
+
+function validQueue(value: PendingQueue): value is Required<Pick<PendingQueue, "head">> {
+  return typeof value.head === "string";
+}
+
+function references(value: PendingSegment): PendingReference[] {
+  return Array.isArray(value.entries) ? value.entries.filter((entry): entry is PendingReference => Boolean(entry) && typeof entry === "object") : [];
 }
 
 /**
@@ -56,28 +76,20 @@ export function createInboxReconciler({ root, seat, deliver, batchSize = default
   let serial = Promise.resolve();
 
   const reconcileNow = async () => {
-    const directory = pendingDirectory(root, seat);
-    const candidates: Array<{ thread: string; message: string; created_at: string; path: string }> = [];
-    try {
-      const handle = await opendir(directory);
-      for await (const entry of handle) {
-        if (candidates.length >= batchSize) break;
-        if (!entry.isFile() || !finalMail.test(entry.name)) continue;
-        try {
-          const path = join(directory, entry.name);
-          const reference = parse(await readFile(path, "utf8")) as PendingReference;
-          if (validReference(reference)) candidates.push({ ...reference, path });
-        } catch {
-          // A partially-written reference remains queued for a later bounded retry.
-        }
-      }
-    } catch {
-      return;
-    }
-    candidates.sort((left, right) => left.created_at.localeCompare(right.created_at) || left.message.localeCompare(right.message));
-    for (const reference of candidates) {
+    let queue: PendingQueue;
+    try { queue = parse(await readFile(queuePath(root, seat), "utf8")) as PendingQueue; }
+    catch { return; }
+    if (!validQueue(queue)) return;
+    const path = segmentPath(root, seat, queue.head);
+    let segment: PendingSegment;
+    try { segment = parse(await readFile(path, "utf8")) as PendingSegment; }
+    catch { return; }
+    const entries = references(segment);
+    // A segment contains at most 32 references. A tick reads one durable head segment and at most batchSize mail records.
+    for (let count = 0; count < batchSize && entries.length; count += 1) {
+      const reference = entries[0];
+      if (!validReference(reference)) { entries.shift(); await atomicYaml(path, { ...segment, entries }); continue; }
       const key = `${reference.thread}/${reference.message}`;
-      if (delivered.has(key)) continue;
       try {
         const folder = join(root, "threads", reference.thread);
         const [rawThread, rawMail] = await Promise.all([
@@ -86,17 +98,22 @@ export function createInboxReconciler({ root, seat, deliver, batchSize = default
         ]);
         const thread = parse(rawThread) as Thread;
         const mail = parse(rawMail) as Mail;
-        if (!validMail(mail) || !addressedTo(mail, thread, seat)) {
-          await unlink(reference.path);
-          continue;
-        }
-        await deliver(mail, thread, join(folder, `${reference.message}.yaml`));
+        if (validMail(mail) && addressedTo(mail, thread, seat) && !delivered.has(key)) await deliver(mail, thread, join(folder, `${reference.message}.yaml`));
         delivered.add(key);
-        await unlink(reference.path);
+        entries.shift();
+        await atomicYaml(path, { ...segment, entries });
       } catch {
-        // Keep the reference until Pi accepts it; preserve order within this recovery batch.
+        // Keep the head reference until Pi accepts it; later mail cannot overtake it.
         return;
       }
+    }
+    if (entries.length) return;
+    const next = typeof segment.next === "string" ? segment.next : undefined;
+    await unlink(path);
+    if (next) {
+      await atomicYaml(queuePath(root, seat), { ...queue, head: next });
+    } else {
+      await unlink(queuePath(root, seat));
     }
   };
 

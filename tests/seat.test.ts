@@ -136,6 +136,31 @@ test("durable inbox reconciliation recovers missed mail without duplicate delive
   expect(await Bun.file(join(site, ".atdd-flow", "pi-inbox", "driver.pi%40demo", "pending", `${later}.yaml`)).exists()).toBe(false);
 });
 
+test("a Pi-designated unbound seat queues ordered native mail in bounded segments", async () => {
+  const root = await mkdtemp(join(tmpdir(), "atdd-workflow-"));
+  roots.push(root);
+  const site = join(root, "site");
+  await run(root, "init", site);
+  await run(site, "project", "init", "demo");
+  await run(site, "spawn", "demo", "coordinator", "main", "--worktree", "/tmp/demo-main");
+  await run(site, "spawn", "demo", "driver", "offline", "--worktree", "/tmp/demo-offline");
+  const seat = "driver.offline@demo";
+  await run(site, "bind", seat, "--application", "herdr", "--address", "w-test:p-offline", "--agent", "pi", "--wake", "native");
+  const seatPath = join(site, "work", "demo", "seats", "driver.offline", "seat.yaml");
+  await writeFile(seatPath, (await readFile(seatPath, "utf8")).replace(/\nruntime:[\s\S]*$/, "\n"));
+  const thread = await run(site, "thread", "start", "--with", `coordinator@demo,${seat}`, "--subject", "Offline Pi inbox");
+  const expected: string[] = [];
+  for (let index = 0; index < 33; index += 1) {
+    expected.push(await run(site, "post", thread, "--from", "coordinator@demo", "--to", seat, "--body", `Queued ${index}`));
+  }
+  const delivered: string[] = [];
+  const inbox = createInboxReconciler({ root: site, seat, batchSize: 32, deliver: async (mail) => { delivered.push(mail.id); } });
+  await inbox.reconcile();
+  expect(delivered).toEqual(expected.slice(0, 32));
+  await inbox.reconcile();
+  expect(delivered).toEqual(expected);
+});
+
 test("an operator can initialize a standalone Desk Git repository", async () => {
   const root = await mkdtemp(join(tmpdir(), "atdd-workflow-"));
   roots.push(root);
