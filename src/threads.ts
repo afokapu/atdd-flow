@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { notify } from "./adapters";
 import {
   atomicYaml, canonicalAddress, desk, has, id, now, paths, project, readYaml,
-  required, seat, words,
+  required, runtimeAddress, seat, words,
 } from "./core";
 
 export type Thread = { schema: string; id: string; subject: string; participants: string[]; state: "open" | "closed"; summary?: string; task?: string };
@@ -156,15 +156,23 @@ async function enqueueNativeMail(root: string, address: string, reference: Pendi
   });
 }
 
-async function publishNativeMail(root: string, address: string, segment: string, message: string) {
+async function publishNativeMail(root: string, address: string, _segment: string, message: string) {
   const directory = inboxDirectory(root, address);
   await withInboxLock(directory, async () => {
-    const path = join(directory, "pending", `${segment}.yaml`);
-    const record = await readYaml<PendingSegment>(path);
-    const entry = record.entries.find((candidate) => candidate.message === message);
-    if (!entry) throw new Error(`Pending inbox reference ${message} is missing`);
-    entry.published = true;
-    await atomicYaml(path, record);
+    const queue = await readYaml<PendingQueue>(join(directory, "queue.yaml"));
+    let segment = queue.head;
+    while (segment) {
+      const path = join(directory, "pending", `${segment}.yaml`);
+      const record = await readYaml<PendingSegment>(path);
+      const entry = record.entries.find((candidate) => candidate.message === message);
+      if (entry) {
+        entry.published = true;
+        await atomicYaml(path, record);
+        return;
+      }
+      segment = record.next;
+    }
+    throw new Error(`Pending inbox reference ${message} is missing`);
   });
 }
 
@@ -183,13 +191,15 @@ async function inject(root: string, address: string, message: Message, threadId:
     if (!runtime || runtime.wake === "native") return;
   }
   if (!runtime) return;
-  const nativeAddress = runtime.addresses[runtime.application];
-  if (!nativeAddress) return;
+  const storedAddress = runtime.addresses[runtime.application];
+  if (!storedAddress) return;
+  const config = await desk(root);
+  const locator = runtimeAddress(runtime.application, storedAddress, config.herdr_session);
   const record = await thread(root, threadId);
   const recipients = message.to === "all" ? "all" : message.to.join(", ");
   const subject = record.subject.replace(/\s+/g, " ").trim();
   const notice = `SYSTEM: Flow mail ${message.id} | thread ${threadId} (${subject}) | ${message.from} → ${recipients}. Read: atdd-flow message read ${message.id}`;
-  try { await notify(runtime.application, nativeAddress, notice, (await desk(root)).herdr_session); }
+  try { await notify(runtime.application, locator.address, notice, locator.session); }
   catch (error) { console.warn(`Notification for ${address} was not delivered: ${(error as Error).message}`); }
 }
 
