@@ -78,7 +78,6 @@ async function assertRoute(root: string, from: string, recipients: string[]) {
 type PendingReference = { thread: string; message: string; created_at: string; published?: boolean };
 type PendingSegment = { schema: "atdd-flow/pi-inbox-segment/v1"; entries: PendingReference[]; next?: string };
 type PendingQueue = { schema: "atdd-flow/pi-inbox-queue/v1"; head?: string; tail?: string };
-const pendingSegmentSize = 32;
 
 function inboxDirectory(root: string, address: string) {
   return join(root, ".atdd-flow", "pi-inbox", encodeURIComponent(address));
@@ -115,28 +114,45 @@ async function enqueueNativeMail(root: string, address: string, reference: Pendi
     try { queue = await readYaml<PendingQueue>(statePath); }
     catch { queue = { schema: "atdd-flow/pi-inbox-queue/v1" }; }
     const entriesPath = (segment: string) => join(directory, "pending", `${segment}.yaml`);
-    if (queue.tail) {
-      const tail = await readYaml<PendingSegment>(entriesPath(queue.tail));
-      if (Array.isArray(tail.entries) && tail.entries.length < pendingSegmentSize) {
-        tail.entries.push(reference);
-        tail.entries.sort((left, right) => left.created_at.localeCompare(right.created_at) || left.message.localeCompare(right.message));
-        await atomicYaml(entriesPath(queue.tail), tail);
-        return queue.tail;
+    const compare = (left: PendingReference, right: PendingReference) => left.created_at.localeCompare(right.created_at) || left.message.localeCompare(right.message);
+    const capacity = 32;
+    if (!queue.head) {
+      const segment = `S-${reference.message}`;
+      await atomicYaml(entriesPath(segment), { schema: "atdd-flow/pi-inbox-segment/v1", entries: [reference] } satisfies PendingSegment);
+      queue.head = segment;
+      queue.tail = segment;
+      await atomicYaml(statePath, queue);
+      return segment;
+    }
+    // Insert under the same process-safe lock. A full segment spills its latest reference forward, preserving global created_at/message order across rollover.
+    let pending = reference;
+    let current = queue.head;
+    let referenceSegment: string | undefined;
+    while (current) {
+      const record = await readYaml<PendingSegment>(entriesPath(current));
+      record.entries.push(pending);
+      record.entries.sort(compare);
+      if (record.entries.some((entry) => entry.message === reference.message)) referenceSegment = current;
+      if (record.entries.length <= capacity) {
+        await atomicYaml(entriesPath(current), record);
+        return referenceSegment ?? current;
       }
-      const next = `S-${reference.message}`;
-      await atomicYaml(entriesPath(next), { schema: "atdd-flow/pi-inbox-segment/v1", entries: [reference] } satisfies PendingSegment);
-      tail.next = next;
-      await atomicYaml(entriesPath(queue.tail), tail);
+      pending = record.entries.pop()!;
+      if (pending.message === reference.message) referenceSegment = undefined;
+      if (record.next) {
+        await atomicYaml(entriesPath(current), record);
+        current = record.next;
+        continue;
+      }
+      const next = `S-${pending.message}`;
+      record.next = next;
+      await atomicYaml(entriesPath(current), record);
+      await atomicYaml(entriesPath(next), { schema: "atdd-flow/pi-inbox-segment/v1", entries: [pending] } satisfies PendingSegment);
       queue.tail = next;
       await atomicYaml(statePath, queue);
-      return next;
+      return referenceSegment ?? next;
     }
-    const segment = `S-${reference.message}`;
-    await atomicYaml(entriesPath(segment), { schema: "atdd-flow/pi-inbox-segment/v1", entries: [reference] } satisfies PendingSegment);
-    queue.head = segment;
-    queue.tail = segment;
-    await atomicYaml(statePath, queue);
-    return segment;
+    throw new Error("Pending inbox queue has no reachable tail");
   });
 }
 

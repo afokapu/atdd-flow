@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { discoverAddress, launchCommand, launchedAddress, notificationCommand } from "../src/adapters";
 import { addressedTo, createInboxReconciler, mailNotice } from "../extensions/pi/index";
+import { parse } from "yaml";
 import { isPiExecutable, launchNotice, piLaunchArgs, resolveExecutable } from "../src/seats";
 
 const roots: string[] = [];
@@ -179,6 +180,33 @@ test("concurrent native posts survive queue rollover without losing references",
   await inbox.reconcile();
   expect(delivered).toHaveLength(40);
   expect(new Set(delivered)).toEqual(new Set(posted));
+  const expected = (await Promise.all(posted.map(async (id) => ({ id, created_at: (parse(await readFile(join(site, "threads", thread, `${id}.yaml`), "utf8")) as { created_at: string }).created_at })))).sort((left, right) => left.created_at.localeCompare(right.created_at) || left.id.localeCompare(right.id)).map(({ id }) => id);
+  expect(delivered).toEqual(expected);
+});
+
+test("an incomplete inbox intent never delivers or blocks later durable mail", async () => {
+  const root = await mkdtemp(join(tmpdir(), "atdd-workflow-"));
+  roots.push(root);
+  const site = join(root, "site");
+  await run(root, "init", site);
+  await run(site, "project", "init", "demo");
+  await run(site, "spawn", "demo", "coordinator", "main", "--worktree", "/tmp/demo-main");
+  await run(site, "spawn", "demo", "driver", "pi", "--worktree", "/tmp/demo-pi");
+  const seat = "driver.pi@demo";
+  await run(site, "bind", seat, "--application", "herdr", "--address", "w-test:p-native", "--wake", "native");
+  const thread = await run(site, "thread", "start", "--with", `coordinator@demo,${seat}`, "--subject", "Orphan intent");
+  const inboxRoot = join(site, ".atdd-flow", "pi-inbox", encodeURIComponent(seat));
+  await mkdir(join(inboxRoot, "pending"), { recursive: true });
+  await writeFile(join(inboxRoot, "queue.yaml"), "schema: atdd-flow/pi-inbox-queue/v1\nhead: S-orphan\ntail: S-orphan\n");
+  await writeFile(join(inboxRoot, "pending", "S-orphan.yaml"), `schema: atdd-flow/pi-inbox-segment/v1\nentries:\n  - thread: ${thread}\n    message: M-orphan\n    created_at: 1970-01-01T00:00:00.000Z\n    published: false\n`);
+  const later = await run(site, "post", thread, "--from", "coordinator@demo", "--to", seat, "--body", "Must survive the orphan.");
+  // Simulate a crash after authoritative M persistence but before the advisory publish marker write.
+  await writeFile(join(inboxRoot, "pending", "S-orphan.yaml"), (await readFile(join(inboxRoot, "pending", "S-orphan.yaml"), "utf8")).replace("published: true", "published: false"));
+  const delivered: string[] = [];
+  const restarted = createInboxReconciler({ root: site, seat, deliver: async (mail) => { delivered.push(mail.id); } });
+  await restarted.reconcile();
+  expect(delivered).toEqual([later]);
+  expect(delivered).not.toContain("M-orphan");
 });
 
 test("an operator can initialize a standalone Desk Git repository", async () => {
