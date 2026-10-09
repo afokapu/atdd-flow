@@ -172,7 +172,7 @@ async function publishNativeMail(root: string, address: string, _segment: string
       }
       segment = record.next;
     }
-    throw new Error(`Pending inbox reference ${message} is missing`);
+    // A reconciler can consume an authoritative M-file reference between message persistence and this advisory marker; that is already a successful, exactly-once delivery.
   });
 }
 

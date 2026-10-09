@@ -126,12 +126,17 @@ export function createInboxReconciler({ root, seat, deliver, batchSize = default
       } catch (error) {
         // A crash before message persistence leaves an unpublished prepare record. Retain it briefly for an in-flight post, then discard only the non-authoritative orphan.
         const age = Date.now() - Date.parse(reference.created_at);
-        if (reference.published !== true && (error as NodeJS.ErrnoException).code === "ENOENT" && Number.isFinite(age) && age > 30_000) {
+        if (reference.published !== true && (error as NodeJS.ErrnoException).code === "ENOENT") {
           entries.shift();
+          if (Number.isFinite(age) && age > 30_000) {
+            await atomicYaml(path, { ...segment, entries });
+            continue;
+          }
+          // A fresh pre-message intent is not mail. Move it behind ready entries so a crashed writer never head-of-line blocks durable Desk mail.
+          entries.push(reference);
           await atomicYaml(path, { ...segment, entries });
-          continue;
         }
-        // Keep authoritative or in-flight head references until Pi accepts them; later mail cannot overtake them.
+        // Keep authoritative references until Pi accepts them; a fresh intent is retried on the next bounded tick.
         return;
       }
     }

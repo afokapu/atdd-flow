@@ -198,12 +198,13 @@ test("an incomplete inbox intent never delivers or blocks later durable mail", a
   const inboxRoot = join(site, ".atdd-flow", "pi-inbox", encodeURIComponent(seat));
   await mkdir(join(inboxRoot, "pending"), { recursive: true });
   await writeFile(join(inboxRoot, "queue.yaml"), "schema: atdd-flow/pi-inbox-queue/v1\nhead: S-orphan\ntail: S-orphan\n");
-  await writeFile(join(inboxRoot, "pending", "S-orphan.yaml"), `schema: atdd-flow/pi-inbox-segment/v1\nentries:\n  - thread: ${thread}\n    message: M-orphan\n    created_at: 1970-01-01T00:00:00.000Z\n    published: false\n`);
+  await writeFile(join(inboxRoot, "pending", "S-orphan.yaml"), `schema: atdd-flow/pi-inbox-segment/v1\nentries:\n  - thread: ${thread}\n    message: M-orphan\n    created_at: ${new Date().toISOString()}\n    published: false\n`);
   const later = await run(site, "post", thread, "--from", "coordinator@demo", "--to", seat, "--body", "Must survive the orphan.");
   // Simulate a crash after authoritative M persistence but before the advisory publish marker write.
   await writeFile(join(inboxRoot, "pending", "S-orphan.yaml"), (await readFile(join(inboxRoot, "pending", "S-orphan.yaml"), "utf8")).replace("published: true", "published: false"));
   const delivered: string[] = [];
   const restarted = createInboxReconciler({ root: site, seat, deliver: async (mail) => { delivered.push(mail.id); } });
+  await restarted.reconcile();
   await restarted.reconcile();
   expect(delivered).toEqual([later]);
   expect(delivered).not.toContain("M-orphan");
