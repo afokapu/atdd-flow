@@ -2,9 +2,9 @@ import { afterEach, expect, test } from "bun:test";
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { discoverAddress, launchCommand, launchedAddress, notificationCommand } from "../src/adapters";
+import { discoverAddress, notificationCommand } from "../src/adapters";
 import { addressedTo, mailNotice } from "../extensions/pi/index";
-import { isPiExecutable, launchNotice, piLaunchArgs, resolveExecutable } from "../src/seats";
+import { resolveExecutable } from "../src/seats";
 
 const roots: string[] = [];
 const cli = join(import.meta.dir, "..", "src", "cli.ts");
@@ -101,7 +101,7 @@ test("an operator can initialize a standalone Desk Git repository", async () => 
   await stat(join(coordination, ".git"));
   const config = await readFile(join(coordination, "desk.yaml"), "utf8");
   expect(config).toContain("atdd-workflow/desk/v1");
-  expect(config).toContain("application: tuios");
+  expect(config).toContain("application: herdr");
   expect(config).toContain("executables:");
   expect(config).toContain("claude: claude");
   expect(config).toContain("kimi: kimi");
@@ -129,7 +129,7 @@ test("a legacy coordination registry upgrades to a Desk without changing its ali
   await mkdir(registry, { recursive: true });
   await writeFile(join(registry, "coordination.yaml"), `schema: atdd-workflow/coordination/v2
 site: legacy
-application: tuios
+application: herdr
 aliases:
   coordinator@old: coordinator@demo
 `);
@@ -286,16 +286,16 @@ test("a replacement agent resumes an outstanding seat and completes its work", a
   const thread = await run(site, "thread", "start", "--with", `coordinator@demo,${driver}`, "--subject", "Takeover test");
   const request = await run(site, "post", thread, "--from", "coordinator@demo", "--to", driver, "--expects-result", "--body", "Finish the rollout after takeover.");
 
-  await run(site, "bind", driver, "--application", "tuios", "--address", "takeover-demo/old-driver-pane");
+  await run(site, "bind", driver, "--application", "tmux", "--address", "workflow:old-driver-pane");
   await run(site, "receipt", thread, request, "--from", driver, "--body", "Received; beginning work.");
   await run(site, "checkpoint", driver, "--status", "blocked", "--summary", "Rate limit reached after receiving the rollout request.", "--next", "Replacement agent should finish the rollout and post the result.");
 
   // The coordinator replaces a rate-limited agent. The address—and therefore
   // its durable thread history and responsibility—does not change.
-  await run(site, "bind", driver, "--application", "tuios", "--address", "takeover-demo/replacement-driver-pane");
+  await run(site, "bind", driver, "--application", "tmux", "--address", "workflow:replacement-driver-pane");
   const resumedSeat = await run(site, "open", driver);
-  expect(resumedSeat).toContain("tuios: takeover-demo/replacement-driver-pane");
-  expect(resumedSeat).toContain("application: tuios");
+  expect(resumedSeat).toContain("tmux: workflow:replacement-driver-pane");
+  expect(resumedSeat).toContain("application: tmux");
   expect(resumedSeat).toContain(thread);
   expect(resumedSeat).toContain("Rate limit reached after receiving the rollout request.");
   expect(await readFile(join(site, "threads", thread, `${request}.yaml`), "utf8")).toContain("Finish the rollout after takeover.");
@@ -314,7 +314,7 @@ test("a legacy alias resolves to one canonical seat", async () => {
   await run(site, "spawn", "decision-os", "coordinator", "main", "--worktree", "/tmp/decision-os-main");
   await writeFile(join(site, "desk.yaml"), `schema: atdd-workflow/desk/v1
 desk: site
-application: tuios
+application: herdr
 aliases:
   coordinator@DOS-jev: coordinator@decision-os
 `);
@@ -346,42 +346,23 @@ test("a seat retains native addresses and can switch its active application", as
 test("host adapters discover native addresses from host-provided environment", () => {
   expect(discoverAddress("herdr", { HERDR_PANE_ID: "w1:p2" })).toBe("w1:p2");
   expect(discoverAddress("tmux", { TMUX_PANE: "%7" })).toBe("%7");
-  expect(discoverAddress("tuios", { TUIOS_SESSION: "session-1", TUIOS_WINDOW_ID: "window-7" })).toBe("session-1/window-7");
   expect(() => discoverAddress("herdr", {})).toThrow("HERDR_PANE_ID");
   expect(() => discoverAddress("claude", {})).toThrow("No deterministic discovery adapter");
   expect(notificationCommand("herdr", "w1:p2", "read mail", "forge")).toEqual(["herdr", "--session", "forge", "agent", "prompt", "w1:p2", "read mail"]);
-  expect(notificationCommand("tuios", "session-1/window-7", "read mail")).toEqual(["tuios", "queue", "-s", "session-1", "-w", "window-7", "read mail"]);
-  expect(isPiExecutable("/opt/homebrew/bin/pi")).toBe(true);
-  expect(piLaunchArgs("/opt/homebrew/bin/pi", ["--model", "fast"]).slice(-2)).toEqual(["--extension", expect.stringMatching(/extensions\/pi\/index\.ts$/)]);
-  expect(piLaunchArgs("codex", ["--model", "fast"])).toEqual(["--model", "fast"]);
   expect(addressedTo({ from: "coordinator@demo", to: ["driver.pi@demo"] }, { participants: ["coordinator@demo", "driver.pi@demo"] }, "driver.pi@demo")).toBe(true);
   expect(addressedTo({ from: "coordinator@demo", to: "all" }, { participants: ["coordinator@demo", "driver.pi@demo"] }, "driver.pi@demo")).toBe(true);
   expect(addressedTo({ from: "driver.pi@demo", to: "all" }, { participants: ["coordinator@demo", "driver.pi@demo"] }, "driver.pi@demo")).toBe(false);
   expect(mailNotice("T-thread", { id: "M-message", from: "coordinator@demo", to: ["driver.pi@demo"], subject: "Compact mail" })).toBe("SYSTEM: Flow mail M-message | thread T-thread (Compact mail) | coordinator@demo → driver.pi@demo. Read: atdd-flow message read M-message");
-  expect(launchCommand({ application: "tuios", placement: "etdd-os", name: "driver.runtime@etdd", worktree: "/worktrees/runtime", agent: "codex", root: "/coordination", seat: "driver.runtime@etdd" })).toEqual([
-    "tuios", "new-window", "driver.runtime@etdd", "-s", "etdd-os", "--cwd", "/worktrees/runtime", "--no-focus", "--print-id", "--",
-    "/usr/bin/env", "ATDD_WORKFLOW_ROOT=/coordination", "ATDD_WORKFLOW_SEAT=driver.runtime@etdd", "codex",
-  ]);
-  expect(launchCommand({ application: "tuios", placement: "etdd-os", name: "coordinator@etdd", worktree: "/work", agent: "claude", args: ["--model", "sonnet"], root: "/coordination", seat: "coordinator@etdd" })).toEqual([
-    "tuios", "new-window", "coordinator@etdd", "-s", "etdd-os", "--cwd", "/work", "--no-focus", "--print-id", "--",
-    "/usr/bin/env", "ATDD_WORKFLOW_ROOT=/coordination", "ATDD_WORKFLOW_SEAT=coordinator@etdd", "claude", "--model", "sonnet",
-  ]);
-  expect(launchNotice("driver.runtime@etdd")).toContain("Read your durable seat and assigned task");
-  expect(launchNotice("driver.runtime@etdd")).toContain("never use bunx to replace it");
-  expect(launchNotice("driver.runtime@etdd")).toContain("existing Desk");
-  expect(launchNotice("driver.runtime@etdd")).toContain("Continue assigned in_progress work until it is review-ready or explicitly blocked.");
-  expect(launchedAddress("tuios", "etdd-os", "window-7\n")).toBe("etdd-os/window-7");
-  expect(() => launchCommand({ application: "herdr", placement: "w1", name: "driver", worktree: "/work", agent: "codex", root: "/coordination", seat: "driver@demo" })).toThrow("No deterministic launch adapter");
 });
 
 test("a Desk executable declaration resolves a named seat agent for every launch", () => {
-  expect(resolveExecutable({ schema: "atdd-workflow/desk/v1", desk: "site", application: "tuios", executables: {
+  expect(resolveExecutable({ schema: "atdd-workflow/desk/v1", desk: "site", application: "herdr", executables: {
     claude: "claude",
     codex: "/opt/homebrew/bin/codex",
     pi: "pi",
     kimi: "kimi",
   } }, "codex")).toBe("/opt/homebrew/bin/codex");
-  expect(resolveExecutable({ schema: "atdd-workflow/desk/v1", desk: "legacy", application: "tuios" }, "custom-agent")).toBe("custom-agent");
+  expect(resolveExecutable({ schema: "atdd-workflow/desk/v1", desk: "legacy", application: "herdr" }, "custom-agent")).toBe("custom-agent");
 });
 
 test("a host-attached replacement preserves its durable work and wakes the current native address", async () => {

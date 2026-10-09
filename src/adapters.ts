@@ -17,7 +17,6 @@ export function discoverAddress(application: string, environment: Environment = 
   const discoverers: Record<string, () => string> = {
     herdr: () => value(environment, "HERDR_PANE_ID", "Herdr"),
     tmux: () => value(environment, "TMUX_PANE", "tmux"),
-    tuios: () => `${value(environment, "TUIOS_SESSION", "TUIOS")}/${value(environment, "TUIOS_WINDOW_ID", "TUIOS")}`,
   };
   const discover = discoverers[application];
   if (!discover) throw new Error(`No deterministic discovery adapter is installed for ${application}.`);
@@ -37,11 +36,6 @@ export function notificationCommand(application: string, address: string, notice
     // pane text injection: a Desk message remains durable when an older host
     // cannot provide agent.prompt.
     herdr: () => ["herdr", ...(herdrSession ? ["--session", herdrSession] : []), "agent", "prompt", address, notice],
-    tuios: () => {
-      const separator = address.indexOf("/");
-      if (separator < 1 || separator === address.length - 1) return undefined;
-      return ["tuios", "queue", "-s", address.slice(0, separator), "-w", address.slice(separator + 1), notice];
-    },
   };
   return commands[application]?.();
 }
@@ -58,33 +52,13 @@ export type LaunchRequest = {
   seat: string;
 };
 
-/** A launch placement names a host container, never the currently visible UI. */
-export function launchCommand(request: LaunchRequest): string[] {
-  const environment = [
-    "/usr/bin/env",
-    `ATDD_WORKFLOW_ROOT=${request.root}`,
-    `ATDD_WORKFLOW_SEAT=${request.seat}`,
-    ...Object.entries(request.environment ?? {}).map(([key, value]) => `${key}=${value}`),
-    request.agent,
-    ...(request.args ?? []),
-  ];
-  if (request.application === "tuios") {
-    return [
-      "tuios", "new-window", request.name,
-      "-s", request.placement,
-      "--cwd", request.worktree,
-      "--no-focus", "--print-id", "--",
-      ...environment,
-    ];
-  }
-  throw new Error(`No deterministic launch adapter is installed for ${request.application}.`);
+/** Flow no longer owns host-pane creation; attach a host-created pane instead. */
+export function launchCommand(_request: LaunchRequest): string[] {
+  throw new Error("No deterministic launch adapter is installed.");
 }
 
-export function launchedAddress(application: string, placement: string, output: string) {
-  if (application !== "tuios") throw new Error(`No deterministic launch adapter is installed for ${application}.`);
-  const window = output.split(/\s+/)[0];
-  if (!window) throw new Error("TUIOS created a window without returning its id.");
-  return `${placement}/${window}`;
+export function launchedAddress(_application: string, _placement: string, _output: string): string {
+  throw new Error("No deterministic launch adapter is installed.");
 }
 
 export async function notify(application: string, address: string, notice: string, herdrSession?: string) {

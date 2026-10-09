@@ -1,11 +1,11 @@
 import { existsSync } from "node:fs";
 import { mkdir, readdir } from "node:fs/promises";
-import { basename, dirname, join, resolve } from "node:path";
-import { discoverAddress, discoverHerdrLocator, launchedAddress, launchCommand, notify } from "./adapters";
+import { dirname, join, resolve } from "node:path";
+import { discoverAddress, discoverHerdrLocator, notify } from "./adapters";
 import {
   type Checkpoint, type Desk, type ModelCandidate, type ModelPortfolio, type Project, type Role, type Runtime, type Seat,
   atomicYaml, canonicalAddress, desk, exists, fill, migrateDesk, modelPortfolio, now, paths, project, readYaml,
-  required, run, runOutput, runtimeAddress, seat, words, yaml,
+  required, run, runtimeAddress, seat, words, yaml,
 } from "./core";
 import { selectModel } from "./judgment";
 import { seatTasks } from "./tasks";
@@ -39,7 +39,7 @@ export async function init(root: string, name: string, args: string[]) {
   if (await exists(paths(root).desk)) {
     throw new Error(`Desk registry already exists at ${paths(root).desk}; refusing to overwrite it. Use an existing Desk command, or choose a new directory.`);
   }
-  const config = { schema: "atdd-workflow/desk/v1" as const, desk: name, application: "tuios", executables: defaultExecutables() };
+  const config = { schema: "atdd-workflow/desk/v1" as const, desk: name, application: "herdr", executables: defaultExecutables() };
   await Promise.all([mkdir(paths(root).work, { recursive: true }), mkdir(paths(root).threads, { recursive: true })]);
   await Promise.all([atomicYaml(paths(root).desk, config), atomicYaml(paths(root).models, defaultModels())]);
   if (args.includes("--git") && !await exists(join(root, ".git"))) await run(["git", "init", "--initial-branch=main", root]);
@@ -183,48 +183,8 @@ async function chooseLaunchModel(root: string, config: Desk, record: Seat, portf
   return required(candidates.find((entry) => entry.id === selection.selected_model), `selected model ${selection.selected_model}`);
 }
 
-export const launchNotice = (address: string) =>
-  `SYSTEM: you are ${address}. Read your durable seat and assigned task with: atdd-flow open ${address}. Use the installed atdd-flow command; never use bunx to replace it or run atdd-flow init against an existing Desk. Routing: operator@desk is the human authority; drivers report to coordinators, and main seats are the normal technical gateway to the operator. Continue assigned in_progress work until it is review-ready or explicitly blocked.`;
-
 /** Pi loads this extension inside its own process, so it can wake without host text injection. */
 export const piExtensionPath = () => join(import.meta.dir, "..", "extensions", "pi", "index.ts");
-export const isPiExecutable = (agent: string) => basename(agent) === "pi";
-export const piLaunchArgs = (agent: string, args: string[]) => isPiExecutable(agent) ? [...args, "--extension", piExtensionPath()] : args;
-
-export async function launch(root: string, address: string, args: string[]) {
-  const resolved = await canonicalAddress(root, address);
-  const record = await seat(root, resolved);
-  const config = await desk(root);
-  const application = required(words(args, "--application"), "--application");
-  const placement = required(words(args, "--placement"), "--placement");
-  const portfolio = await modelPortfolio(root);
-  let agent: string;
-  let modelArgs: string[] = [];
-  let selectedModel: string;
-  if (portfolio) {
-    const selected = await chooseLaunchModel(root, config, record, portfolio);
-    const command = resolveModelCommand(config, selected);
-    agent = command.agent;
-    modelArgs = command.args;
-    selectedModel = selected.id;
-  } else {
-    const legacyAgent = required(record.agent, "models.yaml or a legacy seat agent");
-    agent = resolveExecutable(config, legacyAgent);
-    selectedModel = legacyAgent;
-  }
-  const wake: Runtime["wake"] = isPiExecutable(agent) ? "native" : "host";
-  modelArgs = piLaunchArgs(agent, modelArgs);
-  const output = await runOutput(launchCommand({
-    application, placement, name: resolved, worktree: record.worktree,
-    agent, args: modelArgs, root, seat: resolved,
-  }));
-  const nativeAddress = launchedAddress(application, placement, output);
-  await bind(root, resolved, ["--application", application, "--address", nativeAddress], selectedModel, wake);
-  if (wake === "native") return;
-  const notice = launchNotice(resolved);
-  try { await notify(application, nativeAddress, notice, config.herdr_session); }
-  catch (error) { console.warn(`Launch notification for ${resolved} was not delivered: ${(error as Error).message}`); }
-}
 
 export async function describe(root: string, address: string, args: string[]) {
   const resolved = await canonicalAddress(root, address);

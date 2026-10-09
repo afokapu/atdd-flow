@@ -30,7 +30,7 @@ async function fixture() {
 
   await mkdir(join(root, "work", "demo", "seats", "driver.delivery"), { recursive: true });
   await mkdir(join(root, "work", "demo", "tasks"), { recursive: true });
-  await writeFile(join(root, "desk.yaml"), "schema: atdd-workflow/desk/v1\ndesk: test\napplication: tuios\n");
+  await writeFile(join(root, "desk.yaml"), "schema: atdd-workflow/desk/v1\ndesk: test\napplication: herdr\n");
   await writeFile(join(root, "work", "demo", "project.yaml"), `schema: atdd-workflow/project/v1
 project: demo
 repository: ${repository}
