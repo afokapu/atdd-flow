@@ -52,10 +52,7 @@ schema: atdd-workflow/desk/v1
 desk: desk
 application: herdr
 executables:
-  claude: /Users/you/.local/bin/claude
-  codex: /opt/homebrew/bin/codex
   pi: /opt/homebrew/bin/pi
-  kimi: /Users/you/.kimi-code/bin/kimi
 ```
 
 The executable registry is transport configuration, not model allocation. New seats do not pin an
@@ -64,25 +61,18 @@ agent. Instead, `models.yaml` declares the launchable model portfolio in descend
 ```yaml
 schema: atdd-workflow/models/v1
 models:
-  - id: frontier
-    executable: claude
-    args: [--model, opus]
-  - id: standard
-    executable: claude
-    args: [--model, sonnet]
-  - id: codex
-    executable: codex
-  - id: glm
-    executable: glm
-    enabled: false
+  - id: pi
+    executable: pi
+# Add Pi --model arguments here when local policy selects a specific Pi model.
 ```
 
-Order is policy: strongest first, weakest last. Entries whose executable is unavailable, or whose
+Order is policy: strongest first, weakest last. New Desks use Pi for every entry; add Pi `--model`
+arguments when local policy selects a specific model. Entries whose executable is unavailable, or whose
 `enabled` flag is false, are excluded. For ordinary phase work, Jev sees the seat's active work and
-selects the weakest available model sufficient for that responsibility. If model selection is unavailable
-or low-confidence, Workflow conservatively launches the strongest available model. Final behavioral
-review has its own bounded routing step described below. Older Desks without `models.yaml` continue
-to honor a legacy seat `agent` through the executable registry.
+selects the weakest available configured Pi model sufficient for that responsibility. If model selection is
+unavailable or low-confidence, Workflow conservatively selects the strongest available configured Pi
+model. Final behavioral review has its own bounded routing step described below. Older Desks without
+`models.yaml` continue to honor a legacy seat `agent` through the executable registry.
 
 ## Configure worktrees and seats
 

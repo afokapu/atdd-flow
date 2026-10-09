@@ -103,11 +103,15 @@ test("an operator can initialize a standalone Desk Git repository", async () => 
   expect(config).toContain("atdd-workflow/desk/v1");
   expect(config).toContain("application: herdr");
   expect(config).toContain("executables:");
-  expect(config).toContain("claude: claude");
-  expect(config).toContain("kimi: kimi");
+  expect(config).toContain("pi: pi");
+  expect(config).not.toContain("claude:");
+  expect(config).not.toContain("codex:");
   const models = await readFile(join(coordination, "models.yaml"), "utf8");
   expect(models).toContain("atdd-workflow/models/v1");
-  expect(models.indexOf("id: claude")).toBeLessThan(models.indexOf("id: codex"));
+  expect(models).toContain("id: pi");
+  expect(models).toContain("executable: pi");
+  expect(models).not.toContain("executable: claude");
+  expect(models).not.toContain("executable: codex");
 });
 
 test("initialization refuses to overwrite an existing Desk registry", async () => {
@@ -462,7 +466,7 @@ test("legacy Desks may still pin a seat executable when no model portfolio exist
   await run(root, "init", site);
   await rm(join(site, "models.yaml"));
   await run(site, "project", "init", "demo");
-  expect(await readFile(join(site, "work", "demo", "project.yaml"), "utf8")).toContain("agent: codex");
+  expect(await readFile(join(site, "work", "demo", "project.yaml"), "utf8")).toContain("agent: pi");
   await run(site, "spawn", "demo", "driver", "receiver", "--worktree", "/tmp/demo-receiver", "--agent", "cat");
   expect(await run(site, "open", "driver.receiver@demo")).toContain("agent: cat");
 });
