@@ -1,5 +1,5 @@
 import * as fs from "node:fs";
-import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { parse, stringify } from "yaml";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -49,6 +49,27 @@ async function atomicYaml(path: string, value: unknown) {
   await rename(temporary, path);
 }
 
+const pause = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+async function withInboxLock<T>(directory: string, action: () => Promise<T>) {
+  await mkdir(directory, { recursive: true });
+  const lock = join(directory, "queue.lock");
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    try {
+      await mkdir(lock);
+      try { return await action(); }
+      finally { await rm(lock, { recursive: true, force: true }); }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      try {
+        if (Date.now() - (await stat(lock)).mtimeMs > 30_000) await rm(lock, { recursive: true, force: true });
+        else await pause(5);
+      } catch { await pause(5); }
+    }
+  }
+  throw new Error(`Timed out waiting for inbox queue lock ${directory}`);
+}
+
 function validMail(value: Mail): value is InboxMail {
   return typeof value.id === "string" && typeof value.created_at === "string";
 }
@@ -75,7 +96,7 @@ export function createInboxReconciler({ root, seat, deliver, batchSize = default
   const delivered = new Set<string>();
   let serial = Promise.resolve();
 
-  const reconcileNow = async () => {
+  const reconcileNow = async () => withInboxLock(inboxDirectory(root, seat), async () => {
     let queue: PendingQueue;
     try { queue = parse(await readFile(queuePath(root, seat), "utf8")) as PendingQueue; }
     catch { return; }
@@ -102,8 +123,15 @@ export function createInboxReconciler({ root, seat, deliver, batchSize = default
         delivered.add(key);
         entries.shift();
         await atomicYaml(path, { ...segment, entries });
-      } catch {
-        // Keep the head reference until Pi accepts it; later mail cannot overtake it.
+      } catch (error) {
+        // A crash before message persistence leaves an unpublished prepare record. Retain it briefly for an in-flight post, then discard only the non-authoritative orphan.
+        const age = Date.now() - Date.parse(reference.created_at);
+        if (reference.published !== true && (error as NodeJS.ErrnoException).code === "ENOENT" && Number.isFinite(age) && age > 30_000) {
+          entries.shift();
+          await atomicYaml(path, { ...segment, entries });
+          continue;
+        }
+        // Keep authoritative or in-flight head references until Pi accepts them; later mail cannot overtake them.
         return;
       }
     }
@@ -115,7 +143,7 @@ export function createInboxReconciler({ root, seat, deliver, batchSize = default
     } else {
       await unlink(queuePath(root, seat));
     }
-  };
+  });
 
   const reconcile = () => {
     const scheduled = serial.then(reconcileNow, reconcileNow);

@@ -161,6 +161,26 @@ test("a Pi-designated unbound seat queues ordered native mail in bounded segment
   expect(delivered).toEqual(expected);
 });
 
+test("concurrent native posts survive queue rollover without losing references", async () => {
+  const root = await mkdtemp(join(tmpdir(), "atdd-workflow-"));
+  roots.push(root);
+  const site = join(root, "site");
+  await run(root, "init", site);
+  await run(site, "project", "init", "demo");
+  await run(site, "spawn", "demo", "coordinator", "main", "--worktree", "/tmp/demo-main");
+  await run(site, "spawn", "demo", "driver", "pi", "--worktree", "/tmp/demo-pi");
+  const seat = "driver.pi@demo";
+  await run(site, "bind", seat, "--application", "herdr", "--address", "w-test:p-native", "--wake", "native");
+  const thread = await run(site, "thread", "start", "--with", `coordinator@demo,${seat}`, "--subject", "Concurrent inbox");
+  const posted = await Promise.all(Array.from({ length: 40 }, (_, index) => run(site, "post", thread, "--from", "coordinator@demo", "--to", seat, "--body", `Concurrent ${index}`)));
+  const delivered: string[] = [];
+  const inbox = createInboxReconciler({ root: site, seat, batchSize: 32, deliver: async (mail) => { delivered.push(mail.id); } });
+  await inbox.reconcile();
+  await inbox.reconcile();
+  expect(delivered).toHaveLength(40);
+  expect(new Set(delivered)).toEqual(new Set(posted));
+});
+
 test("an operator can initialize a standalone Desk Git repository", async () => {
   const root = await mkdtemp(join(tmpdir(), "atdd-workflow-"));
   roots.push(root);

@@ -1,4 +1,4 @@
-import { readdir } from "node:fs/promises";
+import { mkdir, readdir, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { notify } from "./adapters";
 import {
@@ -75,7 +75,7 @@ async function assertRoute(root: string, from: string, recipients: string[]) {
   }
 }
 
-type PendingReference = { thread: string; message: string; created_at: string };
+type PendingReference = { thread: string; message: string; created_at: string; published?: boolean };
 type PendingSegment = { schema: "atdd-flow/pi-inbox-segment/v1"; entries: PendingReference[]; next?: string };
 type PendingQueue = { schema: "atdd-flow/pi-inbox-queue/v1"; head?: string; tail?: string };
 const pendingSegmentSize = 32;
@@ -84,22 +84,44 @@ function inboxDirectory(root: string, address: string) {
   return join(root, ".atdd-flow", "pi-inbox", encodeURIComponent(address));
 }
 
+const pause = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+/** mkdir is atomic across CLI processes; stale locks are recoverable after a crashed writer. */
+async function withInboxLock<T>(directory: string, action: () => Promise<T>) {
+  await mkdir(directory, { recursive: true });
+  const lock = join(directory, "queue.lock");
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    try {
+      await mkdir(lock, { recursive: false });
+      try { return await action(); }
+      finally { await rm(lock, { recursive: true, force: true }); }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      try {
+        if (Date.now() - (await stat(lock)).mtimeMs > 30_000) await rm(lock, { recursive: true, force: true });
+        else await pause(5);
+      } catch { await pause(5); }
+    }
+  }
+  throw new Error(`Timed out waiting for inbox queue lock ${directory}`);
+}
+
 /** The queue is a bounded linked index: recovery reads only its head segment, never Desk history. */
 async function enqueueNativeMail(root: string, address: string, reference: PendingReference) {
   const directory = inboxDirectory(root, address);
-  const statePath = join(directory, "queue.yaml");
-  let queue: PendingQueue;
-  try { queue = await readYaml<PendingQueue>(statePath); }
-  catch { queue = { schema: "atdd-flow/pi-inbox-queue/v1" }; }
-  const entriesPath = (segment: string) => join(directory, "pending", `${segment}.yaml`);
-  if (queue.tail) {
-    try {
+  return withInboxLock(directory, async () => {
+    const statePath = join(directory, "queue.yaml");
+    let queue: PendingQueue;
+    try { queue = await readYaml<PendingQueue>(statePath); }
+    catch { queue = { schema: "atdd-flow/pi-inbox-queue/v1" }; }
+    const entriesPath = (segment: string) => join(directory, "pending", `${segment}.yaml`);
+    if (queue.tail) {
       const tail = await readYaml<PendingSegment>(entriesPath(queue.tail));
       if (Array.isArray(tail.entries) && tail.entries.length < pendingSegmentSize) {
         tail.entries.push(reference);
         tail.entries.sort((left, right) => left.created_at.localeCompare(right.created_at) || left.message.localeCompare(right.message));
         await atomicYaml(entriesPath(queue.tail), tail);
-        return;
+        return queue.tail;
       }
       const next = `S-${reference.message}`;
       await atomicYaml(entriesPath(next), { schema: "atdd-flow/pi-inbox-segment/v1", entries: [reference] } satisfies PendingSegment);
@@ -107,22 +129,41 @@ async function enqueueNativeMail(root: string, address: string, reference: Pendi
       await atomicYaml(entriesPath(queue.tail), tail);
       queue.tail = next;
       await atomicYaml(statePath, queue);
-      return;
-    } catch { /* A missing/corrupt tail is retained for reconciliation; start an independent segment. */ }
-  }
-  const segment = `S-${reference.message}`;
-  await atomicYaml(entriesPath(segment), { schema: "atdd-flow/pi-inbox-segment/v1", entries: [reference] } satisfies PendingSegment);
-  queue.head ??= segment;
-  queue.tail = segment;
-  await atomicYaml(statePath, queue);
+      return next;
+    }
+    const segment = `S-${reference.message}`;
+    await atomicYaml(entriesPath(segment), { schema: "atdd-flow/pi-inbox-segment/v1", entries: [reference] } satisfies PendingSegment);
+    queue.head = segment;
+    queue.tail = segment;
+    await atomicYaml(statePath, queue);
+    return segment;
+  });
 }
 
-async function inject(root: string, address: string, message: Message, threadId: string) {
+async function publishNativeMail(root: string, address: string, segment: string, message: string) {
+  const directory = inboxDirectory(root, address);
+  await withInboxLock(directory, async () => {
+    const path = join(directory, "pending", `${segment}.yaml`);
+    const record = await readYaml<PendingSegment>(path);
+    const entry = record.entries.find((candidate) => candidate.message === message);
+    if (!entry) throw new Error(`Pending inbox reference ${message} is missing`);
+    entry.published = true;
+    await atomicYaml(path, record);
+  });
+}
+
+async function prepareNativeMail(root: string, address: string, message: Message, threadId: string) {
+  const target = await seat(root, address);
+  if (target.runtime?.wake !== "native" && target.agent !== "pi") return;
+  const segment = await enqueueNativeMail(root, address, { thread: threadId, message: message.id, created_at: message.created_at });
+  return { address, segment };
+}
+
+async function inject(root: string, address: string, message: Message, threadId: string, queued = false) {
   const target = await seat(root, address);
   const runtime = target.runtime;
-  // A Pi-designated seat may be temporarily unbound; persist its wake reference before any runtime exists.
   if (runtime?.wake === "native" || target.agent === "pi") {
-    await enqueueNativeMail(root, address, { thread: threadId, message: message.id, created_at: message.created_at });
+    if (!queued) await enqueueNativeMail(root, address, { thread: threadId, message: message.id, created_at: message.created_at, published: true });
     if (!runtime || runtime.wake === "native") return;
   }
   if (!runtime) return;
@@ -151,8 +192,11 @@ async function post(root: string, threadId: string, args: string[], overrides: P
     ...(overrides.expects_result || has(args, "--expects-result") ? { expects_result: true } : {}),
     created_at: now(), body: required(overrides.body ?? words(args, "--body"), "--body"),
   };
+  const prepared = await Promise.all(recipients.filter((address) => address !== from).map((recipient) => prepareNativeMail(root, recipient, message, threadId)));
+  // The durable queue is published before the authoritative message: a crash can leave only a harmless uncommitted reference, never durable mail without recovery.
   await atomicYaml(paths(root).message(threadId, message.id), message);
-  await Promise.all(recipients.filter((address) => address !== from).map((recipient) => inject(root, recipient, message, threadId)));
+  await Promise.all(prepared.filter((entry): entry is NonNullable<typeof entry> => Boolean(entry)).map((entry) => publishNativeMail(root, entry.address, entry.segment, message.id)));
+  await Promise.all(recipients.filter((address) => address !== from).map((recipient) => inject(root, recipient, message, threadId, prepared.some((entry) => entry?.address === recipient))));
   console.log(message.id);
 }
 
