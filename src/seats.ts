@@ -13,20 +13,19 @@ import { seatTasks } from "./tasks";
 const defaultRoles = (dynamicModels = true): Record<string, Role> => ({
   coordinator: {
     address: "coordinator@{project}", branch: "main", worktree: "{repository}",
-    ...(dynamicModels ? {} : { agent: "claude" }),
+    ...(dynamicModels ? {} : { agent: "pi" }),
   },
   driver: {
     address: "driver.{name}@{project}", branch: "delivery/{name}", base: "main", worktree: "{worktree_root}/{name}",
-    ...(dynamicModels ? {} : { agent: "codex" }),
+    ...(dynamicModels ? {} : { agent: "pi" }),
   },
 });
 
-const defaultExecutables = () => ({ claude: "claude", codex: "codex", pi: "pi", kimi: "kimi", glm: "glm" });
+const defaultExecutables = () => ({ pi: "pi" });
 const defaultModels = (): ModelPortfolio => ({
   schema: "atdd-workflow/models/v1",
   models: [
-    { id: "claude", executable: "claude", description: "Default high-capability candidate; replace or refine this portfolio for the local environment." },
-    { id: "codex", executable: "codex", description: "Default lower-cost candidate." },
+    { id: "pi", executable: "pi", description: "Default coding runtime. Configure Pi model arguments here when local policy requires a specific model." },
   ],
 });
 
