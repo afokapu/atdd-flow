@@ -3,9 +3,11 @@ import { chmod, mkdir, mkdtemp, readFile, rename, rm, stat, symlink, writeFile }
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { discoverAddress, launchCommand, launchedAddress, notificationCommand } from "../src/adapters";
+import { atomicYaml } from "../src/core";
 import { addressedTo, createInboxReconciler, mailNotice } from "../extensions/pi/index";
-import { parse } from "yaml";
 import { isPiExecutable, launchNotice, piLaunchArgs, resolveExecutable } from "../src/seats";
+import { enqueueNativeMail } from "../src/threads";
+import { parse } from "yaml";
 
 const roots: string[] = [];
 const cli = join(import.meta.dir, "..", "src", "cli.ts");
@@ -182,6 +184,42 @@ test("concurrent native posts survive queue rollover without losing references",
   expect(new Set(delivered)).toEqual(new Set(posted));
   const expected = (await Promise.all(posted.map(async (id) => ({ id, created_at: (parse(await readFile(join(site, "threads", thread, `${id}.yaml`), "utf8")) as { created_at: string }).created_at })))).sort((left, right) => left.created_at.localeCompare(right.created_at) || left.id.localeCompare(right.id)).map(({ id }) => id);
   expect(delivered).toEqual(expected);
+});
+
+test("a failed rollover child write leaves later native mail recoverable", async () => {
+  const root = await mkdtemp(join(tmpdir(), "atdd-workflow-"));
+  roots.push(root);
+  const site = join(root, "site");
+  await run(root, "init", site);
+  await run(site, "project", "init", "demo");
+  await run(site, "spawn", "demo", "coordinator", "main", "--worktree", "/tmp/demo-main");
+  await run(site, "spawn", "demo", "driver", "pi", "--worktree", "/tmp/demo-pi");
+  const seat = "driver.pi@demo";
+  await run(site, "bind", seat, "--application", "herdr", "--address", "w-test:p-native", "--wake", "native");
+  const thread = await run(site, "thread", "start", "--with", `coordinator@demo,${seat}`, "--subject", "Rollover write failure");
+  const posted: string[] = [];
+  for (let index = 0; index < 32; index += 1) {
+    posted.push(await run(site, "post", thread, "--from", "coordinator@demo", "--to", seat, "--body", `Queued ${index}`));
+  }
+  const inbox = join(site, ".atdd-flow", "pi-inbox", encodeURIComponent(seat));
+  const failedMessage = "M-crashed-rollover";
+  const failedChild = join(inbox, "pending", `S-${failedMessage}.yaml`);
+  // This throw models a process crash or storage failure while the new child is
+  // written. The parent must remain unlinked and therefore reachable mail stays intact.
+  await expect(enqueueNativeMail(site, seat, { thread, message: failedMessage, created_at: "9999-12-31T23:59:59.999Z" }, async (path, value) => {
+    if (path === failedChild) throw new Error("simulated child segment write failure");
+    await atomicYaml(path, value);
+  })).rejects.toThrow("simulated child segment write failure");
+  expect(await readFile(join(inbox, "pending", `S-${posted[0]}.yaml`), "utf8")).not.toContain("next:");
+
+  const later = await run(site, "post", thread, "--from", "coordinator@demo", "--to", seat, "--body", "Must recover after rollover failure.");
+  const delivered: string[] = [];
+  const restarted = createInboxReconciler({ root: site, seat, batchSize: 32, deliver: async (mail) => { delivered.push(mail.id); } });
+  await restarted.reconcile();
+  await restarted.reconcile();
+  expect(delivered).toHaveLength(33);
+  expect(new Set(delivered)).toEqual(new Set([...posted, later]));
+  expect(delivered).toContain(later);
 });
 
 test("an incomplete inbox intent never delivers or blocks later durable mail", async () => {

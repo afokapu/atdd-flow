@@ -106,7 +106,9 @@ async function withInboxLock<T>(directory: string, action: () => Promise<T>) {
 }
 
 /** The queue is a bounded linked index: recovery reads only its head segment, never Desk history. */
-async function enqueueNativeMail(root: string, address: string, reference: PendingReference) {
+type YamlWriter = (path: string, value: unknown) => Promise<void>;
+
+export async function enqueueNativeMail(root: string, address: string, reference: PendingReference, writeYaml: YamlWriter = atomicYaml) {
   const directory = inboxDirectory(root, address);
   return withInboxLock(directory, async () => {
     const statePath = join(directory, "queue.yaml");
@@ -118,10 +120,10 @@ async function enqueueNativeMail(root: string, address: string, reference: Pendi
     const capacity = 32;
     if (!queue.head) {
       const segment = `S-${reference.message}`;
-      await atomicYaml(entriesPath(segment), { schema: "atdd-flow/pi-inbox-segment/v1", entries: [reference] } satisfies PendingSegment);
+      await writeYaml(entriesPath(segment), { schema: "atdd-flow/pi-inbox-segment/v1", entries: [reference] } satisfies PendingSegment);
       queue.head = segment;
       queue.tail = segment;
-      await atomicYaml(statePath, queue);
+      await writeYaml(statePath, queue);
       return segment;
     }
     // Insert under the same process-safe lock. A full segment spills its latest reference forward, preserving global created_at/message order across rollover.
@@ -134,22 +136,24 @@ async function enqueueNativeMail(root: string, address: string, reference: Pendi
       record.entries.sort(compare);
       if (record.entries.some((entry) => entry.message === reference.message)) referenceSegment = current;
       if (record.entries.length <= capacity) {
-        await atomicYaml(entriesPath(current), record);
+        await writeYaml(entriesPath(current), record);
         return referenceSegment ?? current;
       }
       pending = record.entries.pop()!;
       if (pending.message === reference.message) referenceSegment = undefined;
       if (record.next) {
-        await atomicYaml(entriesPath(current), record);
+        await writeYaml(entriesPath(current), record);
         current = record.next;
         continue;
       }
       const next = `S-${pending.message}`;
+      // A child must be durable before its parent publishes the link. A crash or
+      // failed write can leave an unlinked orphan, but never a reachable hole.
+      await writeYaml(entriesPath(next), { schema: "atdd-flow/pi-inbox-segment/v1", entries: [pending] } satisfies PendingSegment);
       record.next = next;
-      await atomicYaml(entriesPath(current), record);
-      await atomicYaml(entriesPath(next), { schema: "atdd-flow/pi-inbox-segment/v1", entries: [pending] } satisfies PendingSegment);
+      await writeYaml(entriesPath(current), record);
       queue.tail = next;
-      await atomicYaml(statePath, queue);
+      await writeYaml(statePath, queue);
       return referenceSegment ?? next;
     }
     throw new Error("Pending inbox queue has no reachable tail");
