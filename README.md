@@ -50,7 +50,7 @@ an absolute command path when the host does not guarantee a shared `PATH`:
 ```yaml
 schema: atdd-workflow/desk/v1
 desk: desk
-application: tuios
+application: herdr
 executables:
   claude: /Users/you/.local/bin/claude
   codex: /opt/homebrew/bin/codex
@@ -124,9 +124,7 @@ atdd-flow task add resolver-os runtime-rollout --title 'Complete runtime rollout
 atdd-flow task start resolver-os runtime-rollout --by driver.runtime@resolver-os
 atdd-flow task prove resolver-os runtime-rollout --by driver.runtime@resolver-os --item 1 --proof 'CI run 42'
 atdd-flow task review resolver-os runtime-rollout --by driver.runtime@resolver-os
-atdd-flow behavioral-review launch resolver-os runtime-rollout --by coordinator@resolver-os \
-  --application tuios --placement resolver-os --gate 'CI run 42'
-# the reviewer persists APPROVE, RETURN, or ESCALATE through behavioral-review record
+# An independently attached reviewer persists APPROVE, RETURN, or ESCALATE through behavioral-review record
 atdd-flow task done resolver-os runtime-rollout --by coordinator@resolver-os
 ```
 
@@ -154,14 +152,11 @@ atdd-flow status seat driver.runtime@resolver-os
 atdd-flow open driver.runtime@resolver-os
 ```
 
-TUIOS is the primary live host; tmux and Herdr have notification adapters. TUIOS launch targets the named session, never the focused session:
+Herdr and tmux can notify an already attached host pane. Flow does not create host panes: the operator starts the agent in its declared worktree with `ATDD_WORKFLOW_ROOT` and `ATDD_WORKFLOW_SEAT`, then attaches that pane deterministically.
 
 ```sh
-atdd-flow attach driver.runtime@resolver-os --application tuios
-atdd-flow launch driver.runtime@resolver-os --application tuios --placement resolver-os
+atdd-flow attach driver.runtime@resolver-os --application herdr
 ```
-
-Launch selects a model from `models.yaml`, starts that model's executable in the seat's declared worktree, passes `ATDD_WORKFLOW_ROOT` and `ATDD_WORKFLOW_SEAT`, records the selected model on the live runtime binding, and asks the agent to read its seat. Other hosts remain correct without an adapter; their operator supplies that prompt.
 
 ### Optional Herdr worktree projection
 
@@ -182,13 +177,13 @@ New Herdr attachments store both the inherited session and pane id. Older scalar
 
 ### Pi-native Desk mail
 
-When Flow launches the `pi` executable, it automatically loads its bundled Pi extension. Pi remains a normal, interactive agent in its host pane, but the extension watches the immutable Desk mail files and wakes Pi internally with `pi.sendMessage()`—not terminal text injection.
+When Pi starts with Flow’s bundled extension, it remains a normal, interactive agent in its host pane, but the extension watches the immutable Desk mail files and wakes Pi internally with `pi.sendMessage()`—not terminal text injection.
 
 The Pi seat records both concepts independently:
 
 ```yaml
 runtime:
-  application: herdr # or tuios
+  application: herdr
   addresses:
     herdr: w9:p1
   model: pi

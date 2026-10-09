@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import { basename, resolve } from "node:path";
-import { init, initProject, spawn, bind, useApplication, attach, launch, describe, checkpoint, migrate, openSeat, piExtensionPath } from "./seats";
+import { init, initProject, spawn, bind, useApplication, attach, describe, checkpoint, migrate, openSeat, piExtensionPath } from "./seats";
 import { addParticipant, openThread, post, readMessage, receipt, result, startThread } from "./threads";
 import * as tasks from "./tasks";
 import { required, values, words } from "./core";
@@ -24,7 +24,6 @@ Usage:
   atdd-flow bind <address> [--application <application>] --address <native-address> [--session <name>] [--agent <executable>] [--worktree <path>] [--wake host|native]
   atdd-flow attach <address> [--application <application>] [--wake host|native]
   atdd-flow pi extension-path
-  atdd-flow launch <address> --application <application> --placement <native-container-address>
   atdd-flow application use <address> <application>
   atdd-flow multiplexer status|apply herdr [--session <name>]
   atdd-flow describe <address> --purpose <one-line responsibility>
@@ -85,7 +84,6 @@ async function main() {
       if (rest[0] === "extension-path") return console.log(piExtensionPath());
       throw new Error("Use `atdd-flow pi extension-path`.");
     },
-    launch: () => launch(root, required(rest[0], "address"), rest.slice(1)),
     application: async () => {
       if (rest[0] === "use") return useApplication(root, required(rest[1], "address"), required(rest[2], "application"));
       throw new Error("Use `atdd-flow application use <address> <application>`.");
