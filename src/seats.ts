@@ -1,13 +1,13 @@
 import { existsSync } from "node:fs";
-import { mkdir, readdir } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { mkdir, readdir, writeFile } from "node:fs/promises";
+import { basename, dirname, join, resolve } from "node:path";
 import { discoverAddress, discoverHerdrLocator, notify } from "./adapters";
 import {
   type Checkpoint, type Desk, type ModelCandidate, type ModelPortfolio, type Project, type Role, type Runtime, type Seat,
   atomicYaml, canonicalAddress, desk, exists, fill, migrateDesk, modelPortfolio, now, paths, project, readYaml,
-  required, run, runtimeAddress, seat, words, yaml,
+  required, run, runOutput, runtimeAddress, seat, words, yaml,
 } from "./core";
-import { selectModel } from "./judgment";
+import { type ModelSelectionInput, type ModelSelectionResponse, selectModel } from "./judgment";
 import { seatTasks } from "./tasks";
 
 const defaultRoles = (dynamicModels = true): Record<string, Role> => ({
@@ -92,7 +92,7 @@ export async function spawn(root: string, projectName: string, roleName: string,
   console.log(address);
 }
 
-export async function bind(root: string, address: string, args: string[], selectedModel?: string, wake?: Runtime["wake"]) {
+export async function bind(root: string, address: string, args: string[], selectedModel?: string, wake?: Runtime["wake"], piSession?: string, launchReceipt?: string) {
   const resolved = await canonicalAddress(root, address);
   const record = await seat(root, resolved);
   const config = await desk(root);
@@ -114,6 +114,8 @@ export async function bind(root: string, address: string, args: string[], select
     attached_at: now(),
     ...(selectedModel ? { model: selectedModel } : {}),
     ...(selectedWake ? { wake: selectedWake } : {}),
+    ...(piSession ? { pi_session: piSession } : {}),
+    ...(launchReceipt ? { launch_receipt: launchReceipt } : {}),
   };
   // Legacy Desks use this field as the executable chosen by a later `launch`.
   // Keep it aligned when an existing seat is deliberately re-homed to Pi.
@@ -159,11 +161,11 @@ export function resolveModelCommand(config: Desk, candidate: ModelCandidate) {
   return { agent: resolveExecutable(config, candidate.executable), args: candidate.args ?? [] };
 }
 
-async function chooseLaunchModel(root: string, config: Desk, record: Seat, portfolio: ModelPortfolio) {
+async function chooseLaunchModel(root: string, config: Desk, record: Seat, portfolio: ModelPortfolio, select: (input: ModelSelectionInput) => Promise<ModelSelectionResponse> = selectModel) {
   const candidates = availableModelCandidates(config, portfolio);
   if (!candidates.length) throw new Error("No enabled model in models.yaml has an available executable.");
   const work = (await seatTasks(root, record.project, record.address)).filter((entry) => entry.task.status !== "done");
-  const selection = await selectModel({
+  const selection = await select({
     seat: { address: record.address, role: record.role, ...(record.purpose ? { purpose: record.purpose } : {}) },
     tasks: work.map((entry) => ({
       id: entry.id,
@@ -175,15 +177,135 @@ async function chooseLaunchModel(root: string, config: Desk, record: Seat, portf
     })),
     candidates,
   });
-  if (!selection.available) {
-    console.warn(`Model selection for ${record.address} unavailable: ${selection.reason} Falling back to strongest available model.`);
-    return candidates[0]!;
+  if (!selection.available || selection.confidence < 0.75 || !candidates.some((entry) => entry.id === selection.selected_model)) {
+    const reason = !selection.available ? selection.reason : selection.confidence < 0.75
+      ? `Jev model selection confidence is low (${selection.confidence}).`
+      : `Jev selected a model outside the available portfolio: ${selection.selected_model}.`;
+    return { candidate: candidates[0]!, selection, fallback: reason };
   }
-  return required(candidates.find((entry) => entry.id === selection.selected_model), `selected model ${selection.selected_model}`);
+  return { candidate: required(candidates.find((entry) => entry.id === selection.selected_model), `selected model ${selection.selected_model}`), selection };
 }
 
 /** Pi loads this extension inside its own process, so it can wake without host text injection. */
 export const piExtensionPath = () => join(import.meta.dir, "..", "extensions", "pi", "index.ts");
+
+export type HerdrPaneReport = { session: string; pane: string; state: string; pi_session?: string };
+export type HerdrStartReport = { session: string; pane: string; pi_session: string };
+type HerdrRequest = { session: string; pane: string; seat: string; root: string; piSession: string; args: string[] };
+export type PiRuntimeLaunchDependencies = {
+  select?: (input: ModelSelectionInput) => Promise<ModelSelectionResponse>;
+  herdr?: {
+    inspect: (session: string, pane: string) => Promise<HerdrPaneReport>;
+    stop?: (request: Pick<HerdrRequest, "session" | "pane" | "piSession">) => Promise<void>;
+    start: (request: HerdrRequest) => Promise<HerdrStartReport>;
+  };
+  sessionId?: () => string;
+  at?: () => string;
+};
+
+async function inspectHerdrPane(session: string, pane: string): Promise<HerdrPaneReport> {
+  const output = await runOutput(["herdr", "--session", session, "agent", "inspect", pane, "--json"]);
+  try {
+    const report = JSON.parse(output) as HerdrPaneReport;
+    if (typeof report.session !== "string" || typeof report.pane !== "string" || typeof report.state !== "string") throw new Error("missing session, pane, or state");
+    return report;
+  } catch (error) {
+    throw new Error(`Herdr did not report a usable pane: ${(error as Error).message}`);
+  }
+}
+
+function herdrStartCommand(request: HerdrRequest) {
+  return [
+    "herdr", "--session", request.session, "agent", "start", `flow-${request.seat}`, "--kind", "pi", "--pane", request.pane, "--json",
+    "--env", `ATDD_WORKFLOW_ROOT=${request.root}`, "--env", `ATDD_WORKFLOW_SEAT=${request.seat}`, "--",
+    "--session", request.piSession, ...request.args,
+  ];
+}
+
+async function startPiInHerdr(request: HerdrRequest): Promise<HerdrStartReport> {
+  const output = await runOutput(herdrStartCommand(request));
+  try {
+    const report = JSON.parse(output) as HerdrStartReport;
+    if (typeof report.session !== "string" || typeof report.pane !== "string" || typeof report.pi_session !== "string") throw new Error("missing session, pane, or Pi session");
+    return report;
+  } catch (error) {
+    throw new Error(`Herdr did not verify the started Pi runtime: ${(error as Error).message}`);
+  }
+}
+
+async function stopIdlePiInHerdr(request: Pick<HerdrRequest, "session" | "pane" | "piSession">) {
+  // Deliberately stop only the agent. The named shell pane remains available
+  // until the replacement has reported the exact requested session.
+  await run(["herdr", "--session", request.session, "agent", "stop", "--pane", request.pane, "--session-id", request.piSession], true);
+}
+
+function receiptPath(root: string, piSession: string) {
+  return join(root, ".atdd-flow", "runtime-launch", `${encodeURIComponent(piSession)}-${crypto.randomUUID().slice(0, 8)}.yaml`);
+}
+
+/** A deliberately narrow Pi+Herdr launch: an existing pane only, no pane lifecycle management. */
+export async function launchPiRuntime(root: string, address: string, args: string[], dependencies: PiRuntimeLaunchDependencies = {}) {
+  const resolved = await canonicalAddress(root, address);
+  const record = await seat(root, resolved);
+  const config = await desk(root);
+  const pane = required(words(args, "--pane"), "--pane");
+  const herdrSession = required(words(args, "--herdr-session"), "--herdr-session");
+  const resume = args.includes("--resume");
+  const dryRun = args.includes("--dry-run");
+  if (args.some((argument) => !["--pane", pane, "--herdr-session", herdrSession, "--resume", "--dry-run"].includes(argument))) {
+    throw new Error("Use `pi runtime launch <seat> --pane <existing-pane> --herdr-session <session> [--resume] [--dry-run]`.");
+  }
+  const portfolio = required(await modelPortfolio(root), "models.yaml for Pi runtime launch");
+  const active = (await seatTasks(root, record.project, resolved)).filter((entry) => entry.task.status === "in_progress");
+  if (!active.length) throw new Error(`${resolved} has no active bounded task; refusing runtime launch.`);
+  const selection = await chooseLaunchModel(root, config, record, portfolio, dependencies.select);
+  const command = resolveModelCommand(config, selection.candidate);
+  if (basename(command.agent) !== "pi") throw new Error(`Pi runtime launch requires a Pi candidate, received ${selection.candidate.id}.`);
+  const inspect = dependencies.herdr?.inspect ?? inspectHerdrPane;
+  const start = dependencies.herdr?.start ?? startPiInHerdr;
+  const observed = await inspect(herdrSession, pane);
+  if (observed.session !== herdrSession || observed.pane !== pane) throw new Error("Herdr reported a different session or pane; refusing runtime launch.");
+  const piSession = resume ? record.runtime?.pi_session : (dependencies.sessionId ?? (() => crypto.randomUUID()))();
+  if (!piSession) throw new Error("Resume requires the exact Pi session stored on the seat.");
+  if (resume) {
+    if (observed.state !== "idle") throw new Error(`Resume requires an idle Pi session; Herdr reports ${observed.state}.`);
+    if (observed.pi_session !== piSession) throw new Error("Herdr Pi session does not match the exact session stored on the seat.");
+    const prior = record.runtime?.launch_receipt;
+    if (!prior) throw new Error("Resume requires an existing Flow launch receipt.");
+    try {
+      const receipt = await readYaml<{ seat?: string; pi_session?: string }>(prior);
+      if (receipt.seat !== resolved || receipt.pi_session !== piSession) throw new Error("receipt does not match seat/session");
+    } catch (error) {
+      throw new Error(`Resume requires a valid Flow launch receipt: ${(error as Error).message}`);
+    }
+  } else if (observed.state !== "available") {
+    throw new Error(`New launch requires an available shell pane; Herdr reports ${observed.state}.`);
+  }
+  const receipt = receiptPath(root, piSession);
+  const modelArgs = [...command.args, "--extension", piExtensionPath()];
+  const startRequest: HerdrRequest = { session: herdrSession, pane, seat: resolved, root, piSession, args: modelArgs };
+  const plan = {
+    candidate: selection.candidate.id, piSession, pane, herdrSession, receipt, command: herdrStartCommand(startRequest),
+    ...(dryRun ? { dryRun: true } : {}),
+  };
+  if (dryRun) return plan;
+  const receiptRecord = {
+    schema: "atdd-flow/pi-runtime-launch-receipt/v1", seat: resolved, tasks: active.map((entry) => entry.id), candidate: selection.candidate.id,
+    selection: selection.fallback
+      ? { result: "fallback", reason: selection.fallback }
+      : { result: "selected", confidence: selection.selection.confidence, ...(selection.selection.available && selection.selection.model ? { model: selection.selection.model } : {}) },
+    pi_session: piSession, herdr_session: herdrSession, pane, created_at: dependencies.at?.() ?? now(),
+  };
+  await mkdir(dirname(receipt), { recursive: true });
+  await writeFile(receipt, yaml.print(receiptRecord), { encoding: "utf8", flag: "wx" });
+  if (resume) await (dependencies.herdr?.stop ?? stopIdlePiInHerdr)({ session: herdrSession, pane, piSession });
+  const verified = await start(startRequest);
+  if (verified.session !== herdrSession || verified.pane !== pane || verified.pi_session !== piSession) {
+    throw new Error("Herdr did not verify the exact requested Pi session; seat binding was not changed.");
+  }
+  await bind(root, resolved, ["--application", "herdr", "--address", pane, "--session", herdrSession], selection.candidate.id, "native", piSession, receipt);
+  return plan;
+}
 
 export async function describe(root: string, address: string, args: string[]) {
   const resolved = await canonicalAddress(root, address);

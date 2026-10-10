@@ -1,10 +1,10 @@
 #!/usr/bin/env bun
 
 import { basename, resolve } from "node:path";
-import { init, initProject, spawn, bind, useApplication, attach, describe, checkpoint, migrate, openSeat, piExtensionPath } from "./seats";
+import { init, initProject, spawn, bind, useApplication, attach, describe, checkpoint, launchPiRuntime, migrate, openSeat, piExtensionPath } from "./seats";
 import { addParticipant, openThread, post, readMessage, receipt, result, startThread } from "./threads";
 import * as tasks from "./tasks";
-import { required, values, words } from "./core";
+import { required, values, words, yaml } from "./core";
 import { addressBook } from "./address-book";
 import * as judgment from "./judgment";
 import * as reviews from "./reviews";
@@ -25,6 +25,7 @@ Usage:
   atdd-flow bind <address> [--application <application>] --address <native-address> [--session <name>] [--agent <executable>] [--worktree <path>] [--wake host|native]
   atdd-flow attach <address> [--application <application>] [--wake host|native]
   atdd-flow pi extension-path
+  atdd-flow pi runtime launch <address> --pane <existing-herdr-pane> --herdr-session <session> [--resume] [--dry-run]
   atdd-flow application use <address> <application>
   atdd-flow multiplexer status|apply herdr [--session <name>]
   atdd-flow describe <address> --purpose <one-line responsibility>
@@ -85,7 +86,13 @@ async function main() {
     attach: () => attach(root, required(rest[0], "address"), rest.slice(1)),
     pi: async () => {
       if (rest[0] === "extension-path") return console.log(piExtensionPath());
-      throw new Error("Use `atdd-flow pi extension-path`.");
+      if (rest[0] === "runtime" && rest[1] === "launch") {
+        const plan = await launchPiRuntime(root, required(rest[2], "address"), rest.slice(3));
+        if (plan.dryRun) console.log(yaml.print(plan));
+        else console.log(`Launched Pi runtime for ${required(rest[2], "address")} with ${plan.candidate}.`);
+        return;
+      }
+      throw new Error("Use `pi extension-path` or `pi runtime launch <address> --pane <pane> --herdr-session <session> [--resume] [--dry-run]`.");
     },
     application: async () => {
       if (rest[0] === "use") return useApplication(root, required(rest[1], "address"), required(rest[2], "application"));
