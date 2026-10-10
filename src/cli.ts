@@ -37,6 +37,8 @@ Usage:
   atdd-flow task start|review|return <project> <task-id> --by <address>
   atdd-flow task done <project> <task-id> --by <address> [--retire-assignee]
   atdd-flow task prove <project> <task-id> --by <address> --item <number> --proof <reference>
+  atdd-flow task handoff <project> <task-id> --by <assignee> --phase <plan|red|green|refactor> --evidence <message-or-reference>
+  atdd-flow task respond <project> <task-id> --by <coordinator> --outcome <accept|return> --phase <plan|red|green|refactor>
   atdd-flow task block <project> <task-id> --by <address> --reason <text>
   atdd-flow task unblock <project> <task-id> --by <coordinator-address>
   atdd-flow task list <project> [--coordinator <address>] [--assignee <address>]
@@ -112,11 +114,13 @@ async function main() {
       if (subcommand === "done") return tasks.done(root, required(projectName, "project"), required(taskId, "task id"), tail);
       if (subcommand === "return") return tasks.returnToWork(root, required(projectName, "project"), required(taskId, "task id"), tail);
       if (subcommand === "prove") return tasks.prove(root, required(projectName, "project"), required(taskId, "task id"), tail);
+      if (subcommand === "handoff") return tasks.submitHandoff(root, required(projectName, "project"), required(taskId, "task id"), tail);
+      if (subcommand === "respond") return tasks.respondToHandoff(root, required(projectName, "project"), required(taskId, "task id"), tail);
       if (subcommand === "block") return tasks.block(root, required(projectName, "project"), required(taskId, "task id"), tail);
       if (subcommand === "unblock") return tasks.unblock(root, required(projectName, "project"), required(taskId, "task id"), tail);
       if (subcommand === "list") return tasks.list(root, required(projectName, "project"), rest.slice(2));
       if (subcommand === "open") return tasks.open(root, required(projectName, "project"), required(taskId, "task id"));
-      throw new Error("Use `atdd-flow task add|assign|amend|import|start|prove|review|return|done|block|unblock|list|open`.");
+      throw new Error("Use `atdd-flow task add|assign|amend|import|start|prove|handoff|respond|review|return|done|block|unblock|list|open`.");
     },
     cleanup: async () => {
       const [subcommand, projectName, taskId] = rest;

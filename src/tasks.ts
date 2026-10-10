@@ -4,6 +4,11 @@ import {
 } from "./core";
 
 export type TaskStatus = "todo" | "in_progress" | "review" | "done";
+/** An optional, descriptive implementation phase; task status remains the lifecycle authority. */
+export type TaskPhase = "plan" | "red" | "green" | "refactor";
+export type HandoffState = "executing" | "awaiting_coordinator" | "awaiting_assignee";
+/** A mutable projection of an immutable evidence message/reference, not a second task lifecycle. */
+export type TaskHandoff = { state: HandoffState; evidence: string; updated_at: string };
 export type DoneWhen = { text: string; proof?: string };
 export type Task = {
   schema: "atdd-workflow/task/v1";
@@ -15,6 +20,10 @@ export type Task = {
   source?: string;
   depends_on?: string[];
   blocker?: string;
+  /** Absent on legacy tasks. */
+  phase?: TaskPhase;
+  /** Absent on legacy tasks; evidence remains an opaque immutable message/reference. */
+  handoff?: TaskHandoff;
   done_when: DoneWhen[];
 };
 
@@ -218,6 +227,62 @@ export async function done(root: string, projectName: string, id: string, args: 
 
 export async function returnToWork(root: string, projectName: string, id: string, args: string[]) {
   return transition(root, projectName, taskId(id), "in_progress", required(words(args, "--by"), "--by"));
+}
+
+const phases: TaskPhase[] = ["plan", "red", "green", "refactor"];
+const handoffOutcomes = ["accept", "return"] as const;
+
+type HandoffOutcome = typeof handoffOutcomes[number];
+
+function phase(value: string | undefined): TaskPhase {
+  const selected = required(value, "--phase");
+  if (!phases.includes(selected as TaskPhase)) throw new Error(`--phase must be one of: ${phases.join(", ")}.`);
+  return selected as TaskPhase;
+}
+
+function handoffOutcome(value: string | undefined): HandoffOutcome {
+  const selected = required(value, "--outcome");
+  if (!(handoffOutcomes as readonly string[]).includes(selected)) throw new Error("--outcome must be accept or return.");
+  return selected as HandoffOutcome;
+}
+
+/**
+ * The assignee records work as ready for a coordinator decision. The evidence
+ * value is deliberately opaque: it links an immutable message/reference but
+ * never parses message prose or changes the task lifecycle.
+ */
+export async function submitHandoff(root: string, projectName: string, id: string, args: string[]) {
+  const task = await readTask(root, projectName, taskId(id));
+  const actor = await canonicalAddress(root, required(words(args, "--by"), "--by"));
+  if (!task.assignee || actor !== task.assignee) throw new Error(`Only ${task.assignee ?? "the assignee"} may submit a handoff for task ${id}.`);
+  if (task.status !== "in_progress") throw new Error(`Task ${id} must be in_progress before a handoff is submitted.`);
+  if (task.handoff?.state === "awaiting_coordinator") throw new Error(`Task ${id} is already awaiting coordinator handoff response.`);
+  const evidence = required(words(args, "--evidence"), "--evidence");
+  task.phase = phase(words(args, "--phase"));
+  task.handoff = { state: "awaiting_coordinator", evidence, updated_at: now() };
+  await writeTask(root, projectName, taskId(id), task);
+  console.log(`${id}  handoff awaiting_coordinator`);
+}
+
+/**
+ * The coordinator accepts a handoff for the assignee's next phase or returns
+ * it to active execution. This only updates the optional projection.
+ */
+export async function respondToHandoff(root: string, projectName: string, id: string, args: string[]) {
+  const task = await readTask(root, projectName, taskId(id));
+  const actor = await canonicalAddress(root, required(words(args, "--by"), "--by"));
+  if (actor !== task.coordinator) throw new Error(`Only ${task.coordinator} may respond to task ${id} handoff.`);
+  if (task.status !== "in_progress") throw new Error(`Task ${id} must be in_progress before a handoff is answered.`);
+  if (task.handoff?.state !== "awaiting_coordinator") throw new Error(`Task ${id} is not awaiting coordinator handoff response.`);
+  const outcome = handoffOutcome(words(args, "--outcome"));
+  task.phase = phase(words(args, "--phase"));
+  task.handoff = {
+    ...task.handoff,
+    state: outcome === "accept" ? "awaiting_assignee" : "executing",
+    updated_at: now(),
+  };
+  await writeTask(root, projectName, taskId(id), task);
+  console.log(`${id}  handoff ${task.handoff.state}`);
 }
 
 export async function prove(root: string, projectName: string, id: string, args: string[]) {
