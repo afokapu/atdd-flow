@@ -67,15 +67,7 @@ async function fixture(): Promise<Fixture> {
       purpose: "bounded RED-only local fixture",
       parent: { project: "demo", task: "parent", pr: "https://example.test/demo/pull/1" },
       trigger: { merge: true, close: true, expiresAt: "2030-01-01T00:00:00.000Z" },
-      inventory: [
-        { kind: "fixture-directory", locator: join(root, "fixture") },
-        { kind: "git-worktree", locator: join(root, "worktree") },
-        { kind: "git-branch", locator: "delivery/fixture-cleanup" },
-        { kind: "process", locator: "pid:synthetic" },
-        { kind: "port", locator: "127.0.0.1:0" },
-        { kind: "herdr-workspace", locator: "fake-session/fake-workspace" },
-        { kind: "github-preview", locator: "https://example.test/preview/fixture-cleanup" },
-      ],
+      inventory: [{ kind: "fixture-directory", locator: join(desk, ".atdd-flow", "fixtures", "fixture") }],
       cleanupAssignee: "driver.fixture@demo",
       authorizedScope: "local",
     },
@@ -173,21 +165,41 @@ test("RED: parent completion and dependent unblock are held until receipt or exp
   } finally { await value.dispose(); }
 });
 
-test("RED: dirty, unpushed, unmerged, live, out-of-scope, and Cloud inventory are refused without force deletion", async () => {
+test("RED: declaration scope must match every inventory kind", async () => {
+  const value = await fixture();
+  try {
+    const api = await lifecycle();
+    await expect(api.declare(value.desk, {
+      ...value.declaration,
+      id: "mismatched-scope",
+      inventory: [{ kind: "git-branch", locator: "delivery/fixture" }],
+      authorizedScope: "local",
+    })).rejects.toThrow(/scope.*git|git.*scope/i);
+    await expectLiveDeskUntouched(value);
+  } finally { await value.dispose(); }
+});
+
+test("RED: normal-looking non-fixtures refuse before the executor without a typed safety attestation", async () => {
   const value = await fixture();
   try {
     const api = await lifecycle();
     for (const [id, inventory, scope] of [
-      ["dirty", [{ kind: "git-worktree", locator: "dirty" }], "git"],
-      ["unpushed", [{ kind: "git-branch", locator: "unpushed" }], "git"],
-      ["unmerged", [{ kind: "git-branch", locator: "unmerged" }], "git"],
-      ["live", [{ kind: "process", locator: "live-pid" }], "local"],
-      ["out-of-scope", [{ kind: "herdr-workspace", locator: "other-session/workspace" }], "local"],
-      ["cloud", [{ kind: "github-preview", locator: "cloud://unapproved" }], "github"],
+      ["dirty", [{ kind: "git-worktree", locator: "/tmp/dirty-worktree" }], "git"],
+      ["unpushed", [{ kind: "git-branch", locator: "delivery/unpushed" }], "git"],
+      ["unmerged", [{ kind: "git-branch", locator: "delivery/unmerged" }], "git"],
+      ["live", [{ kind: "process", locator: "pid:1234" }], "local"],
+      ["normal-branch", [{ kind: "git-branch", locator: "delivery/foo" }], "git"],
+      ["normal-worktree", [{ kind: "git-worktree", locator: "/tmp/clean-worktree" }], "git"],
+      ["normal-herdr", [{ kind: "herdr-workspace", locator: "session/workspace" }], "herdr"],
+      ["out-of-scope-fixture", [{ kind: "fixture-directory", locator: "/tmp/other-fixture" }], "local"],
+      ["cloud", [{ kind: "github-preview", locator: "https://example.test/preview" }], "github"],
     ] as const) {
       await api.declare(value.desk, { ...value.declaration, id, inventory: inventory as Declaration["inventory"], authorizedScope: scope });
       await api.signal(value.desk, id, "merged");
-      await expect(api.execute(value.desk, id, async () => "removed")).rejects.toThrow(/dirty|unpushed|unmerged|live|scope|authorization|cloud/i);
+      let calls = 0;
+      await expect(api.execute(value.desk, id, async () => { calls += 1; return "removed"; })).rejects.toThrow(/fixture|adapter|attestation|scope|authorization|dirty|unpushed|unmerged|live|cloud/i);
+      expect(calls).toBe(0);
+      expect(await api.audit(value.desk, id)).toEqual(expect.arrayContaining([expect.objectContaining({ event: "cleanup-refused", immutable: true })]));
     }
     await expectLiveDeskUntouched(value);
   } finally { await value.dispose(); }

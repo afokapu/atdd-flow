@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readdir } from "node:fs/promises";
-import { join } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { atomicYaml, exists, now, readYaml, taskId } from "./core";
 
 export type InventoryKind = "fixture-directory" | "git-worktree" | "git-branch" | "process" | "port" | "herdr-workspace" | "github-preview";
@@ -45,6 +45,16 @@ function required(value: unknown, name: string): asserts value {
   if (value === undefined || value === null || value === "" || Array.isArray(value) && !value.length) throw new Error(`Declaration requires ${name}.`);
 }
 
+const scopeForKind: Record<InventoryKind, Declaration["authorizedScope"]> = {
+  "fixture-directory": "local",
+  "git-worktree": "git",
+  "git-branch": "git",
+  process: "local",
+  port: "local",
+  "herdr-workspace": "herdr",
+  "github-preview": "github",
+};
+
 function validate(value: Declaration) {
   required(value?.id, "id");
   taskId(value.id);
@@ -65,6 +75,9 @@ function validate(value: Declaration) {
     required(entry.locator, "inventory locator");
     if (!(["fixture-directory", "git-worktree", "git-branch", "process", "port", "herdr-workspace", "github-preview"] as string[]).includes(entry.kind)) {
       throw new Error(`Declaration has unsupported inventory kind: ${entry.kind}.`);
+    }
+    if (scopeForKind[entry.kind] !== value.authorizedScope) {
+      throw new Error(`Declaration scope ${value.authorizedScope} is incompatible with ${entry.kind}; it requires ${scopeForKind[entry.kind]} scope.`);
     }
   }
 }
@@ -115,20 +128,24 @@ export async function signal(root: string, id: string, event: "merged" | "closed
   return { status: value.status as "ready" | "cancelled" };
 }
 
-function refuse(entry: InventoryEntry) {
-  const locator = entry.locator.toLowerCase();
-  if (/cloud:|\biam\b|\bdeploy/.test(locator)) return "Cloud/IAM/deploy cleanup requires separate exact authorization";
-  if (/\bdirty\b/.test(locator)) return "Refusing dirty resource cleanup";
-  if (/\bunpushed\b/.test(locator)) return "Refusing unpushed resource cleanup";
-  if (/\bunmerged\b/.test(locator)) return "Refusing unmerged resource cleanup";
-  if (/\blive[-:]/.test(locator)) return "Refusing live resource cleanup";
-  if (/other-session|out-of-scope/.test(locator)) return "Refusing out-of-scope resource cleanup";
+function fixtureRefusal(root: string, declaration: Declaration, entry: InventoryEntry) {
+  if (entry.kind !== "fixture-directory" || declaration.authorizedScope !== "local") {
+    return `${entry.kind} cleanup requires a separately authorized typed adapter with verified scope, ownership, liveness, and Git safety attestations.`;
+  }
+  const fixtureRoot = resolve(root, ".atdd-flow", "fixtures");
+  const target = resolve(entry.locator);
+  const relation = relative(fixtureRoot, target);
+  if (!relation || relation.startsWith("..") || isAbsolute(relation)) {
+    return `Fixture target ${entry.locator} is outside the declared bounded fixture scope ${fixtureRoot}.`;
+  }
 }
 
 /**
- * This seam never invokes OS, git, Herdr, or GitHub itself. The caller supplies
- * the already-authorized, declared local lifecycle action; this function only
- * records outcomes and refuses known unsafe targets. There is no daemon or GC.
+ * This delivery has no typed destructive adapter. It can execute only a
+ * declared local fixture below the Desk's bounded fixture root; all OS, git,
+ * process, Herdr, and GitHub targets fail closed before an executor is called.
+ * A future adapter must verify and immutably attest scope, ownership, liveness,
+ * and Git safety before it is allowed to extend this boundary. No daemon or GC.
  */
 export async function execute(root: string, id: string, executor: (entry: InventoryEntry) => Promise<"removed" | "failed" | "timeout" | "cancelled">) {
   const value = await read(root, id);
@@ -136,8 +153,11 @@ export async function execute(root: string, id: string, executor: (entry: Invent
   if (value.status === "retained") throw new Error(`Cleanup ${id} is retained and cannot be executed.`);
   if (!(["ready", "cancelled"] as Status[]).includes(value.status)) throw new Error(`Cleanup ${id} is not ready for execution.`);
   for (const entry of value.declaration.inventory) {
-    const reason = refuse(entry);
-    if (reason) throw new Error(reason);
+    const reason = fixtureRefusal(root, value.declaration, entry);
+    if (reason) {
+      await appendAudit(root, id, "cleanup-refused", reason);
+      throw new Error(reason);
+    }
   }
   for (const entry of value.declaration.inventory) {
     const outcome = await executor(entry);
