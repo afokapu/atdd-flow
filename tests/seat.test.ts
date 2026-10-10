@@ -850,7 +850,7 @@ test("only a task coordinator can atomically assign an unassigned todo task", as
   expect(await fail(site, "task", "assign", "demo", "W-staff", "--assignee", secondDriver, "--by", coordinator)).toContain("can only be assigned while todo");
 });
 
-test("only a task coordinator can clear an in-progress blocker without changing task state", async () => {
+test("only a coordinator clears an explicit TODO or in-progress blocker without bypassing lifecycle holds", async () => {
   const root = await mkdtemp(join(tmpdir(), "atdd-workflow-"));
   roots.push(root);
   const site = join(root, "site");
@@ -862,24 +862,39 @@ test("only a task coordinator can clear an in-progress blocker without changing 
   const driver = "driver.runtime@demo";
   await run(site, "task", "add", "demo", "W-prerequisite", "--title", "Finished prerequisite", "--coordinator", coordinator, "--done-when", "Historic proof.");
   await run(site, "task", "import", "demo", "W-prerequisite", "--proof", "https://example.test/prerequisite");
-  await run(site, "task", "add", "demo", "W-unblock", "--title", "Blocked delivery", "--coordinator", coordinator, "--assignee", driver, "--body", "Preserve this body.", "--source", "repo@sha:program#row", "--depends-on", "W-prerequisite", "--done-when", "Coordinator accepts evidence.");
-  expect(await fail(site, "task", "unblock", "demo", "W-unblock", "--by", coordinator)).toContain("can only be unblocked while in_progress");
-  await run(site, "task", "start", "demo", "W-unblock", "--by", driver);
-  await run(site, "task", "prove", "demo", "W-unblock", "--by", driver, "--item", "1", "--proof", "CI run 42");
-  await run(site, "task", "block", "demo", "W-unblock", "--by", driver, "--reason", "Awaiting authorized recovery.");
-  const before = Bun.YAML.parse(await readFile(join(site, "work", "demo", "tasks", "W-unblock.yaml"), "utf8"));
+  const addBlocked = async (id: string, progress = false, dependency = "W-prerequisite") => {
+    await run(site, "task", "add", "demo", id, "--title", "Blocked delivery", "--coordinator", coordinator, "--assignee", driver, "--body", "Preserve this body.", "--source", "repo@sha:program#row", "--depends-on", dependency, "--done-when", "Coordinator accepts evidence.");
+    if (progress) await run(site, "task", "start", "demo", id, "--by", driver);
+    await run(site, "task", "block", "demo", id, "--by", driver, "--reason", "Awaiting authorized recovery.");
+  };
 
+  await addBlocked("W-todo");
+  const before = Bun.YAML.parse(await readFile(join(site, "work", "demo", "tasks", "W-todo.yaml"), "utf8"));
   expect(await run(site, "--help")).toContain("task unblock <project> <task-id> --by <coordinator-address>");
-  expect(await fail(site, "task", "unblock", "demo", "W-unblock", "--by", driver)).toContain(`Only ${coordinator} may unblock`);
-  expect(await run(site, "task", "unblock", "demo", "W-unblock", "--by", coordinator)).toBe("W-unblock  unblocked");
+  expect(await fail(site, "task", "unblock", "demo", "W-todo", "--by", driver)).toContain(`Only ${coordinator} may unblock`);
+  expect(await run(site, "task", "unblock", "demo", "W-todo", "--by", coordinator)).toBe("W-todo  unblocked");
   const { blocker: _blocker, ...expected } = before;
-  expect(Bun.YAML.parse(await readFile(join(site, "work", "demo", "tasks", "W-unblock.yaml"), "utf8"))).toEqual(expected);
-  expect(await fail(site, "task", "unblock", "demo", "W-unblock", "--by", coordinator)).toContain("has no blocker to clear");
+  expect(Bun.YAML.parse(await readFile(join(site, "work", "demo", "tasks", "W-todo.yaml"), "utf8"))).toEqual(expected);
+  expect(expected.status).toBe("todo");
+  expect(await fail(site, "task", "unblock", "demo", "W-todo", "--by", coordinator)).toContain("has no blocker to clear");
 
-  await run(site, "task", "review", "demo", "W-unblock", "--by", driver);
-  expect(await fail(site, "task", "unblock", "demo", "W-unblock", "--by", coordinator)).toContain("can only be unblocked while in_progress");
-  await run(site, "task", "done", "demo", "W-unblock", "--by", coordinator);
-  expect(await fail(site, "task", "unblock", "demo", "W-unblock", "--by", coordinator)).toContain("can only be unblocked while in_progress");
+  await addBlocked("W-progress", true);
+  expect(await run(site, "task", "unblock", "demo", "W-progress", "--by", coordinator)).toBe("W-progress  unblocked");
+  await run(site, "task", "prove", "demo", "W-progress", "--by", driver, "--item", "1", "--proof", "CI run 42");
+  await run(site, "task", "review", "demo", "W-progress", "--by", driver);
+  expect(await fail(site, "task", "unblock", "demo", "W-progress", "--by", coordinator)).toContain("can only be unblocked while todo or in_progress");
+  await run(site, "task", "done", "demo", "W-progress", "--by", coordinator);
+  expect(await fail(site, "task", "unblock", "demo", "W-progress", "--by", coordinator)).toContain("can only be unblocked while todo or in_progress");
+  expect(await fail(site, "task", "unblock", "demo", "missing", "--by", coordinator)).toContain("no such file");
+
+  await run(site, "task", "add", "demo", "W-waiting-dependency", "--title", "Unfinished prerequisite", "--coordinator", coordinator, "--done-when", "Finish.");
+  await addBlocked("W-waiting", false, "W-waiting-dependency");
+  expect(await fail(site, "task", "unblock", "demo", "W-waiting", "--by", coordinator)).toContain("waiting on: W-waiting-dependency");
+
+  await addBlocked("W-held");
+  const { declare } = await import("../src/ephemeral-resources");
+  await declare(site, { id: "hold", owner: driver, purpose: "hold unblock", parent: { project: "demo", task: "W-held" }, trigger: { merge: true }, inventory: [{ kind: "fixture-directory", locator: join(site, "fixtures", "hold") }], cleanupAssignee: driver, authorizedScope: "local" });
+  expect(await fail(site, "task", "unblock", "demo", "W-held", "--by", coordinator)).toContain("held by cleanup");
 });
 
 test("new project roles leave model allocation to the Desk portfolio", async () => {
