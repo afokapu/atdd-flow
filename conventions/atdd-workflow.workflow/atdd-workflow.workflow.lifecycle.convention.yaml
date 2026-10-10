@@ -69,6 +69,19 @@ content:
     messages to their coordinator; they do not directly message the operator or main seat. A receipt
     or result addresses the seat that made the request, not every historical participant in the thread.
 
+    For new project topology, `main@project` is the sole primary-checkout and `main`-branch
+    coordinator. A named `coordinator.stream@project` works only from its own linked
+    `integration/stream` branch and worktree; it integrates bounded driver delivery rather than acting
+    as a hidden feature driver. A driver coordinated by that seat derives its governed base from that
+    exact integration head, while a main-coordinated driver derives from main. Reject nested
+    coordinator lineage, mismatched base/worktree placement, and ambiguous placement rather than
+    guessing. Legacy seat, task, and thread identities remain readable without rename or mutation.
+
+    Drivers hand work back to their named coordinator for integration and validation. The named
+    coordinator hands a reviewed integration candidate to main; only main completes normal
+    integration-to-main gates and publication. No automatic merge executor, branch graph, daemon, or
+    scheduler is introduced by this workflow.
+
     A driver starts only its assigned ready task. Treat the task's done_when criteria as the required
     delivery scope. Prefer existing repository patterns, components, dependencies, contracts, and
     abstractions. When multiple implementations are correct, choose the smallest effective change that

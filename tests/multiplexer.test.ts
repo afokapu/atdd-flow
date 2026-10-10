@@ -86,14 +86,18 @@ test("projection requires an explicit or inherited session and never changes Des
   expect(await readFile(join(fixture.site, "work", "demo", "seats", "driver.active", "seat.yaml"), "utf8")).toBe(before);
 });
 
-test("RED: apply anchors linked worktree opens in the primary workspace and reuses each returned root tab/pane", async () => {
+test("RED: Herdr 0.9.3 linked opens use one primary anchor plus an explicit worktree selector and reuse each returned root tab/pane", async () => {
   const fixture = await desk();
   const fake = await fakeHerdr(fixture.root);
   await invoke(fixture.site, fake.environment, "multiplexer", "apply", "herdr", "--session", "chosen");
   const calls = await readFile(fake.log, "utf8");
   expect(calls).toContain("--session chosen workspace create --cwd " + fixture.repository + " --label demo --no-focus");
-  expect(calls).toContain("--session chosen worktree open --workspace w1 --cwd " + fixture.repository + " --path " + fixture.integration + " --label coordinator.integration@demo --no-focus");
-  expect(calls).toContain("--session chosen worktree open --workspace w1 --cwd " + fixture.repository + " --path " + fixture.driver + " --label driver.active@demo --no-focus");
+  // Herdr 0.9.3 requires an explicit path-or-branch selector. Its linked
+  // worktree open may use exactly one primary anchor; do not combine --cwd
+  // with the primary workspace selector (real Bun/DOS dry-runs rejected it).
+  expect(calls).toContain("--session chosen worktree open --workspace w1 --path " + fixture.integration + " --label coordinator.integration@demo --no-focus");
+  expect(calls).toContain("--session chosen worktree open --workspace w1 --path " + fixture.driver + " --label driver.active@demo --no-focus");
+  expect(calls).not.toContain("worktree open --workspace w1 --cwd");
   // The linked-worktree root tab/pane is the seat tab/pane: no second tab may be created.
   expect(calls.match(/tab create/g)?.length).toBe(2);
   expect(calls).toContain("pane rename w1:p1 main@demo");

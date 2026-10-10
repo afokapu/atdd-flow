@@ -11,9 +11,15 @@ import { type ModelSelectionInput, type ModelSelectionResponse, selectModel } fr
 import { seatTasks } from "./tasks";
 import { projectHerdrSeat } from "./multiplexer";
 
+const lifecycleConventionPath = "conventions/atdd-workflow.workflow/atdd-workflow.workflow.lifecycle.convention.yaml";
+
 const defaultRoles = (dynamicModels = true): Record<string, Role> => ({
+  main: {
+    address: "main@{project}", branch: "main", worktree: "{repository}",
+    ...(dynamicModels ? {} : { agent: "pi" }),
+  },
   coordinator: {
-    address: "coordinator@{project}", branch: "main", worktree: "{repository}",
+    address: "coordinator.{name}@{project}", branch: "integration/{name}", base: "main", worktree: "{worktree_root}/{name}",
     ...(dynamicModels ? {} : { agent: "pi" }),
   },
   driver: {
@@ -75,10 +81,26 @@ export async function spawn(root: string, projectName: string, roleName: string,
   const config = await project(root, projectName);
   const role = required(config.roles[roleName], `role ${roleName}`);
   const entries = { project: config.project, name, worktree_root: config.worktree_root ?? "" };
-  const address = fill(role.address, entries);
-  const configuredPath = role.worktree ? fill(role.worktree, { ...entries, repository: config.repository ?? "" }) : undefined;
+  // Retain the historical primary coordinator command for existing Desks while
+  // new defaults make main@project the only new primary identity.
+  const legacyPrimaryCoordinator = roleName === "coordinator" && name === "main"
+    && role.address === "coordinator.{name}@{project}" && role.branch === "integration/{name}";
+  const address = legacyPrimaryCoordinator ? `coordinator@${config.project}` : fill(role.address, entries);
+  const configuredPath = legacyPrimaryCoordinator ? config.repository : role.worktree ? fill(role.worktree, { ...entries, repository: config.repository ?? "" }) : undefined;
   const worktree = resolve(required(words(args, "--worktree") ?? configuredPath, "--worktree or role worktree template"));
-  const branch = words(args, "--branch") ?? fill(role.branch, { project: config.project, name });
+  const branch = words(args, "--branch") ?? (legacyPrimaryCoordinator ? "main" : fill(role.branch, { project: config.project, name }));
+  const newMainDefaults = roleName === "main" && role.address === "main@{project}" && role.branch === "main";
+  const newNamedCoordinatorDefaults = roleName === "coordinator" && !legacyPrimaryCoordinator
+    && role.address === "coordinator.{name}@{project}" && role.branch === "integration/{name}";
+  if (newMainDefaults && (branch !== "main" || (config.repository && worktree !== resolve(config.repository)))) {
+    throw new Error(`Main seat main@${config.project} must use the declared primary main worktree and branch.`);
+  }
+  if (newNamedCoordinatorDefaults) {
+    const expectedWorktree = resolve(fill(required(role.worktree, "named coordinator worktree template"), { ...entries, repository: config.repository ?? "" }));
+    if (branch !== `integration/${name}` || worktree !== expectedWorktree) {
+      throw new Error(`Named coordinator ${address} must use its declared integration/${name} branch and linked worktree.`);
+    }
+  }
   await ensureWorktree(config, role, worktree, branch);
   const purpose = words(args, "--purpose") ?? (role.purpose ? fill(role.purpose, entries) : undefined);
   const portfolio = await modelPortfolio(root);
@@ -369,4 +391,5 @@ export async function openSeat(root: string, address: string) {
     const entry = await readYaml<{ participants: string[]; state: string; subject: string }>(file);
     if (entry.participants.includes(resolved)) console.log(`${threadId}  ${entry.state}  ${entry.subject}`);
   }
+  console.log(`Convention: ${lifecycleConventionPath}`);
 }

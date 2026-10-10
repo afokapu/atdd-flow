@@ -89,6 +89,28 @@ async function projectSeats(root: string, projectName: string) {
   return seats.filter((entry): entry is Seat => Boolean(entry && entry.schema === "atdd-workflow/seat/v2" && !entry.retired));
 }
 
+function assertNewTopologyPlacement(config: Project, entry: Seat, primary: string) {
+  const coordinator = config.roles.coordinator;
+  const namedCoordinatorDefaults = coordinator?.address === "coordinator.{name}@{project}" && coordinator.branch === "integration/{name}";
+  const mainDefaults = config.roles.main?.address === "main@{project}" && config.roles.main.branch === "main";
+  if (entry.role === "main" && mainDefaults && (entry.address !== `main@${config.project}` || entry.branch !== "main" || resolve(entry.worktree) !== primary)) {
+    throw new Error(`Main seat ${entry.address} must use the primary main worktree and branch.`);
+  }
+  if (entry.role !== "coordinator" || !namedCoordinatorDefaults) return;
+  // coordinator@project remains the preserved historical primary identity;
+  // every newly named coordinator must be a single linked integration stream.
+  if (entry.address === `coordinator@${config.project}`) {
+    if (entry.branch !== "main" || resolve(entry.worktree) !== primary) throw new Error(`Legacy primary coordinator ${entry.address} has mismatched placement.`);
+    return;
+  }
+  const suffix = `@${config.project}`;
+  const local = entry.address.endsWith(suffix) ? entry.address.slice(0, -suffix.length) : "";
+  const match = local.match(/^coordinator\.([a-z0-9_-]+)$/);
+  if (!match || entry.branch !== `integration/${match[1]}` || resolve(entry.worktree) === primary) {
+    throw new Error(`Named coordinator ${entry.address} must use one linked integration/<stream> worktree and branch.`);
+  }
+}
+
 async function targets(root: string): Promise<Target[]> {
   let projects: string[];
   try { projects = await readdir(paths(root).work); }
@@ -102,6 +124,7 @@ async function targets(root: string): Promise<Target[]> {
     const primary = resolve(config.repository);
     result.push({ project: name, worktree: primary, workspaceLabel: name });
     for (const entry of await projectSeats(root, name)) {
+      assertNewTopologyPlacement(config, entry, primary);
       if ((entry.role === "main" || entry.role === "coordinator") && resolve(entry.worktree) === primary) {
         result.push({ project: name, worktree: primary, workspaceLabel: name, seat: entry });
         continue;
@@ -148,7 +171,7 @@ async function ensureWorkspace(session: string, target: Target, workspaces: Work
   if (!current) {
     const args = target.workspaceLabel === target.project
       ? ["workspace", "create", "--cwd", target.worktree, "--label", target.workspaceLabel, "--no-focus"]
-      : ["worktree", "open", "--workspace", primary?.id ?? "", "--cwd", primary?.worktree ?? "", "--path", target.worktree, "--label", target.workspaceLabel, "--no-focus"];
+      : ["worktree", "open", "--workspace", primary?.id ?? "", "--path", target.worktree, "--label", target.workspaceLabel, "--no-focus"];
     if (args.includes("")) throw new Error(`Project primary workspace is required to open linked worktree ${target.worktree}.`);
     const created = json(await command(["herdr", "--session", session, ...args]));
     current = { workspace_id: workspaceId(created), label: target.workspaceLabel, worktree: { checkout_path: target.worktree } };
