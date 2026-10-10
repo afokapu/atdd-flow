@@ -192,6 +192,8 @@ The output includes only the message and its thread ID/subject; Flow rejects mis
 
 Pi’s native wake-up is intentionally lightweight: no daemon, duplicate mailbox, or separate extension installation. The extension is shipped inside the Flow package. Desk thread files remain the source of truth.
 
+At session start, the extension records one local, token-fenced **advisory** runtime observation at `.atdd-flow/pi-runtime/<encoded-seat>.yaml`. It contains only its opaque owner token, PID, model, cwd, start time, and heartbeat. A replacement Pi process atomically supersedes the prior observation; the old process can neither heartbeat, clear, nor consume queued mail after it loses its token. Shutdown and expired-heartbeat cleanup remove only the matching advisory observation. This file never selects recipients or changes a Desk seat, task, thread, checkpoint, branch, worktree, or immutable mail. `atdd-flow status seat` may display its active/stale activity as read-only information.
+
 Native mail is loss-tolerant rather than watcher-dependent. When Flow persists a message for a native or Pi-designated unbound seat, it also appends a small per-seat reference to an ordered, fixed-size pending segment under `.atdd-flow/pi-inbox/<encoded-seat>`; immutable thread `M-*.yaml` files remain the authoritative message source. On session start/reload and at a bounded interval, the extension reads only the durable queue head and consumes a fixed batch in `created_at`/message-ID order, removing a reference only after Pi accepts delivery. The pending queue shrinks after delivery, so periodic recovery neither scans nor retains the complete Desk history. `fs.watch` on that queue remains a low-latency fast path; an unavailable watcher or restarted Pi is recovered by reconciliation. Existing Pi processes still require `/reload` or restart after a Flow package upgrade to load the bundled extension.
 
 To host Pi in Herdr, create a pane with the durable Desk and seat identity, then start Pi with the extension supplied by the installed Flow package:
@@ -206,7 +208,9 @@ herdr agent start pi-runtime --kind pi --pane <pane-id> -- --extension "$PI_EXTE
 atdd-flow --root /path/to/desk attach driver.runtime@resolver-os --application herdr --wake native
 ```
 
-Pi receives its identity and startup task from the extension itself. Its normal TUI remains visible and manually usable; incoming Desk mail wakes it through Pi's native message API.
+Pi receives its identity and startup task from the extension itself. Its normal TUI remains visible and manually usable; incoming Desk mail wakes it through Pi's native message API. The runtime lifecycle has one internal bounded inbox transport; it does not add a second watcher, registry, mailbox, reservation system, or routing path.
+
+The lifecycle and recovery design was informed by [nicobailon/pi-messenger](https://github.com/nicobailon/pi-messenger) at `09937ed647a1b07a3b595bf75943feacb80ff123` (MIT). No pi-messenger source is copied here. Flow keeps Desk identity, recipient selection, immutable mail, and governance authoritative; any future copied source must carry its MIT notice.
 
 With ATDD Bun, enable the Workflow profile:
 
