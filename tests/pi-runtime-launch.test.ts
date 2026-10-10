@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { atomicYaml, paths, readYaml } from "../src/core";
 import { launchPiRuntime } from "../src/seats";
+import { block, unblock } from "../src/tasks";
 
 const roots: string[] = [];
 const seat = "driver.runtime@demo";
@@ -132,6 +133,8 @@ test("launch eligibility admits assigned active or dependency-ready TODO without
   const todo = await readYaml<Record<string, unknown>>(taskFile);
   await atomicYaml(paths(ready).taskFile("demo", "done"), { schema: "atdd-workflow/task/v1", title: "Done", status: "done", coordinator: "coordinator@demo", done_when: [{ text: "Done." }] });
   await atomicYaml(taskFile, { ...todo, status: "todo", depends_on: ["done"] });
+  await block(ready, "demo", "runtime", ["--by", seat, "--reason", "Awaiting supported coordinator recovery."]);
+  await unblock(ready, "demo", "runtime", ["--by", "coordinator@demo"]);
   await expect(dryRun(ready)).resolves.toMatchObject({ dryRun: true });
   expect((await readYaml<Record<string, unknown>>(taskFile)).status).toBe("todo");
 

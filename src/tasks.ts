@@ -246,8 +246,10 @@ export async function unblock(root: string, projectName: string, id: string, arg
   const task = await readTask(root, projectName, taskId(id));
   const actor = await canonicalAddress(root, required(words(args, "--by"), "--by"));
   if (actor !== task.coordinator) throw new Error(`Only ${task.coordinator} may unblock task ${id}.`);
-  if (task.status !== "in_progress") throw new Error(`Task ${id} can only be unblocked while in_progress.`);
+  if (task.status !== "todo" && task.status !== "in_progress") throw new Error(`Task ${id} can only be unblocked while todo or in_progress.`);
   if (!task.blocker) throw new Error(`Task ${id} has no blocker to clear.`);
+  const waiting = await ready(root, projectName, task);
+  if (waiting.length) throw new Error(`Task ${id} is waiting on: ${waiting.join(", ")}.`);
   const { assertDependentsMayUnblock } = await import("./ephemeral-resources");
   await assertDependentsMayUnblock(root, { project: projectName, task: id });
   delete task.blocker;
