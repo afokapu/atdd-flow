@@ -193,6 +193,20 @@ test("RED: dirty, unpushed, unmerged, live, out-of-scope, and Cloud inventory ar
   } finally { await value.dispose(); }
 });
 
+test("RED: 32 concurrent signals append 32 distinct immutable audit entries without overwrite", async () => {
+  const value = await fixture();
+  try {
+    const api = await lifecycle();
+    await api.declare(value.desk, value.declaration);
+    await Promise.all(Array.from({ length: 32 }, () => api.signal(value.desk, value.declaration.id, "merged")));
+    const entries = await api.audit(value.desk, value.declaration.id);
+    expect(entries).toHaveLength(33);
+    expect(entries.filter((entry) => entry.event === "declared")).toHaveLength(1);
+    expect(entries.filter((entry) => entry.event === "merged")).toHaveLength(32);
+    await expectLiveDeskUntouched(value);
+  } finally { await value.dispose(); }
+});
+
 test("RED: a retained decision creates immutable audit/tombstone evidence", async () => {
   const value = await fixture();
   try {

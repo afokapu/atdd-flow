@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdir, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { atomicYaml, exists, now, readYaml, taskId } from "./core";
@@ -85,8 +86,9 @@ async function write(root: string, value: Record) {
 async function appendAudit(root: string, id: string, event: string, detail?: string) {
   const folder = auditRoot(root, id);
   await mkdir(folder, { recursive: true });
-  const ordinal = (await readdir(folder)).filter((file) => file.endsWith(".yaml")).length + 1;
-  await atomicYaml(join(folder, `${String(ordinal).padStart(4, "0")}-${event}.yaml`), {
+  // A collision-proof name keeps concurrent signal records write-once; do not
+  // derive a filename from a racy directory listing.
+  await atomicYaml(join(folder, `${now().replace(/[^0-9]/g, "")}-${randomUUID()}-${event}.yaml`), {
     schema: "atdd-workflow/ephemeral-resource-audit/v1", event, immutable: true, at: now(), ...(detail ? { detail } : {}),
   } satisfies Audit);
 }
