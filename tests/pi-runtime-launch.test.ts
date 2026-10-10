@@ -21,7 +21,7 @@ async function desk() {
   await chmod(pi, 0o755);
   await atomicYaml(paths(root).desk, { schema: "atdd-workflow/desk/v1", desk: "demo", application: "herdr", executables: { pi } });
   await atomicYaml(paths(root).models, { schema: "atdd-workflow/models/v1", models: [{ id: "strong", executable: "pi", args: ["--model", "strong"] }, { id: "economy", executable: "pi", args: ["--model", "economy"] }] });
-  await atomicYaml(paths(root).projectFile("demo"), { schema: "atdd-workflow/project/v1", project: "demo", roles: {} });
+  await atomicYaml(paths(root).projectFile("demo"), { schema: "atdd-workflow/project/v1", project: "demo", repository: "/work/primary", roles: {} });
   await atomicYaml(paths(root).seatFile(seat), { schema: "atdd-workflow/seat/v2", address: seat, role: "driver", project: "demo", worktree: "/work/demo", branch: "delivery/runtime" });
   await atomicYaml(paths(root).taskFile("demo", "runtime"), { schema: "atdd-workflow/task/v1", title: "Bounded runtime work", status: "in_progress", coordinator: "coordinator@demo", assignee: seat, done_when: [{ text: "Runtime command is tested." }] });
   return root;
@@ -46,6 +46,12 @@ function fakeHerdr(options: { released?: boolean; verifiedPath?: string } = {}) 
     command: async (command: string[]) => {
       calls.push(command);
       const args = command.slice(3);
+      if (args[0] === "workspace" && args[1] === "list") return JSON.stringify({ result: { workspaces: [
+        { workspace_id: "w1", label: "demo", worktree: { checkout_path: "/work/primary" } },
+        { workspace_id: "w2", label: seat, worktree: { checkout_path: "/work/demo" } },
+      ] } });
+      if (args[0] === "tab" && args[1] === "list") return JSON.stringify({ result: { tabs: [{ tab_id: "w2:t1", workspace_id: "w2", label: seat }] } });
+      if (args[0] === "pane" && args[1] === "list") return JSON.stringify({ result: { panes: [{ pane_id: "w1:p2", tab_id: "w2:t1", label: seat }] } });
       if (args[0] === "pane" && args[1] === "get") return JSON.stringify({ result: { pane: started ? running() : shell } });
       if (args[0] === "pane" && args[1] === "process-info") return JSON.stringify({ result: { process_info: {
         pane_id: "w1:p2", shell_pid: 11,
@@ -77,7 +83,7 @@ test("first launch uses only installed Herdr commands and persists the exact rep
 
   const commands = herdr.calls.map((entry) => entry.join(" "));
   expect(commands.some((entry) => entry.includes("agent inspect") || entry.includes("agent stop") || entry.includes("--json") || entry.includes("--env"))).toBe(false);
-  expect(commands).toContain(`herdr --session forge pane run w1:p2 export ATDD_WORKFLOW_ROOT='${root}' ATDD_WORKFLOW_SEAT='${seat}'`);
+  expect(commands).toContain(`herdr --session forge pane run w1:p2 export ATDD_WORKFLOW_ROOT='${root}' ATDD_WORKFLOW_SEAT='${seat}' ATDD_FLOW_PI_SESSION='${sessionId}' ATDD_FLOW_HERDR_SESSION='forge' ATDD_FLOW_HERDR_PANE='w1:p2'`);
   expect(commands).toContainEqual(expect.stringContaining(`agent start flow-driver-runtime-demo --kind pi --pane w1:p2 -- --session-id ${sessionId} --model economy --extension`));
   expect(herdr.requestedId()).toBe(sessionId);
   const start = herdr.calls.find((entry) => entry.includes("start"))!;
@@ -88,6 +94,18 @@ test("first launch uses only installed Herdr commands and persists the exact rep
   expect(receipt).toMatchObject({ seat, candidate: "economy", pi_session: sessionId, pi_session_path: sessionPath, herdr_session: "forge", pane: "w1:p2" });
   const bound = await readYaml<Record<string, any>>(paths(root).seatFile(seat));
   expect(bound.runtime).toMatchObject({ pi_session: sessionId, pi_session_path: sessionPath, launch_receipt: result.receipt });
+});
+
+test("RED: launch resolves the exact seat-scoped projected pane without accepting a caller pane", async () => {
+  const root = await desk();
+  const herdr = fakeHerdr();
+  await expect(launchPiRuntime(root, seat, ["--herdr-session", "forge", "--dry-run"], {
+    select: selectEconomy, command: herdr.command, sessionId: () => sessionId,
+  })).resolves.toMatchObject({ pane: "w1:p2", herdrSession: "forge", dryRun: true });
+  await expect(launchPiRuntime(root, seat, ["--pane", "w9:p9", "--herdr-session", "forge", "--dry-run"], {
+    select: selectEconomy, command: herdr.command, sessionId: () => sessionId,
+  })).rejects.toThrow("does not match the seat-scoped Herdr projection");
+  expect(herdr.calls.map((entry) => entry.join(" "))).not.toContainEqual(expect.stringContaining("agent start"));
 });
 
 test("resume requires the previous Pi already released and the same exact reported path", async () => {
@@ -162,7 +180,8 @@ test("dry-run reads installed reports only and does not write, start, or bind", 
   const herdr = fakeHerdr();
   const plan = await launchPiRuntime(root, seat, ["--pane", "w1:p2", "--herdr-session", "forge", "--dry-run"], { select: selectEconomy, command: herdr.command, sessionId: () => sessionId });
   expect(plan.dryRun).toBe(true);
-  expect(herdr.calls).toHaveLength(2);
+  // Topology is read and verified before the existing pane/process dry-run inspection.
+  expect(herdr.calls).toHaveLength(5);
   expect(await Bun.file(plan.receipt).exists()).toBe(false);
   expect((await readYaml<Record<string, any>>(paths(root).seatFile(seat))).runtime).toBeUndefined();
 });

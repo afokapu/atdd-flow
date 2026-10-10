@@ -4,6 +4,7 @@ import { basename, dirname, join } from "node:path";
 import { parse, stringify } from "yaml";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { clearStaleRuntimeState, clearRuntimeState, heartbeatRuntimeState, ownsRuntimeState, registerRuntimeState, runtimeOwnerToken, withOwnedRuntimeState } from "../../src/runtime-state";
+import { paths, readYaml, type Seat } from "../../src/core";
 
 type Thread = { id?: unknown; participants?: unknown; subject?: unknown };
 export type Mail = { id?: unknown; from?: unknown; to?: unknown; subject?: unknown; created_at?: unknown };
@@ -40,12 +41,27 @@ export type PiRuntimeOptions = {
   staleAfterMs?: number;
   deliver: InboxOptions["deliver"];
   createTransport?: (options: InboxOptions) => FlowInboxTransport;
+  /** Flow-launched Pi instances register and heartbeat before their verified launch activates inbox delivery. */
+  deferActivation?: boolean;
+};
+
+export type LaunchActivationOptions = {
+  root: string;
+  seat: string;
+  piSession: string;
+  herdrSession: string;
+  pane: string;
+  activate: () => Promise<void>;
+  intervalMs?: number;
+  timeoutMs?: number;
 };
 
 const defaultBatchSize = 32;
 const defaultIntervalMs = 30_000;
 const defaultHeartbeatMs = 15_000;
 const defaultStaleAfterMs = 60_000;
+const defaultActivationIntervalMs = 25;
+const defaultActivationTimeoutMs = 60_000;
 
 function participants(thread: Thread) {
   return Array.isArray(thread.participants) && thread.participants.every((entry) => typeof entry === "string") ? thread.participants as string[] : [];
@@ -216,11 +232,12 @@ export const createInboxReconciler = createInboxTransport;
  */
 export function createPiRuntime({
   root, seat, pid = process.pid, model = process.env.PI_MODEL ?? "pi", cwd = process.cwd(),
-  heartbeatMs = defaultHeartbeatMs, staleAfterMs = defaultStaleAfterMs, deliver, createTransport = createInboxTransport,
+  heartbeatMs = defaultHeartbeatMs, staleAfterMs = defaultStaleAfterMs, deliver, createTransport = createInboxTransport, deferActivation = false,
 }: PiRuntimeOptions) {
   const ownerToken = runtimeOwnerToken();
   let transport: FlowInboxTransport | undefined;
   let heartbeat: ReturnType<typeof setInterval> | undefined;
+  let activated = false;
 
   const owned = () => ownsRuntimeState(root, seat, ownerToken);
   const stop = async () => {
@@ -234,11 +251,9 @@ export function createPiRuntime({
     if (!transport || !await owned()) return;
     await transport.reconcile();
   };
-  const start = async () => {
-    // This removes only an expired local observation. Registration itself is
-    // replacement-safe and does not alter the authoritative Desk seat.
-    await clearStaleRuntimeState(root, seat, staleAfterMs);
-    await registerRuntimeState(root, { seat, owner_token: ownerToken, pid, model, cwd });
+  const activate = async () => {
+    if (!await owned()) return false;
+    if (activated) return true;
     transport = createTransport({
       root, seat, batchSize: defaultBatchSize, intervalMs: defaultIntervalMs,
       deliver: async (mail, thread, path) => {
@@ -257,13 +272,47 @@ export function createPiRuntime({
       },
     });
     await transport.start();
+    activated = true;
+    return true;
+  };
+  const start = async () => {
+    // This removes only an expired local observation. Registration itself is
+    // replacement-safe and does not alter the authoritative Desk seat.
+    await clearStaleRuntimeState(root, seat, staleAfterMs);
+    await registerRuntimeState(root, { seat, owner_token: ownerToken, pid, model, cwd });
     heartbeat = setInterval(() => {
       void heartbeatRuntimeState(root, seat, ownerToken).then((state) => {
         if (!state) void stop();
       });
     }, heartbeatMs);
+    if (!deferActivation) await activate();
   };
-  return { ownerToken, start, stop, reconcile, get transport() { return transport; } };
+  return { ownerToken, start, activate, stop, reconcile, get transport() { return transport; } };
+}
+
+type LaunchReceipt = { seat?: string; pi_session?: string; pi_session_path?: string; herdr_session?: string; pane?: string };
+
+/** Wait only for the launcher's already-verified receipt and exact Desk binding; this never creates either record. */
+export async function awaitLaunchActivation({ root, seat, piSession, herdrSession, pane, activate, intervalMs = defaultActivationIntervalMs, timeoutMs = defaultActivationTimeoutMs }: LaunchActivationOptions) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() <= deadline) {
+    try {
+      const record = await readYaml<Seat>(paths(root).seatFile(seat));
+      const runtime = record.runtime;
+      const locator = runtime?.addresses.herdr;
+      if (runtime?.application === "herdr" && typeof locator !== "string" && locator?.session === herdrSession && locator.pane === pane
+        && runtime.pi_session === piSession && runtime.pi_session_path && runtime.launch_receipt) {
+        const receipt = await readYaml<LaunchReceipt>(runtime.launch_receipt);
+        if (receipt.seat === seat && receipt.pi_session === piSession && receipt.pi_session_path === runtime.pi_session_path
+          && receipt.herdr_session === herdrSession && receipt.pane === pane) {
+          await activate();
+          return;
+        }
+      }
+    } catch { /* Binding and receipt are written after Herdr verification; wait within this finite window. */ }
+    await pause(intervalMs);
+  }
+  throw new Error("Timed out waiting for verified Flow launch receipt and binding.");
 }
 
 /** Desk mail is authoritative; the queue is a bounded delivery index and fs.watch only shortens latency. */
@@ -273,7 +322,7 @@ export default function (pi: ExtensionAPI) {
   if (!root || !seat) return;
   let runtime: ReturnType<typeof createPiRuntime> | undefined;
   pi.on("session_start", async (_event, ctx) => {
-    runtime = createPiRuntime({ root, seat, deliver: async (mail, thread, path, sendIfOwned) => {
+    runtime = createPiRuntime({ root, seat, deferActivation: true, deliver: async (mail, thread, path, sendIfOwned) => {
       if (!sendIfOwned) return false;
       return sendIfOwned(() => {
         pi.sendMessage({
@@ -284,8 +333,19 @@ export default function (pi: ExtensionAPI) {
       });
     } });
     await runtime.start();
-    pi.sendMessage({ customType: "atdd-flow-start", content: `SYSTEM: you are ${seat}. Read your durable seat and assigned work with: atdd-flow open ${seat}. Continue assigned in_progress work until it is review-ready or explicitly blocked.`, display: true, details: { seat, root } }, { triggerTurn: true, deliverAs: "followUp" });
-    if (ctx.hasUI) ctx.ui.notify(`ATDD Flow native mail active for ${seat}`, "info");
+    const piSession = process.env.ATDD_FLOW_PI_SESSION;
+    const herdrSession = process.env.ATDD_FLOW_HERDR_SESSION;
+    const pane = process.env.ATDD_FLOW_HERDR_PANE;
+    if (!piSession || !herdrSession || !pane) return;
+    const current = runtime;
+    void awaitLaunchActivation({
+      root, seat, piSession, herdrSession, pane,
+      activate: async () => {
+        if (!await current.activate()) return;
+        pi.sendMessage({ customType: "atdd-flow-start", content: `SYSTEM: you are ${seat}. Read your durable seat and assigned work with: atdd-flow open ${seat}. Continue assigned in_progress work until it is review-ready or explicitly blocked.`, display: true, details: { seat, root } }, { triggerTurn: true, deliverAs: "followUp" });
+        if (ctx.hasUI) ctx.ui.notify(`ATDD Flow native mail active for ${seat}`, "info");
+      },
+    }).catch(() => undefined);
   });
   pi.on("session_shutdown", () => { void runtime?.stop(); });
 }

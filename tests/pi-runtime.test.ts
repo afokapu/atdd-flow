@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { atomicYaml } from "../src/core";
 import { readRuntimeState } from "../src/runtime-state";
-import { createPiRuntime } from "../extensions/pi/index";
+import { awaitLaunchActivation, createPiRuntime } from "../extensions/pi/index";
 
 const seat = "driver.pi@demo";
 const thread = "T-runtime";
@@ -153,6 +153,50 @@ test("RED: the extension runtime starts, registers, heartbeats, and stops in Nod
     expect(result.registered).toMatchObject({ seat, pid: 303, model: "pi-node", cwd: "/node" });
     expect(result.heartbeated.heartbeat_at).not.toBe(result.registered.heartbeat_at);
     expect(result.stopped).toBe(true);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("startup activation waits for the verified receipt and exact binding, activates once, and owner shutdown clears state", async () => {
+  const root = await temporaryDesk();
+  const activation = { count: 0 };
+  const piSession = "01a12345-6789-7abc-8def-0123456789ab";
+  const sessionPath = `/Users/test/.pi/agent/sessions/demo/run_${piSession}.jsonl`;
+  const receipt = join(root, ".atdd-flow", "runtime-launch", "verified.yaml");
+  const runtime = createPiRuntime({ root, seat, pid: 404, model: "pi", cwd: "/node", heartbeatMs: 5, deferActivation: true, deliver: async () => false });
+  try {
+    await runtime.start();
+    expect(runtime.transport).toBeUndefined();
+    const waiting = awaitLaunchActivation({
+      root, seat, piSession, herdrSession: "forge", pane: "w1:p2", intervalMs: 1, timeoutMs: 100,
+      activate: async () => { await runtime.activate(); activation.count += 1; },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(activation.count).toBe(0);
+
+    await atomicYaml(receipt, { schema: "atdd-flow/pi-runtime-launch-receipt/v1", seat, pi_session: piSession, pi_session_path: sessionPath, herdr_session: "forge", pane: "w1:p2" });
+    await atomicYaml(join(root, "work", "demo", "seats", "driver.pi", "seat.yaml"), {
+      schema: "atdd-workflow/seat/v2", address: seat, role: "driver", project: "demo", worktree: "/work/demo", branch: "delivery/pi",
+      runtime: { application: "herdr", addresses: { herdr: { session: "forge", pane: "w1:p2" } }, pi_session: piSession, pi_session_path: sessionPath, launch_receipt: receipt },
+    });
+    await waiting;
+    await waiting;
+    expect(activation.count).toBe(1);
+    expect(runtime.transport).toBeDefined();
+    await runtime.stop();
+    expect(await readRuntimeState(root, seat)).toBeUndefined();
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("startup activation times out without a receipt or binding", async () => {
+  const root = await temporaryDesk();
+  const piSession = "01a12345-6789-7abc-8def-0123456789ab";
+  try {
+    await expect(awaitLaunchActivation({
+      root, seat, piSession, herdrSession: "forge", pane: "w1:p2", intervalMs: 1, timeoutMs: 5,
+      activate: async () => { throw new Error("must not activate"); },
+    })).rejects.toThrow("verified Flow launch receipt and binding");
+    expect(await Bun.file(join(root, ".atdd-flow", "runtime-launch", "verified.yaml")).exists()).toBe(false);
+    expect(await Bun.file(join(root, "work", "demo", "seats", "driver.pi", "seat.yaml")).exists()).toBe(false);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

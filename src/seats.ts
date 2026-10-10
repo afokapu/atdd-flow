@@ -9,6 +9,7 @@ import {
 } from "./core";
 import { type ModelSelectionInput, type ModelSelectionResponse, selectModel } from "./judgment";
 import { seatTasks } from "./tasks";
+import { projectHerdrSeat } from "./multiplexer";
 
 const defaultRoles = (dynamicModels = true): Record<string, Role> => ({
   coordinator: {
@@ -271,17 +272,21 @@ export async function launchPiRuntime(root: string, address: string, args: strin
   const resolved = await canonicalAddress(root, address);
   const record = await seat(root, resolved);
   const config = await desk(root);
-  const pane = required(words(args, "--pane"), "--pane");
+  const requestedPane = words(args, "--pane");
   const herdrSession = required(words(args, "--herdr-session"), "--herdr-session");
   const resume = args.includes("--resume");
   const dryRun = args.includes("--dry-run");
-  if (args.some((argument) => !["--pane", pane, "--herdr-session", herdrSession, "--resume", "--dry-run"].includes(argument))) throw new Error("Use `pi runtime launch <seat> --pane <existing-pane> --herdr-session <session> [--resume] [--dry-run]`.");
+  const allowed = ["--herdr-session", herdrSession, "--resume", "--dry-run", ...(requestedPane ? ["--pane", requestedPane] : [])];
+  if (args.some((argument) => !allowed.includes(argument))) throw new Error("Use `pi runtime launch <seat> [--pane <asserted-pane>] --herdr-session <session> [--resume] [--dry-run]`.");
   const active = await launchEligibleTasks(root, record);
   if (!active.length) throw new Error(`${resolved} has no launch-eligible task; refusing runtime launch.`);
   const selection = await chooseLaunchModel(root, config, record, required(await modelPortfolio(root), "models.yaml for Pi runtime launch"), dependencies.select);
   const model = resolveModelCommand(config, selection.candidate);
   if (basename(model.agent) !== "pi") throw new Error(`Pi runtime launch requires a Pi candidate, received ${selection.candidate.id}.`);
   const command = dependencies.command ?? runOutput;
+  const projection = await projectHerdrSeat(root, resolved, herdrSession, command);
+  if (requestedPane && requestedPane !== projection.pane) throw new Error("The asserted --pane does not match the seat-scoped Herdr projection.");
+  const pane = projection.pane;
   const [paneRaw, processRaw] = await Promise.all([command(herdr(herdrSession, "pane", "get", pane)), command(herdr(herdrSession, "pane", "process-info", "--pane", pane))]);
   const currentPane = paneReport(JSON.parse(paneRaw));
   const currentProcess = processReport(JSON.parse(processRaw));
@@ -301,7 +306,7 @@ export async function launchPiRuntime(root: string, address: string, args: strin
   const request: HerdrRequest = { session: herdrSession, pane, seat: resolved, root, piSession, ...(priorSessionPath ? { sessionPath: priorSessionPath } : {}), resume, args: [...model.args, "--extension", piExtensionPath()] };
   const plan = { candidate: selection.candidate.id, piSession, pane, herdrSession, receipt: receiptPath(root, piSession), command: startCommand(request), ...(dryRun ? { dryRun: true } : {}) };
   if (dryRun) return plan;
-  await command(herdr(herdrSession, "pane", "run", pane, `export ATDD_WORKFLOW_ROOT=${shellQuote(root)} ATDD_WORKFLOW_SEAT=${shellQuote(resolved)}`));
+  await command(herdr(herdrSession, "pane", "run", pane, `export ATDD_WORKFLOW_ROOT=${shellQuote(root)} ATDD_WORKFLOW_SEAT=${shellQuote(resolved)} ATDD_FLOW_PI_SESSION=${shellQuote(piSession)} ATDD_FLOW_HERDR_SESSION=${shellQuote(herdrSession)} ATDD_FLOW_HERDR_PANE=${shellQuote(pane)}`));
   await command(startCommand(request));
   const [agentRaw, verifiedPaneRaw, verifiedProcessRaw] = await Promise.all([command(herdr(herdrSession, "agent", "get", agentName(resolved))), command(herdr(herdrSession, "pane", "get", pane)), command(herdr(herdrSession, "pane", "process-info", "--pane", pane))]);
   const agent = agentReport(JSON.parse(agentRaw));
