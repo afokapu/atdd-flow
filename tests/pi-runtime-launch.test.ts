@@ -35,10 +35,11 @@ async function priorRuntime(root: string) {
   await atomicYaml(paths(root).seatFile(seat), saved);
 }
 
-function fakeHerdr(options: { released?: boolean; verifiedPath?: string } = {}) {
+function fakeHerdr(options: { released?: boolean; verifiedPath?: string; agentLifecycle?: { key?: "agent_status" | "status" | "state"; value?: string } } = {}) {
   const calls: string[][] = [];
   let started = false;
   let requestedId = sessionId;
+  const lifecycle = options.agentLifecycle ?? { key: "status", value: "idle" };
   const shell = { pane_id: "w1:p2", agent: options.released === false ? "flow-driver-runtime-demo" : null, agent_status: "unknown", agent_session: null };
   const running = () => ({ pane_id: "w1:p2", agent: "flow-driver-runtime-demo", agent_status: "idle", agent_session: { source: "pi", agent: "flow-driver-runtime-demo", kind: "path", value: options.verifiedPath ?? sessionPath } });
   return {
@@ -66,7 +67,7 @@ function fakeHerdr(options: { released?: boolean; verifiedPath?: string } = {}) 
         started = true;
         return JSON.stringify({ result: { name: "flow-driver-runtime-demo" } });
       }
-      if (args[0] === "agent" && args[1] === "get") return JSON.stringify({ result: { agent: { name: "flow-driver-runtime-demo", pane_id: "w1:p2", status: "idle" } } });
+      if (args[0] === "agent" && args[1] === "get") return JSON.stringify({ result: { agent: { name: "flow-driver-runtime-demo", pane_id: "w1:p2", ...(lifecycle.key && lifecycle.value ? { [lifecycle.key]: lifecycle.value } : {}) } } });
       throw new Error(`unexpected Herdr command: ${command.join(" ")}`);
     },
     requestedId: () => requestedId,
@@ -94,6 +95,28 @@ test("first launch uses only installed Herdr commands and persists the exact rep
   expect(receipt).toMatchObject({ seat, candidate: "economy", pi_session: sessionId, pi_session_path: sessionPath, herdr_session: "forge", pane: "w1:p2" });
   const bound = await readYaml<Record<string, any>>(paths(root).seatFile(seat));
   expect(bound.runtime).toMatchObject({ pi_session: sessionId, pi_session_path: sessionPath, launch_receipt: result.receipt });
+});
+
+test("accepts Herdr agent get's actual agent_status lifecycle shape", async () => {
+  const root = await desk();
+  await expect(launchPiRuntime(root, seat, ["--pane", "w1:p2", "--herdr-session", "forge"], {
+    select: selectEconomy, command: fakeHerdr({ agentLifecycle: { key: "agent_status", value: "idle" } }).command, sessionId: () => sessionId,
+  })).resolves.toMatchObject({ piSession: sessionId });
+});
+
+test("preserves legacy agent lifecycle fields and rejects unknown or missing reports", async () => {
+  for (const agentLifecycle of [{ key: "status", value: "idle" }, { key: "state", value: "done" }] as const) {
+    const root = await desk();
+    await expect(launchPiRuntime(root, seat, ["--pane", "w1:p2", "--herdr-session", "forge"], {
+      select: selectEconomy, command: fakeHerdr({ agentLifecycle }).command, sessionId: () => sessionId,
+    })).resolves.toMatchObject({ piSession: sessionId });
+  }
+  for (const agentLifecycle of [{ key: "agent_status", value: "unknown" }, { key: "status", value: "unknown" }, { key: "state", value: "unknown" }, {}] as const) {
+    const root = await desk();
+    await expect(launchPiRuntime(root, seat, ["--pane", "w1:p2", "--herdr-session", "forge"], {
+      select: selectEconomy, command: fakeHerdr({ agentLifecycle }).command, sessionId: () => sessionId,
+    })).rejects.toThrow("did not verify the replacement Pi process");
+  }
 });
 
 test("RED: launch resolves the exact seat-scoped projected pane without accepting a caller pane", async () => {
