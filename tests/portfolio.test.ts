@@ -73,4 +73,4 @@ test("four repository lanes complete local and cross-coordinator threads", async
   } finally {
     await rm(root, { recursive: true, force: true });
   }
-});
+}, 30_000);

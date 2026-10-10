@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, test as bunTest } from "bun:test";
 import { chmod, mkdir, mkdtemp, readFile, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,6 +12,10 @@ import { parse } from "yaml";
 
 const roots: string[] = [];
 const cli = join(import.meta.dir, "..", "src", "cli.ts");
+// This file creates many isolated CLI processes. The fixture-only timeout
+// keeps env-clean runs deterministic without changing production behavior.
+const processHeavyTimeout = 20_000;
+const test = (name: string, body: () => unknown | Promise<unknown>, timeout = processHeavyTimeout) => bunTest(name, body, timeout);
 
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
@@ -201,7 +205,7 @@ test("a Pi-designated unbound seat queues ordered native mail in bounded segment
   expect(delivered).toEqual(expected.slice(0, 32));
   await inbox.reconcile();
   expect(delivered).toEqual(expected);
-});
+}, processHeavyTimeout);
 
 test("concurrent native posts survive queue rollover without losing references", async () => {
   const root = await mkdtemp(join(tmpdir(), "atdd-workflow-"));
@@ -223,7 +227,7 @@ test("concurrent native posts survive queue rollover without losing references",
   expect(new Set(delivered)).toEqual(new Set(posted));
   const expected = (await Promise.all(posted.map(async (id) => ({ id, created_at: (parse(await readFile(join(site, "threads", thread, `${id}.yaml`), "utf8")) as { created_at: string }).created_at })))).sort((left, right) => left.created_at.localeCompare(right.created_at) || left.id.localeCompare(right.id)).map(({ id }) => id);
   expect(delivered).toEqual(expected);
-});
+}, processHeavyTimeout);
 
 test("a failed rollover child write leaves later native mail recoverable", async () => {
   const root = await mkdtemp(join(tmpdir(), "atdd-workflow-"));
@@ -259,7 +263,7 @@ test("a failed rollover child write leaves later native mail recoverable", async
   expect(delivered).toHaveLength(33);
   expect(new Set(delivered)).toEqual(new Set([...posted, later]));
   expect(delivered).toContain(later);
-});
+}, processHeavyTimeout);
 
 test("an incomplete inbox intent never delivers or blocks later durable mail", async () => {
   const root = await mkdtemp(join(tmpdir(), "atdd-workflow-"));

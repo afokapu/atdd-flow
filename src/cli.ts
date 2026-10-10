@@ -10,6 +10,7 @@ import * as judgment from "./judgment";
 import * as reviews from "./reviews";
 import { status } from "./overview";
 import { multiplexer } from "./multiplexer";
+import * as cleanup from "./ephemeral-resources";
 
 const usage = `atdd-flow — filesystem-first agent seats and tasks
 
@@ -39,6 +40,8 @@ Usage:
   atdd-flow task unblock <project> <task-id> --by <coordinator-address>
   atdd-flow task list <project> [--coordinator <address>] [--assignee <address>]
   atdd-flow task open <project> <task-id>
+  atdd-flow cleanup status <project>
+  atdd-flow cleanup checklist <project> <task-id>
   atdd-flow thread start --with <address,...> --subject <text> [--task <project/task-id>]
   atdd-flow thread add <thread-id> <address>
   atdd-flow thread open <thread-id>
@@ -107,6 +110,12 @@ async function main() {
       if (subcommand === "list") return tasks.list(root, required(projectName, "project"), rest.slice(2));
       if (subcommand === "open") return tasks.open(root, required(projectName, "project"), required(taskId, "task id"));
       throw new Error("Use `atdd-flow task add|assign|amend|import|start|prove|review|return|done|block|unblock|list|open`.");
+    },
+    cleanup: async () => {
+      const [subcommand, projectName, taskId] = rest;
+      if (subcommand === "status") return console.log(Bun.YAML.stringify(await cleanup.coordinatorStatus(root, required(projectName, "project"))));
+      if (subcommand === "checklist") return console.log(await cleanup.checklist(root, { project: required(projectName, "project"), task: required(taskId, "task id") }));
+      throw new Error("Use `atdd-flow cleanup status <project>` or `atdd-flow cleanup checklist <project> <task-id>`.");
     },
     thread: async () => {
       const [subcommand, ...tail] = rest;

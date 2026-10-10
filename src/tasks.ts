@@ -192,6 +192,8 @@ async function transition(root: string, projectName: string, id: string, next: T
   if (next === "done") {
     if (actor !== task.coordinator) throw new Error(`Only ${task.coordinator} may complete task ${id}.`);
     if (!allProofs(task)) throw new Error(`Task ${id} is missing completion proof.`);
+    const { assertParentMayComplete } = await import("./ephemeral-resources");
+    await assertParentMayComplete(root, { project: projectName, task: id });
     const { assertAcceptedBehavioralReview } = await import("./reviews");
     await assertAcceptedBehavioralReview(root, projectName, id, task);
     if (retire) await retireAssignee(root, projectName, id, task);
@@ -246,6 +248,8 @@ export async function unblock(root: string, projectName: string, id: string, arg
   if (actor !== task.coordinator) throw new Error(`Only ${task.coordinator} may unblock task ${id}.`);
   if (task.status !== "in_progress") throw new Error(`Task ${id} can only be unblocked while in_progress.`);
   if (!task.blocker) throw new Error(`Task ${id} has no blocker to clear.`);
+  const { assertDependentsMayUnblock } = await import("./ephemeral-resources");
+  await assertDependentsMayUnblock(root, { project: projectName, task: id });
   delete task.blocker;
   await writeTask(root, projectName, id, task);
   console.log(`${id}  unblocked`);
