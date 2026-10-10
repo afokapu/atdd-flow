@@ -52,7 +52,13 @@ function fakeHerdr(options: { released?: boolean; verifiedPath?: string } = {}) 
         foreground_processes: started ? [{ pid: 22, name: "node", argv0: "node" }, { pid: 23, name: "pi", argv0: "pi" }] : [{ pid: 11, name: "zsh", argv0: "zsh" }],
       } } });
       if (args[0] === "pane" && args[1] === "run") return JSON.stringify({ result: { pane_id: "w1:p2" } });
-      if (args[0] === "agent" && args[1] === "start") { requestedId = args[args.indexOf("--session") + 1]!; started = true; return JSON.stringify({ result: { name: "flow-driver-runtime-demo" } }); }
+      if (args[0] === "agent" && args[1] === "start") {
+        const piArgs = args.slice(args.indexOf("--") + 1);
+        const id = piArgs.indexOf("--session-id");
+        requestedId = id >= 0 ? piArgs[id + 1]! : sessionId;
+        started = true;
+        return JSON.stringify({ result: { name: "flow-driver-runtime-demo" } });
+      }
       if (args[0] === "agent" && args[1] === "get") return JSON.stringify({ result: { agent: { name: "flow-driver-runtime-demo", pane_id: "w1:p2", status: "idle" } } });
       throw new Error(`unexpected Herdr command: ${command.join(" ")}`);
     },
@@ -71,8 +77,12 @@ test("first launch uses only installed Herdr commands and persists the exact rep
   const commands = herdr.calls.map((entry) => entry.join(" "));
   expect(commands.some((entry) => entry.includes("agent inspect") || entry.includes("agent stop") || entry.includes("--json") || entry.includes("--env"))).toBe(false);
   expect(commands).toContain(`herdr --session forge pane run w1:p2 export ATDD_WORKFLOW_ROOT='${root}' ATDD_WORKFLOW_SEAT='${seat}'`);
-  expect(commands).toContainEqual(expect.stringContaining(`agent start flow-driver-runtime-demo --kind pi --pane w1:p2 -- --session ${sessionId} --model economy --extension`));
+  expect(commands).toContainEqual(expect.stringContaining(`agent start flow-driver-runtime-demo --kind pi --pane w1:p2 -- --session-id ${sessionId} --model economy --extension`));
   expect(herdr.requestedId()).toBe(sessionId);
+  const start = herdr.calls.find((entry) => entry.includes("start"))!;
+  const newPiArgs = start.slice(start.indexOf("--") + 1);
+  expect(newPiArgs.slice(0, 2)).toEqual(["--session-id", sessionId]);
+  expect(newPiArgs).not.toContain("latest");
   const receipt = await readYaml<Record<string, unknown>>(result.receipt);
   expect(receipt).toMatchObject({ seat, candidate: "economy", pi_session: sessionId, pi_session_path: sessionPath, herdr_session: "forge", pane: "w1:p2" });
   const bound = await readYaml<Record<string, any>>(paths(root).seatFile(seat));
@@ -85,6 +95,11 @@ test("resume requires the previous Pi already released and the same exact report
   const herdr = fakeHerdr();
   await launchPiRuntime(root, seat, ["--pane", "w1:p2", "--herdr-session", "forge", "--resume"], { select: selectEconomy, command: herdr.command });
   expect(herdr.requestedId()).toBe(sessionId);
+  const start = herdr.calls.find((entry) => entry.includes("start"))!;
+  const resumedPiArgs = start.slice(start.indexOf("--") + 1);
+  expect(resumedPiArgs.slice(0, 2)).toEqual(["--session", sessionPath]);
+  expect(resumedPiArgs).not.toContain("--session-id");
+  expect(resumedPiArgs).not.toContain("latest");
   expect(herdr.calls.map((entry) => entry.join(" ")).some((entry) => entry.includes("agent stop") || entry.includes("release-agent"))).toBe(false);
 });
 

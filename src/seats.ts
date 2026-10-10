@@ -190,7 +190,7 @@ async function chooseLaunchModel(root: string, config: Desk, record: Seat, portf
 /** Pi loads this extension inside its own process, so it can wake without host text injection. */
 export const piExtensionPath = () => join(import.meta.dir, "..", "extensions", "pi", "index.ts");
 
-type HerdrRequest = { session: string; pane: string; seat: string; root: string; piSession: string; args: string[] };
+type HerdrRequest = { session: string; pane: string; seat: string; root: string; piSession: string; sessionPath?: string; resume: boolean; args: string[] };
 type Command = (command: string[]) => Promise<string>;
 export type PiRuntimeLaunchDependencies = {
   select?: (input: ModelSelectionInput) => Promise<ModelSelectionResponse>;
@@ -245,7 +245,10 @@ function sessionIdFromPiJsonlPath(path: string) {
 function shellQuote(value: string) { return `'${value.replaceAll("'", "'\\''")}'`; }
 function agentName(address: string) { return `flow-${address.replace(/[^a-z0-9_-]/gi, "-").toLowerCase()}`.slice(0, 32); }
 function herdr(session: string, ...args: string[]) { return ["herdr", "--session", session, ...args]; }
-function startCommand(request: HerdrRequest) { return herdr(request.session, "agent", "start", agentName(request.seat), "--kind", "pi", "--pane", request.pane, "--", "--session", request.piSession, ...request.args); }
+function startCommand(request: HerdrRequest) {
+  const session = request.resume ? ["--session", required(request.sessionPath, "a previously verified Pi session path")] : ["--session-id", request.piSession];
+  return herdr(request.session, "agent", "start", agentName(request.seat), "--kind", "pi", "--pane", request.pane, "--", ...session, ...request.args);
+}
 function receiptPath(root: string, piSession: string) { return join(root, ".atdd-flow", "runtime-launch", `${encodeURIComponent(piSession)}-${crypto.randomUUID().slice(0, 8)}.yaml`); }
 
 /** A deliberately narrow Pi+Herdr launch using only installed CLI commands on an existing shell pane. */
@@ -279,7 +282,8 @@ export async function launchPiRuntime(root: string, address: string, args: strin
       if (receipt.seat !== resolved || receipt.pi_session !== piSession || receipt.pi_session_path !== record.runtime?.pi_session_path || receipt.herdr_session !== herdrSession || receipt.pane !== pane) throw new Error("receipt does not match seat/session/path/pane");
     } catch (error) { throw new Error(`Resume requires a valid Flow launch receipt: ${(error as Error).message}`); }
   }
-  const request: HerdrRequest = { session: herdrSession, pane, seat: resolved, root, piSession, args: [...model.args, "--extension", piExtensionPath()] };
+  const priorSessionPath = resume ? required(record.runtime?.pi_session_path, "a previously verified Pi session path") : undefined;
+  const request: HerdrRequest = { session: herdrSession, pane, seat: resolved, root, piSession, ...(priorSessionPath ? { sessionPath: priorSessionPath } : {}), resume, args: [...model.args, "--extension", piExtensionPath()] };
   const plan = { candidate: selection.candidate.id, piSession, pane, herdrSession, receipt: receiptPath(root, piSession), command: startCommand(request), ...(dryRun ? { dryRun: true } : {}) };
   if (dryRun) return plan;
   await command(herdr(herdrSession, "pane", "run", pane, `export ATDD_WORKFLOW_ROOT=${shellQuote(root)} ATDD_WORKFLOW_SEAT=${shellQuote(resolved)}`));
