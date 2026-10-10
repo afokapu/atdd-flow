@@ -59,6 +59,8 @@ export type Runtime = {
   wake?: "host" | "native";
   /** Exact Pi session used by the narrow Pi/Herdr launch command. */
   pi_session?: string;
+  /** Exact durable JSONL path reported by Herdr for that Pi session. */
+  pi_session_path?: string;
   /** Immutable, non-secret receipt for that selected launch. */
   launch_receipt?: string;
 };

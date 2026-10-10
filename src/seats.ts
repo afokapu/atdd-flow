@@ -92,7 +92,7 @@ export async function spawn(root: string, projectName: string, roleName: string,
   console.log(address);
 }
 
-export async function bind(root: string, address: string, args: string[], selectedModel?: string, wake?: Runtime["wake"], piSession?: string, launchReceipt?: string) {
+export async function bind(root: string, address: string, args: string[], selectedModel?: string, wake?: Runtime["wake"], piSession?: string, piSessionPath?: string, launchReceipt?: string) {
   const resolved = await canonicalAddress(root, address);
   const record = await seat(root, resolved);
   const config = await desk(root);
@@ -115,6 +115,7 @@ export async function bind(root: string, address: string, args: string[], select
     ...(selectedModel ? { model: selectedModel } : {}),
     ...(selectedWake ? { wake: selectedWake } : {}),
     ...(piSession ? { pi_session: piSession } : {}),
+    ...(piSessionPath ? { pi_session_path: piSessionPath } : {}),
     ...(launchReceipt ? { launch_receipt: launchReceipt } : {}),
   };
   // Legacy Desks use this field as the executable chosen by a later `launch`.
@@ -198,8 +199,8 @@ export type PiRuntimeLaunchDependencies = {
   at?: () => string;
 };
 
-type PaneReport = { pane: string; agent?: string; status?: string; session?: string };
-type ProcessReport = { shell?: number; processes: Array<{ name?: string; argv0?: string; cmdline?: string; argv?: string[] }> };
+type PaneReport = { pane: string; agent?: string; status?: string; sessionPath?: string };
+type ProcessReport = { shell?: number; processes: Array<{ name?: string; argv0?: string; cmdline?: string }> };
 
 const object = (value: unknown): Record<string, unknown> | undefined => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 const text = (value: unknown) => typeof value === "string" ? value : undefined;
@@ -210,13 +211,18 @@ function paneReport(value: unknown): PaneReport {
   const session = object(pane?.agent_session);
   const id = text(pane?.pane_id);
   if (!id) throw new Error("Herdr pane get did not report a pane id.");
-  return { pane: id, ...(text(pane?.agent) ? { agent: text(pane?.agent) } : {}), ...(text(pane?.agent_status) ? { status: text(pane?.agent_status) } : {}), ...(text(session?.value) ? { session: text(session?.value) } : {}) };
+  return {
+    pane: id,
+    ...(text(pane?.agent) ? { agent: text(pane?.agent) } : {}),
+    ...(text(pane?.agent_status) ? { status: text(pane?.agent_status) } : {}),
+    ...(session?.kind === "path" && text(session.value) ? { sessionPath: text(session.value) } : {}),
+  };
 }
 function processReport(value: unknown): ProcessReport {
   const report = object(result(value)?.process_info) ?? result(value);
   const processes = Array.isArray(report?.foreground_processes) ? report.foreground_processes.flatMap((entry) => {
     const process = object(entry);
-    return process ? [{ name: text(process.name), argv0: text(process.argv0), cmdline: text(process.cmdline), argv: Array.isArray(process.argv) ? process.argv.filter((part): part is string => typeof part === "string") : undefined }] : [];
+    return process ? [{ name: text(process.name), argv0: text(process.argv0), cmdline: text(process.cmdline) }] : [];
   }) : [];
   return { ...(number(report?.shell_pid) ? { shell: number(report?.shell_pid) } : {}), processes };
 }
@@ -229,6 +235,12 @@ function agentReport(value: unknown) {
 }
 function piProcess(processes: ProcessReport["processes"]) {
   return processes.find((entry) => entry.name === "pi" || entry.argv0?.endsWith("/pi") || entry.argv0 === "pi" || /(^|\/)pi(?:\s|$)/.test(entry.cmdline ?? ""));
+}
+/** Pi's durable JSONL session filenames end in `_<session-id>.jsonl`. */
+function sessionIdFromPiJsonlPath(path: string) {
+  const match = basename(path).match(/_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i);
+  if (!match) throw new Error("Herdr did not report a Pi JSONL path with a documented session ID.");
+  return match[1]!;
 }
 function shellQuote(value: string) { return `'${value.replaceAll("'", "'\\''")}'`; }
 function agentName(address: string) { return `flow-${address.replace(/[^a-z0-9_-]/gi, "-").toLowerCase()}`.slice(0, 32); }
@@ -263,8 +275,8 @@ export async function launchPiRuntime(root: string, address: string, args: strin
     const prior = record.runtime?.launch_receipt;
     if (!prior) throw new Error("Resume requires an existing Flow launch receipt.");
     try {
-      const receipt = await readYaml<{ seat?: string; pi_session?: string; herdr_session?: string; pane?: string }>(prior);
-      if (receipt.seat !== resolved || receipt.pi_session !== piSession || receipt.herdr_session !== herdrSession || receipt.pane !== pane) throw new Error("receipt does not match seat/session/pane");
+      const receipt = await readYaml<{ seat?: string; pi_session?: string; pi_session_path?: string; herdr_session?: string; pane?: string }>(prior);
+      if (receipt.seat !== resolved || receipt.pi_session !== piSession || receipt.pi_session_path !== record.runtime?.pi_session_path || receipt.herdr_session !== herdrSession || receipt.pane !== pane) throw new Error("receipt does not match seat/session/path/pane");
     } catch (error) { throw new Error(`Resume requires a valid Flow launch receipt: ${(error as Error).message}`); }
   }
   const request: HerdrRequest = { session: herdrSession, pane, seat: resolved, root, piSession, args: [...model.args, "--extension", piExtensionPath()] };
@@ -276,17 +288,21 @@ export async function launchPiRuntime(root: string, address: string, args: strin
   const agent = agentReport(JSON.parse(agentRaw));
   const verifiedPane = paneReport(JSON.parse(verifiedPaneRaw));
   const verifiedProcess = piProcess(processReport(JSON.parse(verifiedProcessRaw)).processes);
-  const exactSession = verifiedPane.session === piSession && verifiedProcess?.argv?.includes(piSession);
-  if (agent.name !== agentName(resolved) || agent.pane !== pane || ![agent.status, verifiedPane.status].every((status) => status === "idle" || status === "done") || verifiedPane.pane !== pane || !exactSession) throw new Error("Herdr did not verify the exact requested Pi session; seat binding was not changed.");
+  const sessionPath = verifiedPane.sessionPath;
+  if (!sessionPath) throw new Error("Herdr did not report an exact Pi session path; seat binding was not changed.");
+  const reportedId = sessionIdFromPiJsonlPath(sessionPath);
+  if (reportedId !== piSession) throw new Error("Herdr did not verify the exact requested Pi session ID; seat binding was not changed.");
+  if (resume && sessionPath !== record.runtime?.pi_session_path) throw new Error("Herdr did not verify the exact requested Pi session path; seat binding was not changed.");
+  if (agent.name !== agentName(resolved) || agent.pane !== pane || ![agent.status, verifiedPane.status].every((status) => status === "idle" || status === "done") || verifiedPane.pane !== pane || !verifiedProcess) throw new Error("Herdr did not verify the replacement Pi process; seat binding was not changed.");
   const receipt = plan.receipt;
   const receiptRecord = {
     schema: "atdd-flow/pi-runtime-launch-receipt/v1", seat: resolved, tasks: active.map((entry) => entry.id), candidate: selection.candidate.id,
     selection: selection.fallback ? { result: "fallback", reason: selection.fallback } : { result: "selected", confidence: selection.selection.confidence, ...(selection.selection.available && selection.selection.model ? { model: selection.selection.model } : {}) },
-    pi_session: piSession, herdr_session: herdrSession, pane, created_at: dependencies.at?.() ?? now(),
+    pi_session: piSession, pi_session_path: sessionPath, herdr_session: herdrSession, pane, created_at: dependencies.at?.() ?? now(),
   };
   await mkdir(dirname(receipt), { recursive: true });
   await writeFile(receipt, yaml.print(receiptRecord), { encoding: "utf8", flag: "wx" });
-  await bind(root, resolved, ["--application", "herdr", "--address", pane, "--session", herdrSession], selection.candidate.id, "native", piSession, receipt);
+  await bind(root, resolved, ["--application", "herdr", "--address", pane, "--session", herdrSession], selection.candidate.id, "native", piSession, sessionPath, receipt);
   return plan;
 }
 
