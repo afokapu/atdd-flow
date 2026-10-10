@@ -2,6 +2,7 @@ import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
+import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 
 export type Role = { address: string; branch: string; agent?: string; purpose?: string; worktree?: string; base?: string };
 export type Group = { role?: string; members?: string[] };
@@ -129,8 +130,8 @@ export const required = <T>(value: T | undefined, label: string) => {
   return value;
 };
 export const yaml = {
-  parse: <T>(text: string) => Bun.YAML.parse(text) as T,
-  print: (value: unknown) => Bun.YAML.stringify(value),
+  parse: <T>(text: string) => parseYaml(text) as T,
+  print: (value: unknown) => stringifyYaml(value, { collectionStyle: "flow", flowCollectionPadding: false }),
 };
 
 export function addressParts(address: string) {

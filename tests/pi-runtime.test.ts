@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { atomicYaml } from "../src/core";
 import { readRuntimeState } from "../src/runtime-state";
 import { createPiRuntime } from "../extensions/pi/index";
@@ -117,6 +118,42 @@ test("offline rejection is retried after restart without duplicate wake", async 
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("RED: the extension runtime starts, registers, heartbeats, and stops in Node without Bun", async () => {
+  const root = await temporaryDesk();
+  const build = await Bun.build({ entrypoints: [join(import.meta.dir, "..", "extensions", "pi", "index.ts")], outdir: join(root, "bundle"), target: "node", format: "esm" });
+  expect(build.success).toBe(true);
+  const extension = build.outputs[0]!.path;
+  const fixture = join(root, "node-extension-runtime.mjs");
+  await writeFile(fixture, `
+    import { readFile, stat } from "node:fs/promises";
+    import { createRequire } from "node:module";
+    const { parse } = createRequire(process.env.FLOW_PACKAGE)("yaml");
+    const { createPiRuntime } = await import(process.env.FLOW_EXTENSION);
+    const root = process.env.FLOW_ROOT;
+    const seat = "driver.pi@demo";
+    const file = root + "/.atdd-flow/pi-runtime/" + encodeURIComponent(seat) + ".yaml";
+    const runtime = createPiRuntime({ root, seat, pid: 303, model: "pi-node", cwd: "/node", heartbeatMs: 5, deliver: async () => false });
+    await runtime.start();
+    const registered = parse(await readFile(file, "utf8"));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const heartbeated = parse(await readFile(file, "utf8"));
+    await runtime.stop();
+    const stopped = await stat(file).then(() => false, () => true);
+    console.log(JSON.stringify({ registered, heartbeated, stopped }));
+  `);
+  try {
+    const child = Bun.spawn(["node", "--experimental-strip-types", fixture], {
+      env: { ...process.env, FLOW_ROOT: root, FLOW_EXTENSION: pathToFileURL(extension).href, FLOW_PACKAGE: pathToFileURL(join(import.meta.dir, "..", "package.json")).href }, stdout: "pipe", stderr: "pipe",
+    });
+    const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    expect(code, stderr).toBe(0);
+    const result = JSON.parse(stdout) as { registered: Record<string, unknown>; heartbeated: Record<string, unknown>; stopped: boolean };
+    expect(result.registered).toMatchObject({ seat, pid: 303, model: "pi-node", cwd: "/node" });
+    expect(result.heartbeated.heartbeat_at).not.toBe(result.registered.heartbeat_at);
+    expect(result.stopped).toBe(true);
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
 
 test("rapid broadcast references remain queued for an offline participant", async () => {
