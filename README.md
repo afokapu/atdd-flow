@@ -128,9 +128,18 @@ Threads are the durable inbox/outbox. Workflow persists a message before a best-
 atdd-flow thread start --with coordinator@resolver-os,driver.runtime@resolver-os \
   --subject 'Runtime rollout' --task resolver-os/runtime-rollout
 atdd-flow post T-... --from coordinator@resolver-os --to driver.runtime@resolver-os \
-  --expects-result --body 'Implement the task and return proof references.'
-atdd-flow result T-... M-... --from driver.runtime@resolver-os --body 'CI run 42; PR #81.'
+  --label 'implementation request' --expects-result --body 'Implement the task and return proof references.'
+atdd-flow result T-... M-... --from driver.runtime@resolver-os --label 'proof returned' --body 'CI run 42; PR #81.'
 ```
+
+New durable thread and message IDs are human-readable: `T-` or `M-`, a UTC-second
+stamp (`YYYYMMDDTHHMMSSZ`), a kebab-case slug, and a short random suffix, such as
+`M-20261010T122049Z-rollover-review_7e5e12ab`. Thread slugs derive from `--subject`.
+`post`, `receipt`, and `result` optionally accept `--label` for the message slug; it
+defaults to the message kind (`message`, `receipt`, or `result`). Labels are durable
+metadata, so provide only non-sensitive text. Message bodies are never used in IDs.
+Existing Desk thread and message filenames retain their legacy IDs unchanged and remain
+readable.
 
 For a shared boundary: driver → coordinator → affected coordinator(s) → minimum agreement in a thread → driver. `--to all` broadcasts; requested results remain outstanding until every recipient replies. Checkpoints are short handoffs, not logs; update at responsibility transitions and before replacing an agent.
 

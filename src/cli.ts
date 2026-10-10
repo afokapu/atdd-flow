@@ -43,9 +43,9 @@ Usage:
   atdd-flow thread add <thread-id> <address>
   atdd-flow thread open <thread-id>
   atdd-flow message read <message-id>
-  atdd-flow post <thread-id> --from <address> --to <all|address,...> --body <text> [--expects-result]
-  atdd-flow receipt <thread-id> <message-id> --from <address> [--body <text>]
-  atdd-flow result <thread-id> <message-id> --from <address> --body <text>
+  atdd-flow post <thread-id> --from <address> --to <all|address,...> --body <text> [--label <non-sensitive-text>] [--expects-result]
+  atdd-flow receipt <thread-id> <message-id> --from <address> [--body <text>] [--label <non-sensitive-text>]
+  atdd-flow result <thread-id> <message-id> --from <address> --body <text> [--label <non-sensitive-text>]
   atdd-flow status [project <project>|task <project> <task-id>|seat <address>|thread <thread-id>] [--all]
   atdd-flow scout --goal <text> --path <file> [--path <file> ...] [--question <text>]
   atdd-flow focus-check <project> <task-id> --action <proposed action>

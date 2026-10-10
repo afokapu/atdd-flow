@@ -215,9 +215,12 @@ async function post(root: string, threadId: string, args: string[], overrides: P
   const recipients = Array.isArray(toValue) ? toValue : await resolveRecipients(root, toValue, record.participants);
   if (recipients.some((address) => !record.participants.includes(address))) throw new Error("Recipients must be thread participants.");
   await assertRoute(root, from, recipients.filter((address) => address !== from));
+  const kind = overrides.kind ?? "message";
+  // Labels are an explicit, non-sensitive operator hint; message bodies never enter durable IDs.
+  const label = words(args, "--label") ?? kind;
   const message: Message = {
-    schema: "atdd-workflow/message/v1", id: id("M"), from, to: toValue === "all" ? "all" : recipients,
-    kind: overrides.kind ?? "message",
+    schema: "atdd-workflow/message/v1", id: id("M", label), from, to: toValue === "all" ? "all" : recipients,
+    kind,
     ...(overrides.in_reply_to ? { in_reply_to: overrides.in_reply_to } : {}),
     ...(overrides.expects_result || has(args, "--expects-result") ? { expects_result: true } : {}),
     created_at: now(), body: required(overrides.body ?? words(args, "--body"), "--body"),
@@ -233,9 +236,10 @@ async function post(root: string, threadId: string, args: string[], overrides: P
 export async function startThread(root: string, args: string[]) {
   const participants = await resolveRecipients(root, required(words(args, "--with"), "--with"), []);
   if (participants.length < 2) throw new Error("A thread needs at least two participants.");
+  const subject = required(words(args, "--subject"), "--subject");
   const record: Thread = {
-    schema: "atdd-workflow/thread/v1", id: id("T"), participants,
-    subject: required(words(args, "--subject"), "--subject"), state: "open",
+    schema: "atdd-workflow/thread/v1", id: id("T", subject), participants,
+    subject, state: "open",
     ...(words(args, "--task") ? { task: words(args, "--task") } : {}),
   };
   await atomicYaml(paths(root).threadFile(record.id), record);

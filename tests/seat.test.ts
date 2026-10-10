@@ -3,7 +3,7 @@ import { chmod, mkdir, mkdtemp, readFile, rename, rm, stat, symlink, writeFile }
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { discoverAddress, launchCommand, launchedAddress, notificationCommand } from "../src/adapters";
-import { atomicYaml } from "../src/core";
+import { atomicYaml, id } from "../src/core";
 import { registerRuntimeState } from "../src/runtime-state";
 import { addressedTo, createInboxReconciler, mailNotice } from "../extensions/pi/index";
 import { isPiExecutable, launchNotice, piLaunchArgs, resolveExecutable } from "../src/seats";
@@ -93,6 +93,44 @@ test("a message can be read directly without opening its entire thread", async (
   const other = await run(site, "thread", "start", "--with", "coordinator@demo,driver.runtime@demo", "--subject", "Duplicate id");
   await writeFile(join(site, "threads", other, `${first}.yaml`), duplicate);
   expect(await fail(site, "message", "read", first)).toContain("ambiguous across threads");
+});
+
+test("new thread and message IDs are readable, body-free, and preserve legacy files", async () => {
+  const sameSecond = new Date("2026-10-10T12:20:49.999Z");
+  const allocated = await Promise.all(Array.from({ length: 64 }, async () => id("M", "Rollover review", sameSecond)));
+  expect(new Set(allocated).size).toBe(64);
+  expect(allocated.every((value) => /^M-20261010T122049Z-rollover-review_[a-f0-9]{8}$/.test(value))).toBe(true);
+
+  const root = await mkdtemp(join(tmpdir(), "atdd-workflow-"));
+  roots.push(root);
+  const site = join(root, "site");
+  await run(root, "init", site);
+  await run(site, "project", "init", "demo");
+  await run(site, "spawn", "demo", "coordinator", "main", "--worktree", "/tmp/demo-main");
+  await run(site, "spawn", "demo", "driver", "runtime", "--worktree", "/tmp/demo-runtime");
+
+  const thread = await run(site, "thread", "start", "--with", "coordinator@demo,driver.runtime@demo", "--subject", "Rollover review!");
+  expect(thread).toMatch(/^T-\d{8}T\d{6}Z-rollover-review_[a-f0-9]{8}$/);
+  const request = await run(site, "post", thread, "--from", "coordinator@demo", "--to", "driver.runtime@demo", "--expects-result", "--body", "secret body must never become an identifier");
+  expect(request).toMatch(/^M-\d{8}T\d{6}Z-message_[a-f0-9]{8}$/);
+  expect(request).not.toContain("secret");
+  const labelled = await run(site, "post", thread, "--from", "coordinator@demo", "--to", "driver.runtime@demo", "--label", "Rollover Review", "--body", "also not in the identifier");
+  expect(labelled).toMatch(/^M-\d{8}T\d{6}Z-rollover-review_[a-f0-9]{8}$/);
+  const receipt = await run(site, "receipt", thread, request, "--from", "driver.runtime@demo", "--label", "Acknowledged work");
+  expect(receipt).toMatch(/^M-\d{8}T\d{6}Z-acknowledged-work_[a-f0-9]{8}$/);
+  const completion = await run(site, "result", thread, request, "--from", "driver.runtime@demo", "--label", "Checks complete", "--body", "secret result body");
+  expect(completion).toMatch(/^M-\d{8}T\d{6}Z-checks-complete_[a-f0-9]{8}$/);
+  expect(await run(site, "--help")).toContain("[--label <non-sensitive-text>]");
+
+  const legacyThread = "T-legacy-1";
+  const legacyMessage = "M-legacy-1";
+  const legacyDirectory = join(site, "threads", legacyThread);
+  await mkdir(legacyDirectory, { recursive: true });
+  await writeFile(join(legacyDirectory, "thread.yaml"), `schema: atdd-workflow/thread/v1\nid: ${legacyThread}\nsubject: Legacy thread\nparticipants: [coordinator@demo, driver.runtime@demo]\nstate: open\n`);
+  const legacyFile = join(legacyDirectory, `${legacyMessage}.yaml`);
+  await writeFile(legacyFile, `schema: atdd-workflow/message/v1\nid: ${legacyMessage}\nfrom: coordinator@demo\nto: [driver.runtime@demo]\nkind: message\ncreated_at: 2020-01-01T00:00:00.000Z\nbody: Legacy message\n`);
+  expect(await run(site, "message", "read", legacyMessage)).toContain("Legacy message");
+  expect(await Bun.file(legacyFile).text()).toContain(`id: ${legacyMessage}`);
 });
 
 test("durable inbox reconciliation recovers missed mail without duplicate delivery", async () => {
