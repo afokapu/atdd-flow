@@ -1,6 +1,6 @@
 import { readdir } from "node:fs/promises";
 import { canonicalAddress, desk, exists, paths, readYaml, type Checkpoint, type Seat } from "./core";
-import { type Task, type TaskStatus } from "./tasks";
+import { type Task, type TaskHandoff, type TaskStatus } from "./tasks";
 import { isRuntimeStateStale, readRuntimeState } from "./runtime-state";
 import { type Message, type Thread } from "./threads";
 
@@ -106,6 +106,10 @@ function taskPhase(entry: ListedTask) {
   if (entry.task.blocker) return "BLOCKED";
   if (entry.waiting.length) return "WAITING";
   return stateName(entry.task.status);
+}
+
+function handoffStateName(value: TaskHandoff["state"]) {
+  return value.replaceAll("_", "-").toUpperCase();
 }
 
 function attentionForTask(entry: ListedTask, checkpointBySeat: Map<string, Checkpoint | undefined>): Attention | undefined {
@@ -261,11 +265,24 @@ async function taskDashboard(root: string, projectName: string, taskId: string) 
   const record = await desk(root);
   const threadList = (await threads(root)).filter((item) => item.record.task === `${projectName}/${taskId}`);
   const proof = `${entry.task.done_when.filter((item) => item.proof).length}/${entry.task.done_when.length} proof`;
-  header(`TASK / ${projectName}/${taskId}`, record.desk, `${taskPhase(entry)}${dot}${proof}`, record.application);
+  const runtime = entry.task.assignee ? await readRuntimeState(root, entry.task.assignee) : undefined;
+  const runtimeState = runtime && !isRuntimeStateStale(runtime, 60_000) ? "ONLINE" : "OFFLINE";
+  const handoff = entry.task.handoff ? handoffStateName(entry.task.handoff.state) : undefined;
+  header(`TASK / ${projectName}/${taskId}`, record.desk, `${taskPhase(entry)}${entry.task.phase ? `${dot}${entry.task.phase.toUpperCase()}` : ""}${handoff ? `${dot}${handoff}` : ""}${dot}${proof}${dot}RUNTIME ${runtimeState}`, record.application);
   console.log(`\n  ${strong(entry.task.title)}`);
   rule("OWNERSHIP");
   console.log(`  coordinator  ${entry.task.coordinator}`);
   console.log(`  assignee     ${entry.task.assignee ?? muted("unassigned")}`);
+  rule("PHASE / HANDOFF");
+  if (!entry.task.phase && !entry.task.handoff) console.log(`  ${muted("No optional phase or handoff projection has been recorded.")}`);
+  if (entry.task.phase) console.log(`  phase     ${entry.task.phase.toUpperCase()}`);
+  if (entry.task.handoff) {
+    console.log(`  handoff   ${handoffStateName(entry.task.handoff.state)}`);
+    console.log(`  evidence  ${entry.task.handoff.evidence}`);
+    console.log(`  updated   ${entry.task.handoff.updated_at}`);
+  }
+  rule("RUNTIME OBSERVATION", runtimeState);
+  console.log(`  assignee runtime  ${runtimeState}${runtime ? ` · ${runtime.model} · heartbeat ${runtime.heartbeat_at}` : " · no current advisory observation"}`);
   rule("DEPENDENCIES", String((entry.task.depends_on ?? []).length));
   if (!entry.task.depends_on?.length) console.log(`  ${muted("Independent; it may proceed in parallel.")}`);
   for (const dependency of entry.task.depends_on ?? []) console.log(`  ${entry.waiting.includes(dependency) ? tone("○", "WAITING") : tone("✓", "DONE")} ${dependency}${entry.waiting.includes(dependency) ? `  ${tone("WAITING", "WAITING")}` : ""}`);
