@@ -1,6 +1,6 @@
-import { readFile, unlink } from "node:fs/promises";
+import { mkdir, readFile, rm, stat, unlink } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { addressParts, atomicYaml, yaml } from "./core";
 
 /**
@@ -22,7 +22,9 @@ export type RuntimeState = {
 export type RuntimeStateRegistration = Pick<RuntimeState, "seat" | "owner_token" | "pid" | "model" | "cwd">;
 
 const schema = "atdd-flow/pi-runtime-state/v1" as const;
-const serial = new Map<string, Promise<void>>();
+const lockStaleMs = 5 * 60_000;
+const lockAttempts = 2_000;
+const pause = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
 function nonEmpty(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
@@ -53,19 +55,24 @@ function assertRegistration(value: RuntimeStateRegistration) {
   if (!nonEmpty(value.cwd)) throw new Error("Runtime state requires a cwd.");
 }
 
+/** A mkdir lock serializes state mutation and final wake authorization across Pi processes. */
 async function exclusive<T>(file: string, work: () => Promise<T>): Promise<T> {
-  const previous = serial.get(file) ?? Promise.resolve();
-  let release!: () => void;
-  const current = new Promise<void>((resolve) => { release = resolve; });
-  const queued = previous.then(() => current);
-  serial.set(file, queued);
-  await previous;
-  try {
-    return await work();
-  } finally {
-    release();
-    if (serial.get(file) === queued) serial.delete(file);
+  const lock = `${file}.lock`;
+  await mkdir(dirname(file), { recursive: true });
+  for (let attempt = 0; attempt < lockAttempts; attempt += 1) {
+    try {
+      await mkdir(lock);
+      try { return await work(); }
+      finally { await rm(lock, { recursive: true, force: true }); }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      try {
+        if (Date.now() - (await stat(lock)).mtimeMs > lockStaleMs) await rm(lock, { recursive: true, force: true });
+        else await pause(5);
+      } catch { await pause(5); }
+    }
   }
+  throw new Error(`Timed out waiting for runtime-state lock ${file}`);
 }
 
 /** A deterministic, per-seat local advisory state path; it never resolves Desk membership. */
@@ -108,6 +115,19 @@ export async function readRuntimeState(root: string, seat: string): Promise<Runt
 /** True only while this token owns the current advisory record; never a governance decision. */
 export async function ownsRuntimeState(root: string, seat: string, ownerToken: string) {
   return (await readRuntimeState(root, seat))?.owner_token === ownerToken;
+}
+
+/**
+ * Invoke a wake action only while this process still owns the current record.
+ * The filesystem lock is shared by separate Pi processes and is held through
+ * the action, so registration cannot replace the owner mid-wake.
+ */
+export async function withOwnedRuntimeState<T>(root: string, seat: string, ownerToken: string, action: () => Promise<T> | T) {
+  const file = runtimeStatePath(root, seat);
+  return exclusive(file, async () => {
+    if (!await ownsRuntimeState(root, seat, ownerToken)) return { owned: false as const };
+    return { owned: true as const, value: await action() };
+  });
 }
 
 /** Remove an abandoned advisory observation only when its heartbeat has expired. */

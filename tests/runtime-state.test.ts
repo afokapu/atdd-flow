@@ -103,6 +103,20 @@ test("missing or malformed runtime state is absent rather than authoritative", a
   }
 });
 
+test("stale cleanup and replacement registration serialize without deleting the replacement", async () => {
+  const root = await temporaryDesk();
+  try {
+    await registerRuntimeState(root, runtime("stale-owner"), time);
+    await Promise.all([
+      clearStaleRuntimeState(root, "driver.runtime@demo", 1, new Date("2026-10-09T12:00:10.000Z")),
+      registerRuntimeState(root, { ...runtime("new-owner"), pid: 5678 }, "2026-10-09T12:00:20.000Z"),
+    ]);
+    expect(await readRuntimeState(root, "driver.runtime@demo")).toMatchObject({ owner_token: "new-owner", pid: 5678 });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("heartbeat age and stale cleanup are advisory only", async () => {
   const root = await temporaryDesk();
   try {

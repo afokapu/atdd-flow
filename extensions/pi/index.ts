@@ -3,7 +3,7 @@ import { mkdir, readFile, rename, rm, stat, unlink, writeFile } from "node:fs/pr
 import { basename, dirname, join } from "node:path";
 import { parse, stringify } from "yaml";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { clearStaleRuntimeState, clearRuntimeState, heartbeatRuntimeState, ownsRuntimeState, registerRuntimeState, runtimeOwnerToken } from "../../src/runtime-state";
+import { clearStaleRuntimeState, clearRuntimeState, heartbeatRuntimeState, ownsRuntimeState, registerRuntimeState, runtimeOwnerToken, withOwnedRuntimeState } from "../../src/runtime-state";
 
 type Thread = { id?: unknown; participants?: unknown; subject?: unknown };
 export type Mail = { id?: unknown; from?: unknown; to?: unknown; subject?: unknown; created_at?: unknown };
@@ -11,11 +11,13 @@ type InboxMail = Mail & { id: string; created_at: string };
 type PendingReference = { schema?: unknown; thread?: unknown; message?: unknown; created_at?: unknown };
 type PendingSegment = { schema?: unknown; entries?: unknown; next?: unknown };
 type PendingQueue = { schema?: unknown; head?: unknown; tail?: unknown };
+type WakeAction = () => void | Promise<void>;
+type SendIfOwned = (action: WakeAction) => Promise<boolean>;
 type InboxOptions = {
   root: string;
   seat: string;
   /** Return false when this runtime has been replaced; the durable reference remains queued. */
-  deliver: (mail: InboxMail, thread: Thread, path: string) => boolean | void | Promise<boolean | void>;
+  deliver: (mail: InboxMail, thread: Thread, path: string, sendIfOwned?: SendIfOwned) => boolean | void | Promise<boolean | void>;
   batchSize?: number;
   intervalMs?: number;
 };
@@ -240,9 +242,18 @@ export function createPiRuntime({
     transport = createTransport({
       root, seat, batchSize: defaultBatchSize, intervalMs: defaultIntervalMs,
       deliver: async (mail, thread, path) => {
-        if (!await owned()) return false;
-        await deliver(mail, thread, path);
-        return true;
+        // The application supplies the wake action, but this shared filesystem
+        // lock performs the final ownership check immediately around it.
+        let ownership: boolean | undefined;
+        const accepted = await deliver(mail, thread, path, async (wake) => {
+          if (ownership !== undefined) return false;
+          const result = await withOwnedRuntimeState(root, seat, ownerToken, wake);
+          ownership = result.owned;
+          return result.owned;
+        });
+        // A callback cannot accidentally consume mail by ignoring a rejected
+        // authorization result or by attempting more than one wake action.
+        return ownership === true && accepted !== false;
       },
     });
     await transport.start();
@@ -262,12 +273,15 @@ export default function (pi: ExtensionAPI) {
   if (!root || !seat) return;
   let runtime: ReturnType<typeof createPiRuntime> | undefined;
   pi.on("session_start", async (_event, ctx) => {
-    runtime = createPiRuntime({ root, seat, deliver: async (mail, thread, path) => {
-      pi.sendMessage({
-        customType: "atdd-flow-mail",
-        content: mailNotice(typeof thread.id === "string" ? thread.id : "unknown", { ...mail, subject: typeof thread.subject === "string" ? thread.subject : undefined }),
-        display: true, details: { thread: thread.id, message: mail.id, path },
-      }, { triggerTurn: true, deliverAs: "followUp" });
+    runtime = createPiRuntime({ root, seat, deliver: async (mail, thread, path, sendIfOwned) => {
+      if (!sendIfOwned) return false;
+      return sendIfOwned(() => {
+        pi.sendMessage({
+          customType: "atdd-flow-mail",
+          content: mailNotice(typeof thread.id === "string" ? thread.id : "unknown", { ...mail, subject: typeof thread.subject === "string" ? thread.subject : undefined }),
+          display: true, details: { thread: thread.id, message: mail.id, path },
+        }, { triggerTurn: true, deliverAs: "followUp" });
+      });
     } });
     await runtime.start();
     pi.sendMessage({ customType: "atdd-flow-start", content: `SYSTEM: you are ${seat}. Read your durable seat and assigned work with: atdd-flow open ${seat}. Continue assigned in_progress work until it is review-ready or explicitly blocked.`, display: true, details: { seat, root } }, { triggerTurn: true, deliverAs: "followUp" });

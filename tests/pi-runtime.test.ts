@@ -33,9 +33,9 @@ test("a replacement runtime fences the old runtime and keeps one bounded inbox t
   const oldDelivered: string[] = [];
   const newDelivered: string[] = [];
   try {
-    const oldRuntime = createPiRuntime({ root, seat, pid: 101, model: "pi-old", cwd: "/old", deliver: async (mail) => { oldDelivered.push(mail.id); } });
+    const oldRuntime = createPiRuntime({ root, seat, pid: 101, model: "pi-old", cwd: "/old", deliver: async (mail, _thread, _path, sendIfOwned) => sendIfOwned?.(() => { oldDelivered.push(mail.id); }) ?? false });
     await oldRuntime.start();
-    const replacement = createPiRuntime({ root, seat, pid: 202, model: "pi-new", cwd: "/new", deliver: async (mail) => { newDelivered.push(mail.id); } });
+    const replacement = createPiRuntime({ root, seat, pid: 202, model: "pi-new", cwd: "/new", deliver: async (mail, _thread, _path, sendIfOwned) => sendIfOwned?.(() => { newDelivered.push(mail.id); }) ?? false });
     await replacement.start();
     await queueMail(root, "M-replaced", "2026-10-10T12:00:00.000Z");
 
@@ -55,6 +55,51 @@ test("a replacement runtime fences the old runtime and keeps one bounded inbox t
   }
 });
 
+test("a paused old delivery loses the cross-process fence before it can wake", async () => {
+  const root = await temporaryDesk();
+  const oldDelivered: string[] = [];
+  const newDelivered: string[] = [];
+  let oldReachedDelivery!: () => void;
+  let releaseOld!: () => void;
+  const oldReached = new Promise<void>((resolve) => { oldReachedDelivery = resolve; });
+  const released = new Promise<void>((resolve) => { releaseOld = resolve; });
+  try {
+    const oldRuntime = createPiRuntime({
+      root, seat, pid: 101, model: "pi-old", cwd: "/old",
+      deliver: async (mail, _thread, _path, sendIfOwned) => {
+        oldReachedDelivery();
+        await released;
+        return sendIfOwned?.(() => { oldDelivered.push(mail.id); }) ?? false;
+      },
+    });
+    await oldRuntime.start();
+    await queueMail(root, "M-fenced", "2026-10-10T12:00:00.000Z");
+    const oldReconcile = oldRuntime.reconcile();
+    await oldReached;
+
+    const replacement = createPiRuntime({
+      root, seat, pid: 202, model: "pi-new", cwd: "/new",
+      deliver: async (mail, _thread, _path, sendIfOwned) => sendIfOwned?.(() => { newDelivered.push(mail.id); }) ?? false,
+    });
+    const replacementStart = replacement.start();
+    for (let attempt = 0; attempt < 100 && (await readRuntimeState(root, seat))?.pid !== 202; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    expect((await readRuntimeState(root, seat))?.pid).toBe(202);
+    releaseOld();
+    await oldReconcile;
+    await replacementStart;
+    await replacement.reconcile();
+
+    expect(oldDelivered).toEqual([]);
+    expect(newDelivered).toEqual(["M-fenced"]);
+    await oldRuntime.stop();
+    await replacement.stop();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("offline rejection is retried after restart without duplicate wake", async () => {
   const root = await temporaryDesk();
   const delivered: string[] = [];
@@ -64,7 +109,7 @@ test("offline rejection is retried after restart without duplicate wake", async 
     await rejected.start();
     await rejected.stop();
 
-    const restarted = createPiRuntime({ root, seat, pid: 202, model: "pi", cwd: "/two", deliver: async (mail) => { delivered.push(mail.id); } });
+    const restarted = createPiRuntime({ root, seat, pid: 202, model: "pi", cwd: "/two", deliver: async (mail, _thread, _path, sendIfOwned) => sendIfOwned?.(() => { delivered.push(mail.id); }) ?? false });
     await restarted.start();
     await restarted.reconcile();
     expect(delivered).toEqual(["M-offline"]);
@@ -98,10 +143,10 @@ test("rapid broadcast references remain queued for an offline participant", asyn
       await atomicYaml(join(inbox, "queue.yaml"), { schema: "atdd-flow/pi-inbox-queue/v1", head: "S-rapid", tail: "S-rapid" });
     }
 
-    const online = createPiRuntime({ root, seat, pid: 101, model: "pi", cwd: "/one", deliver: async (mail) => { first.push(mail.id); } });
+    const online = createPiRuntime({ root, seat, pid: 101, model: "pi", cwd: "/one", deliver: async (mail, _thread, _path, sendIfOwned) => sendIfOwned?.(() => { first.push(mail.id); }) ?? false });
     await online.start();
     expect(first).toEqual(ids);
-    const resumed = createPiRuntime({ root, seat: other, pid: 202, model: "pi", cwd: "/two", deliver: async (mail) => { second.push(mail.id); } });
+    const resumed = createPiRuntime({ root, seat: other, pid: 202, model: "pi", cwd: "/two", deliver: async (mail, _thread, _path, sendIfOwned) => sendIfOwned?.(() => { second.push(mail.id); }) ?? false });
     await resumed.start();
     expect(second).toEqual(ids);
     await online.stop();
