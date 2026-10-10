@@ -1,0 +1,5 @@
+# Exact-base finding ratchet for the project-local Flow integration only.
+# Deliberately no `profiles:` adoption: the full-profile rollout remains separately blocked.
+ratchet:
+  mode: reject-new
+  profiles: [flow]
