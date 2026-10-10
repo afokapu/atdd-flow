@@ -121,6 +121,39 @@ test("unavailable, low-confidence, or invalid Jev selection receipts the stronge
   }
 });
 
+test("launch eligibility admits assigned active or dependency-ready TODO without changing lifecycle and refuses every other task", async () => {
+  const dryRun = (root: string) => launchPiRuntime(root, seat, ["--pane", "w1:p2", "--herdr-session", "forge", "--dry-run"], { select: selectEconomy, command: fakeHerdr().command, sessionId: () => sessionId });
+  const active = await desk();
+  await expect(dryRun(active)).resolves.toMatchObject({ dryRun: true });
+  expect((await readYaml<Record<string, unknown>>(paths(active).taskFile("demo", "runtime"))).status).toBe("in_progress");
+
+  const ready = await desk();
+  const taskFile = paths(ready).taskFile("demo", "runtime");
+  const todo = await readYaml<Record<string, unknown>>(taskFile);
+  await atomicYaml(paths(ready).taskFile("demo", "done"), { schema: "atdd-workflow/task/v1", title: "Done", status: "done", coordinator: "coordinator@demo", done_when: [{ text: "Done." }] });
+  await atomicYaml(taskFile, { ...todo, status: "todo", depends_on: ["done"] });
+  await expect(dryRun(ready)).resolves.toMatchObject({ dryRun: true });
+  expect((await readYaml<Record<string, unknown>>(taskFile)).status).toBe("todo");
+
+  const refuse = async (change: Record<string, unknown>, waiting = false) => {
+    const root = await desk();
+    const file = paths(root).taskFile("demo", "runtime");
+    const task = await readYaml<Record<string, unknown>>(file);
+    const next = { ...task, ...change };
+    if (change.assignee === null) delete next.assignee;
+    await atomicYaml(file, next);
+    if (waiting) await atomicYaml(paths(root).taskFile("demo", "waiting"), { schema: "atdd-workflow/task/v1", title: "Waiting", status: "todo", coordinator: "coordinator@demo", done_when: [{ text: "Finish." }] });
+    await expect(dryRun(root)).rejects.toThrow("no launch-eligible task");
+  };
+  await refuse({ status: "in_progress", blocker: "Awaiting approval." });
+  await refuse({ status: "todo", depends_on: ["waiting"] }, true);
+  await refuse({ status: "todo", assignee: null });
+  await refuse({ status: "review" });
+  await refuse({ status: "done" });
+  await refuse({ status: "todo", assignee: "driver.other@demo" });
+  await refuse({ status: "invalid" });
+});
+
 test("dry-run reads installed reports only and does not write, start, or bind", async () => {
   const root = await desk();
   const herdr = fakeHerdr();

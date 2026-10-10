@@ -162,6 +162,21 @@ export function resolveModelCommand(config: Desk, candidate: ModelCandidate) {
   return { agent: resolveExecutable(config, candidate.executable), args: candidate.args ?? [] };
 }
 
+async function launchEligibleTasks(root: string, record: Seat) {
+  const tasks = await seatTasks(root, record.project, record.address);
+  const eligible = await Promise.all(tasks.map(async (entry) => {
+    if (entry.task.assignee !== record.address || entry.task.blocker) return undefined;
+    if (entry.task.status === "in_progress") return entry;
+    if (entry.task.status !== "todo") return undefined;
+    const dependencies = await Promise.all((entry.task.depends_on ?? []).map(async (id) => {
+      try { return (await readYaml<{ status?: string }>(paths(root).taskFile(record.project, id))).status === "done"; }
+      catch { return false; }
+    }));
+    return dependencies.every(Boolean) ? entry : undefined;
+  }));
+  return eligible.filter((entry): entry is NonNullable<typeof entry> => Boolean(entry));
+}
+
 async function chooseLaunchModel(root: string, config: Desk, record: Seat, portfolio: ModelPortfolio, select: (input: ModelSelectionInput) => Promise<ModelSelectionResponse> = selectModel) {
   const candidates = availableModelCandidates(config, portfolio);
   if (!candidates.length) throw new Error("No enabled model in models.yaml has an available executable.");
@@ -261,8 +276,8 @@ export async function launchPiRuntime(root: string, address: string, args: strin
   const resume = args.includes("--resume");
   const dryRun = args.includes("--dry-run");
   if (args.some((argument) => !["--pane", pane, "--herdr-session", herdrSession, "--resume", "--dry-run"].includes(argument))) throw new Error("Use `pi runtime launch <seat> --pane <existing-pane> --herdr-session <session> [--resume] [--dry-run]`.");
-  const active = (await seatTasks(root, record.project, resolved)).filter((entry) => entry.task.status === "in_progress");
-  if (!active.length) throw new Error(`${resolved} has no active bounded task; refusing runtime launch.`);
+  const active = await launchEligibleTasks(root, record);
+  if (!active.length) throw new Error(`${resolved} has no launch-eligible task; refusing runtime launch.`);
   const selection = await chooseLaunchModel(root, config, record, required(await modelPortfolio(root), "models.yaml for Pi runtime launch"), dependencies.select);
   const model = resolveModelCommand(config, selection.candidate);
   if (basename(model.agent) !== "pi") throw new Error(`Pi runtime launch requires a Pi candidate, received ${selection.candidate.id}.`);
