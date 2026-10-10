@@ -207,6 +207,26 @@ test("a Pi-designated unbound seat queues ordered native mail in bounded segment
   expect(delivered).toEqual(expected);
 }, processHeavyTimeout);
 
+test("a progressing queue-lock holder beyond the legacy retry window does not reject native mail", async () => {
+  const root = await mkdtemp(join(tmpdir(), "atdd-workflow-"));
+  roots.push(root);
+  const site = join(root, "site");
+  const seat = "driver.pi@demo";
+  const inbox = join(site, ".atdd-flow", "pi-inbox", encodeURIComponent(seat));
+  const lock = join(inbox, "queue.lock");
+  await mkdir(lock, { recursive: true });
+  const pending = enqueueNativeMail(site, seat, { thread: "T-progressing-holder", message: "M-after-holder", created_at: "2026-10-10T12:00:00.000Z" });
+  try {
+    // This outlasts the former 200 × 5ms retry window but is well below the
+    // bounded production acquisition deadline. The holder is released, not stale.
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    await rm(lock, { recursive: true, force: true });
+    await expect(pending).resolves.toBe("S-M-after-holder");
+  } finally {
+    await rm(lock, { recursive: true, force: true });
+  }
+}, processHeavyTimeout);
+
 test("concurrent native posts survive queue rollover without losing references", async () => {
   const root = await mkdtemp(join(tmpdir(), "atdd-workflow-"));
   roots.push(root);

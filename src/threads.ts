@@ -84,12 +84,16 @@ function inboxDirectory(root: string, address: string) {
 }
 
 const pause = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+const inboxLockStaleMs = 30_000;
+const inboxLockAcquireTimeoutMs = 5_000;
+const inboxLockRetryMs = 5;
 
 /** mkdir is atomic across CLI processes; stale locks are recoverable after a crashed writer. */
 async function withInboxLock<T>(directory: string, action: () => Promise<T>) {
   await mkdir(directory, { recursive: true });
   const lock = join(directory, "queue.lock");
-  for (let attempt = 0; attempt < 200; attempt += 1) {
+  const deadline = Date.now() + inboxLockAcquireTimeoutMs;
+  while (Date.now() < deadline) {
     try {
       await mkdir(lock, { recursive: false });
       try { return await action(); }
@@ -97,9 +101,10 @@ async function withInboxLock<T>(directory: string, action: () => Promise<T>) {
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       try {
-        if (Date.now() - (await stat(lock)).mtimeMs > 30_000) await rm(lock, { recursive: true, force: true });
-        else await pause(5);
-      } catch { await pause(5); }
+        if (Date.now() - (await stat(lock)).mtimeMs > inboxLockStaleMs) await rm(lock, { recursive: true, force: true });
+      } catch { /* A competing release or recovery is retried below. */ }
+      const remaining = deadline - Date.now();
+      if (remaining > 0) await pause(Math.min(inboxLockRetryMs, remaining));
     }
   }
   throw new Error(`Timed out waiting for inbox queue lock ${directory}`);
