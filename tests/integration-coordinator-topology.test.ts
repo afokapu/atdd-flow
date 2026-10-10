@@ -105,7 +105,7 @@ test("RED: legacy unscoped Herdr records report unverified without inferring ano
   expect(opened).toContain("advisory heartbeat");
 }, 20_000);
 
-test("RED: assigned drivers record the exact task-coordinator base and reject mismatch or nested streams", async () => {
+test("role-neutral assignment preserves seat topology but does not impose task branch lineage", async () => {
   const root = await mkdtemp(join(tmpdir(), "atdd-integration-governed-base-"));
   roots.push(root);
   const site = join(root, "desk");
@@ -131,21 +131,19 @@ test("RED: assigned drivers record the exact task-coordinator base and reject mi
   await writeFile(join(integration, "INTEGRATION.md"), "integration head\n");
   await git(integration, "add", "INTEGRATION.md");
   await git(integration, "-c", "user.email=fixture@example.test", "-c", "user.name=Fixture", "commit", "-m", "integration");
-  const integrationHead = await git(integration, "rev-parse", "HEAD");
   await git(repository, "worktree", "add", "-b", "delivery/stream-driver", driver, "integration/payments");
   await run(site, "spawn", "demo", "driver", "stream-driver");
 
   await run(site, "task", "add", "demo", "stream", "--title", "Stream delivery", "--coordinator", "coordinator.payments@demo", "--assignee", "driver.stream-driver@demo", "--done-when", "Deliver from the stream base.");
   const task = await Bun.file(join(site, "work", "demo", "tasks", "stream.yaml")).text();
-  expect(task).toContain("governed_base:");
-  expect(task).toContain("coordinator: coordinator.payments@demo");
-  expect(task).toContain("branch: integration/payments");
-  expect(task).toContain(`commit: ${integrationHead}`);
+  expect(task).not.toContain("governed_base:");
+  expect(task).toContain("assignee: driver.stream-driver@demo");
 
   const mismatch = join(worktrees, "mismatch-driver");
   await git(repository, "worktree", "add", "-b", "delivery/mismatch-driver", mismatch, "main");
   await run(site, "spawn", "demo", "driver", "mismatch-driver");
-  expect(await fail(site, "task", "add", "demo", "mismatch", "--title", "Mismatch", "--coordinator", "coordinator.payments@demo", "--assignee", "driver.mismatch-driver@demo", "--done-when", "Must refuse.")).toContain("not based on the exact coordinator head");
+  await run(site, "task", "add", "demo", "mismatch", "--title", "Mismatch", "--coordinator", "coordinator.payments@demo", "--assignee", "driver.mismatch-driver@demo", "--done-when", "Records accountability only.");
+  expect(await Bun.file(join(site, "work", "demo", "tasks", "mismatch.yaml")).text()).toContain("assignee: driver.mismatch-driver@demo");
   expect(await fail(site, "spawn", "demo", "coordinator", "nested.stream")).toContain("single stream");
 }, 20_000);
 

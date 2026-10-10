@@ -1,7 +1,7 @@
 import { readdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { desk, exists, paths, project, readYaml, runOutput, type Project, type Seat } from "./core";
-import { seatTasks } from "./tasks";
+import { seatTasks, terminal } from "./tasks";
 
 export type HerdrPolicy = {
   schema: "atdd-workflow/multiplexer/herdr/v1";
@@ -179,7 +179,7 @@ async function targets(root: string, options: { strict?: string; unprojected?: U
       if (entry.role === "driver") {
         // An explicit per-seat projection keeps the established assigned-work rule.
         linked = entry.address === options.strict
-          ? (await seatTasks(root, name, entry.address)).some(({ task }) => task.assignee === entry.address && task.status !== "done")
+          ? (await seatTasks(root, name, entry.address)).some(({ task }) => task.assignee === entry.address && !terminal(task))
           : await activeDriver(root, name, entry, options.live);
         if (linked) options.activeDrivers?.add(entry.address);
       }

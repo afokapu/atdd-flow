@@ -4,7 +4,7 @@ import {
   type Checkpoint, type Seat, atomicYaml, canonicalAddress, exists, now, paths, project, readYaml, required, runOutput, seat, taskId, values, words,
 } from "./core";
 
-export type TaskStatus = "todo" | "in_progress" | "review" | "done";
+export type TaskStatus = "todo" | "in_progress" | "review" | "done" | "superseded" | "rejected";
 /** An optional, descriptive implementation phase; task status remains the lifecycle authority. */
 export type TaskPhase = "plan" | "red" | "green" | "refactor";
 export type HandoffState = "executing" | "awaiting_coordinator" | "awaiting_assignee";
@@ -22,6 +22,8 @@ export type CoordinatorTransfer = {
   exact_head: { branch: string; commit: string };
   effective_at: string;
 };
+export type TerminalDisposition = { kind: "superseded" | "rejected"; by: string; at: string; reason: string };
+export type DeferredDisposition = { by: string; at: string; reason: string; owner: string; trigger: string; review_at: string };
 export type Task = {
   schema: "atdd-workflow/task/v1";
   title: string;
@@ -36,20 +38,27 @@ export type Task = {
   phase?: TaskPhase;
   /** Absent on legacy tasks; evidence remains an opaque immutable message/reference. */
   handoff?: TaskHandoff;
-  /** Exact named-coordinator or main head from which an assigned driver is governed. */
+  /** Legacy topology evidence is preserved but is not created for role-neutral assignments. */
   governed_base?: GovernedBase;
   /** Absent on legacy tasks; later entries never rewrite earlier coordinator evidence. */
   coordinator_transfers?: CoordinatorTransfer[];
+  /** Immutable terminal coordinator decision. */
+  disposition?: TerminalDisposition;
+  /** Bounded hold with an accountable owner, trigger, and review point. */
+  deferred?: DeferredDisposition;
   done_when: DoneWhen[];
 };
 
 export type ListedTask = { id: string; task: Task };
+export const terminal = (task: Pick<Task, "status">) => task.status === "done" || task.status === "superseded" || task.status === "rejected";
 
 const transitions: Record<TaskStatus, TaskStatus[]> = {
   todo: ["in_progress"],
   in_progress: ["review"],
   review: ["in_progress", "done"],
   done: [],
+  superseded: [],
+  rejected: [],
 };
 
 function assertCoordinatorIntegrity(task: Task, id: string) {
@@ -141,6 +150,23 @@ async function governedBase(root: string, projectName: string, coordinatorAddres
   return { coordinator: coordinator.address, branch, commit };
 }
 
+async function eligibleAssignee(root: string, projectName: string, address: string) {
+  const config = await project(root, projectName);
+  const candidate = await seat(root, address);
+  if (candidate.project !== projectName) throw new Error(`Task assignee ${candidate.address} does not belong to project ${projectName}.`);
+  if (candidate.retired) throw new Error(`Task assignee ${candidate.address} is retired.`);
+  if (candidate.role === "coordinator") {
+    // Generic (coordinator@project) and nested coordinators are topology-invalid.
+    const suffix = `@${config.project}`;
+    const local = candidate.address.endsWith(suffix) ? candidate.address.slice(0, -suffix.length) : "";
+    const match = local.match(/^coordinator\.([a-z0-9_-]+)$/);
+    if (!match || candidate.branch !== `integration/${match[1]}` || (config.repository && resolve(candidate.worktree) === resolve(config.repository))) {
+      throw new Error(`Task assignee ${candidate.address} is a generic or nested coordinator and cannot be assigned.`);
+    }
+  }
+  return candidate;
+}
+
 async function retireAssignee(root: string, projectName: string, id: string, task: Task) {
   return retireDriver(root, projectName, required(task.assignee, `an assignee for task ${id}`), id);
 }
@@ -191,7 +217,7 @@ async function retirementBun(root: string, projectName: string) {
 
 async function retireDriver(root: string, projectName: string, assignee: string, id: string, allowAbsentWorktree = false) {
   const unfinished = (await allTasks(root, projectName))
-    .filter((entry) => entry.id !== id && (entry.task.assignee === assignee || entry.task.coordinator === assignee) && entry.task.status !== "done")
+    .filter((entry) => entry.id !== id && (entry.task.assignee === assignee || entry.task.coordinator === assignee) && !terminal(entry.task))
     .map((entry) => entry.id);
   if (unfinished.length) throw new Error(`Cannot retire ${assignee}; it still owns unfinished tasks: ${unfinished.join(", ")}.`);
 
@@ -262,13 +288,14 @@ export async function retireSeat(root: string, address: string, args: string[]) 
 }
 
 export async function add(root: string, projectName: string, id: string, args: string[]) {
+  const normalizedId = taskId(id);
   await project(root, projectName);
+  if (await exists(paths(root).taskFile(projectName, normalizedId))) throw new Error(`Task ${normalizedId} already exists and cannot be replaced.`);
   const coordinator = await canonicalAddress(root, required(words(args, "--coordinator"), "--coordinator"));
   const assigneeValue = words(args, "--assignee");
   const assignee = assigneeValue ? await canonicalAddress(root, assigneeValue) : undefined;
   await seat(root, coordinator);
-  if (assignee) await seat(root, assignee);
-  const base = await governedBase(root, projectName, coordinator, assignee);
+  if (assignee) await eligibleAssignee(root, projectName, assignee);
   const doneWhen = values(args, "--done-when").map((text) => ({ text }));
   if (!doneWhen.length) throw new Error("A task needs at least one --done-when criterion.");
   const dependsOn = words(args, "--depends-on")?.split(",").filter(Boolean).map(taskId);
@@ -278,14 +305,13 @@ export async function add(root: string, projectName: string, id: string, args: s
     status: "todo",
     coordinator,
     ...(assignee ? { assignee } : {}),
-    ...(base ? { governed_base: base } : {}),
     ...(words(args, "--body") ? { body: words(args, "--body") } : {}),
     ...(words(args, "--source") ? { source: words(args, "--source") } : {}),
     ...(dependsOn?.length ? { depends_on: dependsOn } : {}),
     done_when: doneWhen,
   };
-  await writeTask(root, projectName, taskId(id), task);
-  console.log(id);
+  await writeTask(root, projectName, normalizedId, task);
+  console.log(normalizedId);
 }
 
 export async function assign(root: string, projectName: string, id: string, args: string[]) {
@@ -295,10 +321,8 @@ export async function assign(root: string, projectName: string, id: string, args
   if (task.status !== "todo") throw new Error(`Task ${id} can only be assigned while todo.`);
   if (task.assignee) throw new Error(`Task ${id} is already assigned to ${task.assignee}.`);
   const assignee = await canonicalAddress(root, required(words(args, "--assignee"), "--assignee"));
-  await seat(root, assignee);
-  const base = await governedBase(root, projectName, task.coordinator, assignee);
+  await eligibleAssignee(root, projectName, assignee);
   task.assignee = assignee;
-  if (base) task.governed_base = base;
   await writeTask(root, projectName, id, task);
   console.log(`${id}  assigned  ${assignee}`);
 }
@@ -391,6 +415,7 @@ export async function transfer(root: string, projectName: string, id: string, ar
 
 export async function amend(root: string, projectName: string, id: string, args: string[]) {
   const task = await readTask(root, projectName, taskId(id));
+  if (task.disposition) throw new Error(`Task ${id} has a terminal disposition and cannot be amended.`);
   const title = words(args, "--title");
   const body = words(args, "--body");
   const source = words(args, "--source");
@@ -413,6 +438,7 @@ export async function amend(root: string, projectName: string, id: string, args:
  */
 export async function importCompleted(root: string, projectName: string, id: string, args: string[]) {
   const task = await readTask(root, projectName, taskId(id));
+  if (task.disposition) throw new Error(`Task ${id} has a terminal disposition and cannot be imported.`);
   const proofs = values(args, "--proof");
   if (!proofs.length) throw new Error("An imported completion needs at least one --proof reference.");
 
@@ -550,12 +576,44 @@ export async function prove(root: string, projectName: string, id: string, args:
 
 export async function block(root: string, projectName: string, id: string, args: string[]) {
   const task = await readTask(root, projectName, taskId(id));
+  if (task.disposition) throw new Error(`Task ${id} has a terminal disposition and cannot be blocked.`);
   const actor = await canonicalAddress(root, required(words(args, "--by"), "--by"));
   if (actor !== task.assignee && actor !== task.coordinator) throw new Error(`Only the assignee or coordinator may block task ${id}.`);
   if (task.status === "done") throw new Error(`Completed task ${id} cannot be blocked.`);
   task.blocker = required(words(args, "--reason"), "--reason");
   await writeTask(root, projectName, id, task);
   console.log(`${id}  blocked`);
+}
+
+export async function disposition(root: string, projectName: string, id: string, kind: TerminalDisposition["kind"], args: string[]) {
+  const task = await readTask(root, projectName, taskId(id));
+  const actor = await canonicalAddress(root, required(words(args, "--by"), "--by"));
+  if (actor !== task.coordinator) throw new Error(`Only ${task.coordinator} may ${kind} task ${id}.`);
+  if (task.disposition || task.status === "done") throw new Error(`Task ${id} already has terminal history and cannot be ${kind}.`);
+  task.status = kind;
+  task.disposition = { kind, by: actor, at: now(), reason: required(words(args, "--reason"), "--reason") };
+  delete task.blocker;
+  await writeTask(root, projectName, taskId(id), task);
+  console.log(`${id}  ${kind}`);
+}
+
+export async function defer(root: string, projectName: string, id: string, args: string[]) {
+  const task = await readTask(root, projectName, taskId(id));
+  const actor = await canonicalAddress(root, required(words(args, "--by"), "--by"));
+  if (actor !== task.coordinator) throw new Error(`Only ${task.coordinator} may defer task ${id}.`);
+  if (task.disposition || task.status === "done") throw new Error(`Task ${id} has terminal history and cannot be deferred.`);
+  const ownerValue = words(args, "--owner");
+  const trigger = words(args, "--trigger");
+  const reviewAt = words(args, "--review-at");
+  if (!ownerValue || !trigger || !reviewAt) throw new Error("A defer needs --owner, --trigger, and --review-at.");
+  if (Number.isNaN(Date.parse(reviewAt))) throw new Error("--review-at must be an ISO-8601 timestamp.");
+  const owner = await canonicalAddress(root, ownerValue);
+  if ((await seat(root, owner)).project !== projectName) throw new Error(`Deferred owner ${owner} does not belong to project ${projectName}.`);
+  const reason = required(words(args, "--reason"), "--reason");
+  task.deferred = { by: actor, at: now(), reason, owner, trigger, review_at: reviewAt };
+  task.blocker = `Deferred until ${reviewAt}: ${reason}`;
+  await writeTask(root, projectName, taskId(id), task);
+  console.log(`${id}  deferred`);
 }
 
 export async function unblock(root: string, projectName: string, id: string, args: string[]) {
