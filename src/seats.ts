@@ -247,7 +247,7 @@ function agentReport(value: unknown) {
   const name = text(agent?.name);
   const pane = text(agent?.pane_id);
   if (!name || !pane) throw new Error("Herdr agent get did not report agent name and pane id.");
-  return { name, pane, status: text(agent?.status) ?? text(agent?.state) };
+  return { name, pane, status: text(agent?.agent_status) ?? text(agent?.status) ?? text(agent?.state) };
 }
 function piProcess(processes: ProcessReport["processes"]) {
   return processes.find((entry) => entry.name === "pi" || entry.argv0?.endsWith("/pi") || entry.argv0 === "pi" || /(^|\/)pi(?:\s|$)/.test(entry.cmdline ?? ""));
