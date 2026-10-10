@@ -575,9 +575,11 @@ test("a host-attached replacement preserves its durable work and wakes the curre
   await mkdir(bin);
   await writeFile(fakeHerdr, `#!/bin/sh\nprintf '%s\\n' "$@" >> '${notificationLog}'\n`);
   await chmod(fakeHerdr, 0o755);
+  const environment = { ...process.env, HERDR_SESSION: undefined, HERDR_PANE_ID: undefined };
   const host = (pane: string) => ({
-    ...process.env,
+    ...environment,
     PATH: `${bin}:${process.env.PATH ?? ""}`,
+    HERDR_SESSION: "test",
     HERDR_PANE_ID: pane,
   });
 
@@ -619,7 +621,13 @@ test("a native-wake runtime keeps durable mail but skips host text injection", a
   await mkdir(bin);
   await writeFile(fakeHerdr, `#!/bin/sh\nprintf '%s\\n' "$@" >> '${notificationLog}'\n`);
   await chmod(fakeHerdr, 0o755);
-  const host = { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}`, HERDR_PANE_ID: "w-test:p-native" };
+  const environment = { ...process.env, HERDR_SESSION: undefined, HERDR_PANE_ID: undefined };
+  const host = {
+    ...environment,
+    HERDR_SESSION: "test",
+    HERDR_PANE_ID: "w-test:p-native",
+    PATH: `${bin}:${process.env.PATH ?? ""}`,
+  };
 
   await run(root, "init", site);
   await run(site, "project", "init", "demo");
