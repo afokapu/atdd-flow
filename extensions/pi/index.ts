@@ -3,6 +3,7 @@ import { mkdir, readFile, rename, rm, stat, unlink, writeFile } from "node:fs/pr
 import { basename, dirname, join } from "node:path";
 import { parse, stringify } from "yaml";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { clearStaleRuntimeState, clearRuntimeState, heartbeatRuntimeState, ownsRuntimeState, registerRuntimeState, runtimeOwnerToken } from "../../src/runtime-state";
 
 type Thread = { id?: unknown; participants?: unknown; subject?: unknown };
 export type Mail = { id?: unknown; from?: unknown; to?: unknown; subject?: unknown; created_at?: unknown };
@@ -10,10 +11,39 @@ type InboxMail = Mail & { id: string; created_at: string };
 type PendingReference = { schema?: unknown; thread?: unknown; message?: unknown; created_at?: unknown };
 type PendingSegment = { schema?: unknown; entries?: unknown; next?: unknown };
 type PendingQueue = { schema?: unknown; head?: unknown; tail?: unknown };
-type InboxOptions = { root: string; seat: string; deliver: (mail: InboxMail, thread: Thread, path: string) => void | Promise<void>; batchSize?: number; intervalMs?: number };
+type InboxOptions = {
+  root: string;
+  seat: string;
+  /** Return false when this runtime has been replaced; the durable reference remains queued. */
+  deliver: (mail: InboxMail, thread: Thread, path: string) => boolean | void | Promise<boolean | void>;
+  batchSize?: number;
+  intervalMs?: number;
+};
+
+/** The sole internal delivery transport: one durable queue with watcher-as-fast-path recovery. */
+export type FlowInboxTransport = {
+  reconcile: () => Promise<void>;
+  start: () => Promise<void>;
+  stop: () => void;
+  watermarkFile: string;
+};
+
+export type PiRuntimeOptions = {
+  root: string;
+  seat: string;
+  pid?: number;
+  model?: string;
+  cwd?: string;
+  heartbeatMs?: number;
+  staleAfterMs?: number;
+  deliver: InboxOptions["deliver"];
+  createTransport?: (options: InboxOptions) => FlowInboxTransport;
+};
 
 const defaultBatchSize = 32;
 const defaultIntervalMs = 30_000;
+const defaultHeartbeatMs = 15_000;
+const defaultStaleAfterMs = 60_000;
 
 function participants(thread: Thread) {
   return Array.isArray(thread.participants) && thread.participants.every((entry) => typeof entry === "string") ? thread.participants as string[] : [];
@@ -90,7 +120,7 @@ function references(value: PendingSegment): PendingReference[] {
  * Reconciles a bounded, durable queue of immutable Desk-message references.
  * The queue is appended when Flow persists mail, so recovery never rescans historical threads.
  */
-export function createInboxReconciler({ root, seat, deliver, batchSize = defaultBatchSize, intervalMs = defaultIntervalMs }: InboxOptions) {
+export function createInboxTransport({ root, seat, deliver, batchSize = defaultBatchSize, intervalMs = defaultIntervalMs }: InboxOptions): FlowInboxTransport {
   let watcher: fs.FSWatcher | undefined;
   let interval: ReturnType<typeof setInterval> | undefined;
   const delivered = new Set<string>();
@@ -119,7 +149,11 @@ export function createInboxReconciler({ root, seat, deliver, batchSize = default
         ]);
         const thread = parse(rawThread) as Thread;
         const mail = parse(rawMail) as Mail;
-        if (validMail(mail) && addressedTo(mail, thread, seat) && !delivered.has(key)) await deliver(mail, thread, join(folder, `${reference.message}.yaml`));
+        if (validMail(mail) && addressedTo(mail, thread, seat) && !delivered.has(key)) {
+          const accepted = await deliver(mail, thread, join(folder, `${reference.message}.yaml`));
+          // A replaced runtime must not consume the shared durable reference.
+          if (accepted === false) return;
+        }
         delivered.add(key);
         entries.shift();
         await atomicYaml(path, { ...segment, entries });
@@ -170,23 +204,74 @@ export function createInboxReconciler({ root, seat, deliver, batchSize = default
   return { reconcile, start, stop, watermarkFile: pendingDirectory(root, seat) };
 }
 
+/** Backward-compatible name for the one internal FlowInboxTransport implementation. */
+export const createInboxReconciler = createInboxTransport;
+
+/**
+ * Binds a Pi process lifecycle to one non-authoritative, token-fenced runtime
+ * observation. Losing the token stops this instance from consuming mail; the
+ * single durable inbox transport remains the only delivery path.
+ */
+export function createPiRuntime({
+  root, seat, pid = process.pid, model = process.env.PI_MODEL ?? "pi", cwd = process.cwd(),
+  heartbeatMs = defaultHeartbeatMs, staleAfterMs = defaultStaleAfterMs, deliver, createTransport = createInboxTransport,
+}: PiRuntimeOptions) {
+  const ownerToken = runtimeOwnerToken();
+  let transport: FlowInboxTransport | undefined;
+  let heartbeat: ReturnType<typeof setInterval> | undefined;
+
+  const owned = () => ownsRuntimeState(root, seat, ownerToken);
+  const stop = async () => {
+    if (heartbeat) clearInterval(heartbeat);
+    heartbeat = undefined;
+    transport?.stop();
+    transport = undefined;
+    await clearRuntimeState(root, seat, ownerToken);
+  };
+  const reconcile = async () => {
+    if (!transport || !await owned()) return;
+    await transport.reconcile();
+  };
+  const start = async () => {
+    // This removes only an expired local observation. Registration itself is
+    // replacement-safe and does not alter the authoritative Desk seat.
+    await clearStaleRuntimeState(root, seat, staleAfterMs);
+    await registerRuntimeState(root, { seat, owner_token: ownerToken, pid, model, cwd });
+    transport = createTransport({
+      root, seat, batchSize: defaultBatchSize, intervalMs: defaultIntervalMs,
+      deliver: async (mail, thread, path) => {
+        if (!await owned()) return false;
+        await deliver(mail, thread, path);
+        return true;
+      },
+    });
+    await transport.start();
+    heartbeat = setInterval(() => {
+      void heartbeatRuntimeState(root, seat, ownerToken).then((state) => {
+        if (!state) void stop();
+      });
+    }, heartbeatMs);
+  };
+  return { ownerToken, start, stop, reconcile, get transport() { return transport; } };
+}
+
 /** Desk mail is authoritative; the queue is a bounded delivery index and fs.watch only shortens latency. */
 export default function (pi: ExtensionAPI) {
   const root = process.env.ATDD_WORKFLOW_ROOT;
   const seat = process.env.ATDD_WORKFLOW_SEAT;
   if (!root || !seat) return;
-  let inbox: ReturnType<typeof createInboxReconciler> | undefined;
+  let runtime: ReturnType<typeof createPiRuntime> | undefined;
   pi.on("session_start", async (_event, ctx) => {
-    inbox = createInboxReconciler({ root, seat, deliver: async (mail, thread, path) => {
+    runtime = createPiRuntime({ root, seat, deliver: async (mail, thread, path) => {
       pi.sendMessage({
         customType: "atdd-flow-mail",
         content: mailNotice(typeof thread.id === "string" ? thread.id : "unknown", { ...mail, subject: typeof thread.subject === "string" ? thread.subject : undefined }),
         display: true, details: { thread: thread.id, message: mail.id, path },
       }, { triggerTurn: true, deliverAs: "followUp" });
     } });
-    await inbox.start();
+    await runtime.start();
     pi.sendMessage({ customType: "atdd-flow-start", content: `SYSTEM: you are ${seat}. Read your durable seat and assigned work with: atdd-flow open ${seat}. Continue assigned in_progress work until it is review-ready or explicitly blocked.`, display: true, details: { seat, root } }, { triggerTurn: true, deliverAs: "followUp" });
     if (ctx.hasUI) ctx.ui.notify(`ATDD Flow native mail active for ${seat}`, "info");
   });
-  pi.on("session_shutdown", () => { inbox?.stop(); });
+  pi.on("session_shutdown", () => { void runtime?.stop(); });
 }

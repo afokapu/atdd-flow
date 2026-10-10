@@ -105,6 +105,26 @@ export async function readRuntimeState(root: string, seat: string): Promise<Runt
   }
 }
 
+/** True only while this token owns the current advisory record; never a governance decision. */
+export async function ownsRuntimeState(root: string, seat: string, ownerToken: string) {
+  return (await readRuntimeState(root, seat))?.owner_token === ownerToken;
+}
+
+/** Remove an abandoned advisory observation only when its heartbeat has expired. */
+export async function clearStaleRuntimeState(root: string, seat: string, maxAgeMs: number, observedAt = new Date()) {
+  const file = runtimeStatePath(root, seat);
+  return exclusive(file, async () => {
+    const current = await readRuntimeState(root, seat);
+    if (!current || !isRuntimeStateStale(current, maxAgeMs, observedAt)) return false;
+    try {
+      await unlink(file);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+}
+
 /** Update activity only if this owner still holds the current advisory record. */
 export async function heartbeatRuntimeState(root: string, seat: string, ownerToken: string, at = new Date().toISOString()) {
   if (!nonEmpty(ownerToken)) throw new Error("Runtime state requires a non-empty owner token.");

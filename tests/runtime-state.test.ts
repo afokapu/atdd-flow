@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  clearStaleRuntimeState,
   clearRuntimeState,
   heartbeatRuntimeState,
   isRuntimeStateStale,
@@ -102,12 +103,15 @@ test("missing or malformed runtime state is absent rather than authoritative", a
   }
 });
 
-test("heartbeat age is an advisory stale signal only", async () => {
+test("heartbeat age and stale cleanup are advisory only", async () => {
   const root = await temporaryDesk();
   try {
     const state = await registerRuntimeState(root, runtime("owner-one"), time);
     expect(isRuntimeStateStale(state, 10_001, new Date(later))).toBe(false);
+    expect(await clearStaleRuntimeState(root, "driver.runtime@demo", 10_001, new Date(later))).toBe(false);
     expect(isRuntimeStateStale(state, 10_000, new Date(later))).toBe(true);
+    expect(await clearStaleRuntimeState(root, "driver.runtime@demo", 10_000, new Date(later))).toBe(true);
+    expect(await readRuntimeState(root, "driver.runtime@demo")).toBeUndefined();
   } finally {
     await rm(root, { recursive: true, force: true });
   }
