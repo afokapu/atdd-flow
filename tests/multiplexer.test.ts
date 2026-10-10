@@ -53,11 +53,11 @@ printf '%s\\n' "$*" >> '${log}'
 case "$3:$4" in
   workspace:list) printf '%s' '{"result":{"workspaces":[]}}' ;;
   workspace:create) printf '%s' '{"result":{"workspace":{"workspace_id":"w1"}}}' ;;
-  worktree:open) printf '%s' '{"result":{"workspace":{"workspace_id":"w2"}}}' ;;
+  worktree:open) printf '%s' '{"result":{"workspace":{"workspace_id":"w2"},"root_tab":{"tab_id":"w2:t1"},"root_pane":{"pane_id":"w2:p1"}}}' ;;
   tab:list) printf '%s' '{"result":{"tabs":[]}}' ;;
   tab:create) printf '%s' '{"result":{"tab":{"tab_id":"w1:t1"},"root_pane":{"pane_id":"w1:p1"}}}' ;;
   pane:list) printf '%s' '{"result":{"panes":[]}}' ;;
-  pane:rename|workspace:rename) printf '%s' '{"result":{}}' ;;
+  pane:rename|tab:rename|workspace:rename) printf '%s' '{"result":{}}' ;;
   *) printf '%s' '{"result":{}}' ;;
 esac
 `);
@@ -86,17 +86,30 @@ test("projection requires an explicit or inherited session and never changes Des
   expect(await readFile(join(fixture.site, "work", "demo", "seats", "driver.active", "seat.yaml"), "utf8")).toBe(before);
 });
 
-test("apply uses selected-session no-focus worktree placement and separate seat tabs", async () => {
+test("RED: apply anchors linked worktree opens in the primary workspace and reuses each returned root tab/pane", async () => {
   const fixture = await desk();
   const fake = await fakeHerdr(fixture.root);
   await invoke(fixture.site, fake.environment, "multiplexer", "apply", "herdr", "--session", "chosen");
   const calls = await readFile(fake.log, "utf8");
   expect(calls).toContain("--session chosen workspace create --cwd " + fixture.repository + " --label demo --no-focus");
-  expect(calls).toContain("--session chosen worktree open --path " + fixture.integration + " --label coordinator.integration@demo --no-focus");
-  expect(calls).toContain("--session chosen worktree open --path " + fixture.driver + " --label driver.active@demo --no-focus");
-  expect(calls.match(/tab create/g)?.length).toBe(4);
+  expect(calls).toContain("--session chosen worktree open --workspace w1 --cwd " + fixture.repository + " --path " + fixture.integration + " --label coordinator.integration@demo --no-focus");
+  expect(calls).toContain("--session chosen worktree open --workspace w1 --cwd " + fixture.repository + " --path " + fixture.driver + " --label driver.active@demo --no-focus");
+  // The linked-worktree root tab/pane is the seat tab/pane: no second tab may be created.
+  expect(calls.match(/tab create/g)?.length).toBe(2);
   expect(calls).toContain("pane rename w1:p1 main@demo");
   expect(calls).not.toContain(" focus");
+  expect(calls).not.toContain(" close");
+});
+
+test("RED: status reports topology compliance separately from a merely present worktree", async () => {
+  const fixture = await desk();
+  const fake = await fakeHerdr(fixture.root);
+  const output = await invoke(fixture.site, fake.environment, "multiplexer", "status", "herdr", "--session", "chosen");
+  expect(JSON.parse(output)).toMatchObject({
+    schema: "atdd-workflow/multiplexer-status/v1",
+    present: 0,
+    topology_compliant: 0,
+  });
 });
 
 test("Herdr attachment qualifies identical pane ids by their inherited session", async () => {

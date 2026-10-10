@@ -28,6 +28,17 @@ type Workspace = { workspace_id: string; label?: string; worktree?: { checkout_p
 type Tab = { tab_id: string; workspace_id: string; label?: string };
 type Pane = { pane_id: string; tab_id: string; label?: string };
 type Target = { project: string; worktree: string; workspaceLabel: string; seat?: Seat };
+type WorkspaceState = { id: string; label: string; worktree: string; rootTab?: string; rootPane?: string };
+type HerdrCommand = (command: string[]) => Promise<string>;
+
+export type HerdrSeatProjection = {
+  session: string;
+  workspace: string;
+  tab: string;
+  pane: string;
+  worktree: string;
+  label: string;
+};
 
 const policyFile = () => join(import.meta.dir, "..", "multiplexer", "herdr.yaml");
 const selectedSession = (args: string[], environment: Record<string, string | undefined> = process.env) => {
@@ -87,11 +98,8 @@ async function targets(root: string): Promise<Target[]> {
     let config: Project;
     try { config = await project(root, name); }
     catch { continue; }
-    // A repository is the Desk's explicit primary-checkout declaration. Do not infer one.
     if (!config.repository) continue;
     const primary = resolve(config.repository);
-    // The primary checkout is explicitly declared by the project even if no
-    // primary-worktree seat currently occupies it.
     result.push({ project: name, worktree: primary, workspaceLabel: name });
     for (const entry of await projectSeats(root, name)) {
       if ((entry.role === "main" || entry.role === "coordinator") && resolve(entry.worktree) === primary) {
@@ -111,68 +119,110 @@ async function targets(root: string): Promise<Target[]> {
   return result;
 }
 
-function command(session: string, args: string[]) {
-  return runOutput(["herdr", "--session", session, ...args]);
-}
-
+const herdr: HerdrCommand = (args) => runOutput(args);
 function json(output: string): any {
   try { return JSON.parse(output).result; }
   catch { throw new Error("Herdr returned invalid JSON; projection did not guess a target."); }
 }
-
 function workspaceId(value: any) {
   const found = value?.workspace?.workspace_id ?? value?.workspace_id;
   if (typeof found !== "string") throw new Error("Herdr did not return a workspace id.");
   return found;
 }
-
+function tabId(value: any) {
+  const found = value?.root_tab?.tab_id ?? value?.tab?.tab_id;
+  return typeof found === "string" ? found : undefined;
+}
 function paneId(value: any) {
   const found = value?.root_pane?.pane_id ?? value?.pane?.pane_id;
-  if (typeof found !== "string") throw new Error("Herdr did not return a pane id.");
-  return found;
+  return typeof found === "string" ? found : undefined;
 }
-
-async function liveWorkspaces(session: string) {
-  const value = json(await command(session, ["workspace", "list"]));
+async function liveWorkspaces(session: string, command: HerdrCommand) {
+  const value = json(await command(["herdr", "--session", session, "workspace", "list"]));
   if (!Array.isArray(value?.workspaces)) throw new Error("Herdr workspace list response is invalid.");
   return value.workspaces as Workspace[];
 }
 
-async function ensureWorkspace(session: string, target: Target, workspaces: Workspace[]) {
+async function ensureWorkspace(session: string, target: Target, workspaces: Workspace[], command: HerdrCommand, primary?: WorkspaceState) {
   let current = workspaces.find((entry) => resolve(entry.worktree?.checkout_path ?? "") === target.worktree);
   if (!current) {
-    const created = target.workspaceLabel === target.project
-      ? json(await command(session, ["workspace", "create", "--cwd", target.worktree, "--label", target.workspaceLabel, "--no-focus"]))
-      : json(await command(session, ["worktree", "open", "--path", target.worktree, "--label", target.workspaceLabel, "--no-focus"]));
+    const args = target.workspaceLabel === target.project
+      ? ["workspace", "create", "--cwd", target.worktree, "--label", target.workspaceLabel, "--no-focus"]
+      : ["worktree", "open", "--workspace", primary?.id ?? "", "--cwd", primary?.worktree ?? "", "--path", target.worktree, "--label", target.workspaceLabel, "--no-focus"];
+    if (args.includes("")) throw new Error(`Project primary workspace is required to open linked worktree ${target.worktree}.`);
+    const created = json(await command(["herdr", "--session", session, ...args]));
     current = { workspace_id: workspaceId(created), label: target.workspaceLabel, worktree: { checkout_path: target.worktree } };
     workspaces.push(current);
-  } else if (current.label !== target.workspaceLabel) {
-    await command(session, ["workspace", "rename", current.workspace_id, target.workspaceLabel]);
+    return { id: current.workspace_id, label: target.workspaceLabel, worktree: target.worktree, ...(tabId(created) ? { rootTab: tabId(created) } : {}), ...(paneId(created) ? { rootPane: paneId(created) } : {}) };
+  }
+  if (current.label !== target.workspaceLabel) {
+    await command(["herdr", "--session", session, "workspace", "rename", current.workspace_id, target.workspaceLabel]);
     current.label = target.workspaceLabel;
   }
-  return current.workspace_id;
+  return { id: current.workspace_id, label: target.workspaceLabel, worktree: target.worktree };
 }
 
-async function ensureSeatTab(session: string, workspace: string, target: Target & { seat: Seat }) {
-  const tabsResult = json(await command(session, ["tab", "list", "--workspace", workspace]));
-  const tabs = tabsResult?.tabs as Tab[];
-  if (!Array.isArray(tabs)) throw new Error("Herdr tab list response is invalid.");
-  let tab = tabs.find((entry) => entry.label === target.seat.address);
+async function tabs(session: string, workspace: string, command: HerdrCommand) {
+  const result = json(await command(["herdr", "--session", session, "tab", "list", "--workspace", workspace]));
+  if (!Array.isArray(result?.tabs)) throw new Error("Herdr tab list response is invalid.");
+  return result.tabs as Tab[];
+}
+async function panes(session: string, workspace: string, command: HerdrCommand) {
+  const result = json(await command(["herdr", "--session", session, "pane", "list", "--workspace", workspace]));
+  if (!Array.isArray(result?.panes)) throw new Error("Herdr pane list response is invalid.");
+  return result.panes as Pane[];
+}
+
+async function ensureSeatTab(session: string, workspace: WorkspaceState, target: Target & { seat: Seat }, command: HerdrCommand): Promise<HerdrSeatProjection> {
+  let entries = await tabs(session, workspace.id, command);
+  let tab = entries.find((entry) => entry.label === target.seat.address);
   let pane: string | undefined;
-  if (!tab) {
-    const created = json(await command(session, ["tab", "create", "--workspace", workspace, "--cwd", target.worktree, "--label", target.seat.address, "--no-focus"]));
-    tab = { tab_id: created?.tab?.tab_id, workspace_id: workspace, label: target.seat.address };
-    pane = paneId(created);
-    if (!tab.tab_id) throw new Error("Herdr did not return a tab id.");
+  if (!tab && workspace.rootTab) {
+    tab = entries.find((entry) => entry.tab_id === workspace.rootTab) ?? { tab_id: workspace.rootTab, workspace_id: workspace.id };
+    await command(["herdr", "--session", session, "tab", "rename", tab.tab_id, target.seat.address]);
+    tab.label = target.seat.address;
   }
-  const panesResult = json(await command(session, ["pane", "list", "--workspace", workspace]));
-  const panes = panesResult?.panes as Pane[];
-  if (!Array.isArray(panes)) throw new Error("Herdr pane list response is invalid.");
-  const labelled = panes.find((entry) => entry.tab_id === tab!.tab_id && entry.label === target.seat.address);
-  if (labelled) return;
-  const first = pane ?? panes.find((entry) => entry.tab_id === tab!.tab_id)?.pane_id;
+  if (!tab) {
+    const created = json(await command(["herdr", "--session", session, "tab", "create", "--workspace", workspace.id, "--cwd", target.worktree, "--label", target.seat.address, "--no-focus"]));
+    const id = tabId(created);
+    if (!id) throw new Error("Herdr did not return a tab id.");
+    tab = { tab_id: id, workspace_id: workspace.id, label: target.seat.address };
+    pane = paneId(created);
+  }
+  const entriesPanes = await panes(session, workspace.id, command);
+  const labelled = entriesPanes.find((entry) => entry.tab_id === tab!.tab_id && entry.label === target.seat.address);
+  if (labelled) return { session, workspace: workspace.id, tab: tab.tab_id, pane: labelled.pane_id, worktree: target.worktree, label: target.seat.address };
+  const first = pane ?? workspace.rootPane ?? entriesPanes.find((entry) => entry.tab_id === tab!.tab_id)?.pane_id;
   if (!first) throw new Error(`Herdr tab ${tab.tab_id} has no pane to label.`);
-  await command(session, ["pane", "rename", first, target.seat.address]);
+  await command(["herdr", "--session", session, "pane", "rename", first, target.seat.address]);
+  return { session, workspace: workspace.id, tab: tab.tab_id, pane: first, worktree: target.worktree, label: target.seat.address };
+}
+
+async function ensureTarget(session: string, target: Target, workspaces: Workspace[], command: HerdrCommand, primary: WorkspaceState) {
+  const workspace = target.workspaceLabel === target.project ? primary : await ensureWorkspace(session, target, workspaces, command, primary);
+  return target.seat ? ensureSeatTab(session, workspace, target as Target & { seat: Seat }, command) : undefined;
+}
+
+/** Reconciles exactly one Desk seat into a labeled Herdr workspace/tab/pane. */
+export async function projectHerdrSeat(root: string, address: string, session: string, command: HerdrCommand = herdr): Promise<HerdrSeatProjection> {
+  await herdrPolicy();
+  const desired = await targets(root);
+  const target = desired.find((entry) => entry.seat?.address === address);
+  if (!target?.seat) throw new Error(`No active Desk projection target exists for ${address}.`);
+  const primaryTarget = desired.find((entry) => entry.project === target.project && entry.workspaceLabel === target.project && !entry.seat);
+  if (!primaryTarget) throw new Error(`Project ${target.project} has no declared primary workspace.`);
+  const workspaces = await liveWorkspaces(session, command);
+  const primary = await ensureWorkspace(session, primaryTarget, workspaces, command);
+  return (await ensureTarget(session, target, workspaces, command, primary))!;
+}
+
+async function topologyCompliant(session: string, target: Target, workspace: Workspace, command: HerdrCommand) {
+  if (workspace.label !== target.workspaceLabel) return false;
+  if (!target.seat) return true;
+  const entries = await tabs(session, workspace.workspace_id, command);
+  const tab = entries.find((entry) => entry.label === target.seat!.address);
+  if (!tab) return false;
+  return (await panes(session, workspace.workspace_id, command)).some((entry) => entry.tab_id === tab.tab_id && entry.label === target.seat!.address);
 }
 
 export async function multiplexer(root: string, args: string[]) {
@@ -188,17 +238,27 @@ export async function multiplexer(root: string, args: string[]) {
     return;
   }
   const desired = await targets(root);
+  const command: HerdrCommand = herdr;
+  const workspaces = await liveWorkspaces(session, command);
   if (action === "status") {
-    // Status deliberately has no reconciliation side effects.
-    const workspaces = await liveWorkspaces(session);
     const present = desired.filter((target) => workspaces.some((entry) => resolve(entry.worktree?.checkout_path ?? "") === target.worktree));
-    console.log(JSON.stringify({ schema: "atdd-workflow/multiplexer-status/v1", application: "herdr", session, desired: desired.length, present: present.length }, null, 2));
+    const topology = await Promise.all(desired.map(async (target) => {
+      const workspace = workspaces.find((entry) => resolve(entry.worktree?.checkout_path ?? "") === target.worktree);
+      return workspace ? topologyCompliant(session, target, workspace, command) : false;
+    }));
+    console.log(JSON.stringify({ schema: "atdd-workflow/multiplexer-status/v1", application: "herdr", session, desired: desired.length, present: present.length, topology_compliant: topology.filter(Boolean).length }, null, 2));
     return;
   }
-  const workspaces = await liveWorkspaces(session);
+  const primary = new Map<string, WorkspaceState>();
   for (const target of desired) {
-    const workspace = await ensureWorkspace(session, target, workspaces);
-    if (target.seat) await ensureSeatTab(session, workspace, target);
+    let projectPrimary = primary.get(target.project);
+    if (!projectPrimary) {
+      const primaryTarget = desired.find((entry) => entry.project === target.project && entry.workspaceLabel === target.project && !entry.seat);
+      if (!primaryTarget) throw new Error(`Project ${target.project} has no declared primary workspace.`);
+      projectPrimary = await ensureWorkspace(session, primaryTarget, workspaces, command);
+      primary.set(target.project, projectPrimary);
+    }
+    await ensureTarget(session, target, workspaces, command, projectPrimary);
   }
   console.log(`Projected ${desired.length} Desk seat worktree(s) into Herdr session ${session}.`);
 }
