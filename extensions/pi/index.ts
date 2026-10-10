@@ -1,18 +1,22 @@
 import * as fs from "node:fs";
-import { readdir, readFile } from "node:fs/promises";
-import { join } from "node:path";
-import { parse } from "yaml";
+import { mkdir, readFile, rename, rm, stat, unlink, writeFile } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
+import { parse, stringify } from "yaml";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-type Thread = { participants?: unknown; subject?: unknown };
-type Mail = { id?: unknown; from?: unknown; to?: unknown; subject?: unknown };
+type Thread = { id?: unknown; participants?: unknown; subject?: unknown };
+export type Mail = { id?: unknown; from?: unknown; to?: unknown; subject?: unknown; created_at?: unknown };
+type InboxMail = Mail & { id: string; created_at: string };
+type PendingReference = { schema?: unknown; thread?: unknown; message?: unknown; created_at?: unknown };
+type PendingSegment = { schema?: unknown; entries?: unknown; next?: unknown };
+type PendingQueue = { schema?: unknown; head?: unknown; tail?: unknown };
+type InboxOptions = { root: string; seat: string; deliver: (mail: InboxMail, thread: Thread, path: string) => void | Promise<void>; batchSize?: number; intervalMs?: number };
 
-const finalMail = /^M-[^.]+\.yaml$/;
+const defaultBatchSize = 32;
+const defaultIntervalMs = 30_000;
 
 function participants(thread: Thread) {
-  return Array.isArray(thread.participants) && thread.participants.every((entry) => typeof entry === "string")
-    ? thread.participants as string[]
-    : [];
+  return Array.isArray(thread.participants) && thread.participants.every((entry) => typeof entry === "string") ? thread.participants as string[] : [];
 }
 
 export function addressedTo(mail: Mail, thread: Thread, seat: string) {
@@ -30,91 +34,159 @@ export function mailNotice(threadId: string, mail: Mail) {
   return `SYSTEM: Flow mail ${id} | thread ${threadId}${subject ? ` (${subject})` : ""} | ${from} → ${recipients}. Read: atdd-flow message read ${id}`;
 }
 
+function inboxDirectory(root: string, seat: string) {
+  return join(root, ".atdd-flow", "pi-inbox", encodeURIComponent(seat));
+}
+
+function pendingDirectory(root: string, seat: string) { return join(inboxDirectory(root, seat), "pending"); }
+function queuePath(root: string, seat: string) { return join(inboxDirectory(root, seat), "queue.yaml"); }
+function segmentPath(root: string, seat: string, segment: string) { return join(pendingDirectory(root, seat), `${segment}.yaml`); }
+
+async function atomicYaml(path: string, value: unknown) {
+  await mkdir(dirname(path), { recursive: true });
+  const temporary = join(dirname(path), `.${basename(path)}.${crypto.randomUUID()}.tmp`);
+  await writeFile(temporary, stringify(value), "utf8");
+  await rename(temporary, path);
+}
+
+const pause = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+async function withInboxLock<T>(directory: string, action: () => Promise<T>) {
+  await mkdir(directory, { recursive: true });
+  const lock = join(directory, "queue.lock");
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    try {
+      await mkdir(lock);
+      try { return await action(); }
+      finally { await rm(lock, { recursive: true, force: true }); }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      try {
+        if (Date.now() - (await stat(lock)).mtimeMs > 30_000) await rm(lock, { recursive: true, force: true });
+        else await pause(5);
+      } catch { await pause(5); }
+    }
+  }
+  throw new Error(`Timed out waiting for inbox queue lock ${directory}`);
+}
+
+function validMail(value: Mail): value is InboxMail {
+  return typeof value.id === "string" && typeof value.created_at === "string";
+}
+
+function validReference(value: PendingReference): value is Required<Pick<PendingReference, "thread" | "message" | "created_at">> {
+  return typeof value.thread === "string" && typeof value.message === "string" && typeof value.created_at === "string";
+}
+
+function validQueue(value: PendingQueue): value is Required<Pick<PendingQueue, "head">> {
+  return typeof value.head === "string";
+}
+
+function references(value: PendingSegment): PendingReference[] {
+  return Array.isArray(value.entries) ? value.entries.filter((entry): entry is PendingReference => Boolean(entry) && typeof entry === "object") : [];
+}
+
 /**
- * A Pi-native wake adapter. The Desk remains authoritative: this extension
- * only observes final immutable mail files and tells Pi where to read them.
+ * Reconciles a bounded, durable queue of immutable Desk-message references.
+ * The queue is appended when Flow persists mail, so recovery never rescans historical threads.
  */
+export function createInboxReconciler({ root, seat, deliver, batchSize = defaultBatchSize, intervalMs = defaultIntervalMs }: InboxOptions) {
+  let watcher: fs.FSWatcher | undefined;
+  let interval: ReturnType<typeof setInterval> | undefined;
+  const delivered = new Set<string>();
+  let serial = Promise.resolve();
+
+  const reconcileNow = async () => withInboxLock(inboxDirectory(root, seat), async () => {
+    let queue: PendingQueue;
+    try { queue = parse(await readFile(queuePath(root, seat), "utf8")) as PendingQueue; }
+    catch { return; }
+    if (!validQueue(queue)) return;
+    const path = segmentPath(root, seat, queue.head);
+    let segment: PendingSegment;
+    try { segment = parse(await readFile(path, "utf8")) as PendingSegment; }
+    catch { return; }
+    const entries = references(segment);
+    // A segment contains at most 32 references. A tick reads one durable head segment and at most batchSize mail records.
+    for (let count = 0; count < batchSize && entries.length; count += 1) {
+      const reference = entries[0];
+      if (!validReference(reference)) { entries.shift(); await atomicYaml(path, { ...segment, entries }); continue; }
+      const key = `${reference.thread}/${reference.message}`;
+      try {
+        const folder = join(root, "threads", reference.thread);
+        const [rawThread, rawMail] = await Promise.all([
+          readFile(join(folder, "thread.yaml"), "utf8"),
+          readFile(join(folder, `${reference.message}.yaml`), "utf8"),
+        ]);
+        const thread = parse(rawThread) as Thread;
+        const mail = parse(rawMail) as Mail;
+        if (validMail(mail) && addressedTo(mail, thread, seat) && !delivered.has(key)) await deliver(mail, thread, join(folder, `${reference.message}.yaml`));
+        delivered.add(key);
+        entries.shift();
+        await atomicYaml(path, { ...segment, entries });
+      } catch (error) {
+        // A crash before message persistence leaves an unpublished prepare record. Retain it briefly for an in-flight post, then discard only the non-authoritative orphan.
+        const age = Date.now() - Date.parse(reference.created_at);
+        if (reference.published !== true && (error as NodeJS.ErrnoException).code === "ENOENT") {
+          entries.shift();
+          if (Number.isFinite(age) && age > 30_000) {
+            await atomicYaml(path, { ...segment, entries });
+            continue;
+          }
+          // A fresh pre-message intent is not mail. Move it behind ready entries so a crashed writer never head-of-line blocks durable Desk mail.
+          entries.push(reference);
+          await atomicYaml(path, { ...segment, entries });
+        }
+        // Keep authoritative references until Pi accepts them; a fresh intent is retried on the next bounded tick.
+        return;
+      }
+    }
+    if (entries.length) return;
+    const next = typeof segment.next === "string" ? segment.next : undefined;
+    await unlink(path);
+    if (next) {
+      await atomicYaml(queuePath(root, seat), { ...queue, head: next });
+    } else {
+      await unlink(queuePath(root, seat));
+    }
+  });
+
+  const reconcile = () => {
+    const scheduled = serial.then(reconcileNow, reconcileNow);
+    serial = scheduled.catch(() => undefined);
+    return scheduled;
+  };
+  const start = async () => {
+    await reconcile();
+    try { watcher = fs.watch(pendingDirectory(root, seat), () => { void reconcile(); }); }
+    catch { /* Periodic reconciliation recovers unavailable watchers. */ }
+    interval = setInterval(() => { void reconcile(); }, intervalMs);
+  };
+  const stop = () => {
+    watcher?.close();
+    watcher = undefined;
+    if (interval) clearInterval(interval);
+    interval = undefined;
+  };
+  return { reconcile, start, stop, watermarkFile: pendingDirectory(root, seat) };
+}
+
+/** Desk mail is authoritative; the queue is a bounded delivery index and fs.watch only shortens latency. */
 export default function (pi: ExtensionAPI) {
   const root = process.env.ATDD_WORKFLOW_ROOT;
   const seat = process.env.ATDD_WORKFLOW_SEAT;
   if (!root || !seat) return;
-
-  const threads = join(root, "threads");
-  const delivered = new Set<string>();
-  const pending = new Set<string>();
-  const threadWatchers = new Map<string, fs.FSWatcher>();
-  let threadsWatcher: fs.FSWatcher | undefined;
-
-  const deliver = (threadId: string, fileName: string) => {
-    const key = `${threadId}/${fileName}`;
-    if (delivered.has(key) || pending.has(key)) return;
-    pending.add(key);
-    setTimeout(async () => {
-      try {
-        const folder = join(threads, threadId);
-        const [rawThread, rawMail] = await Promise.all([
-          readFile(join(folder, "thread.yaml"), "utf8"),
-          readFile(join(folder, fileName), "utf8"),
-        ]);
-        const thread = parse(rawThread) as Thread;
-        const mail = parse(rawMail) as Mail;
-        if (!addressedTo(mail, thread, seat)) return;
-        const id = typeof mail.id === "string" ? mail.id : fileName.slice(0, -5);
-        const file = join(folder, fileName);
-        delivered.add(key);
-        pi.sendMessage({
-          customType: "atdd-flow-mail",
-          content: mailNotice(threadId, { ...mail, id, subject: typeof thread.subject === "string" ? thread.subject : undefined }),
-          display: true,
-          details: { thread: threadId, message: id, path: file },
-        }, { triggerTurn: true, deliverAs: "followUp" });
-      } catch {
-        // A later filesystem event can retry an atomic-write race.
-      } finally {
-        pending.delete(key);
-      }
-    }, 25);
-  };
-
-  const watchThread = (threadId: string) => {
-    if (threadWatchers.has(threadId)) return;
-    try {
-      const watcher = fs.watch(join(threads, threadId), (_event, file) => {
-        const name = file?.toString();
-        if (name && finalMail.test(name)) deliver(threadId, name);
-      });
-      threadWatchers.set(threadId, watcher);
-    } catch {
-      // A concurrent thread deletion is harmless.
-    }
-  };
-
-  const discoverThreads = async () => {
-    try {
-      for (const entry of await readdir(threads, { withFileTypes: true })) {
-        if (entry.isDirectory() && entry.name.startsWith("T-")) watchThread(entry.name);
-      }
-    } catch {
-      // The Desk may be created after Pi starts.
-    }
-  };
-
+  let inbox: ReturnType<typeof createInboxReconciler> | undefined;
   pi.on("session_start", async (_event, ctx) => {
-    await discoverThreads();
-    try { threadsWatcher = fs.watch(threads, () => { void discoverThreads(); }); }
-    catch { /* The startup prompt still makes the missing Desk visible. */ }
-    pi.sendMessage({
-      customType: "atdd-flow-start",
-      content: `SYSTEM: you are ${seat}. Read your durable seat and assigned work with: atdd-flow open ${seat}. Continue assigned in_progress work until it is review-ready or explicitly blocked.`,
-      display: true,
-      details: { seat, root },
-    }, { triggerTurn: true, deliverAs: "followUp" });
+    inbox = createInboxReconciler({ root, seat, deliver: async (mail, thread, path) => {
+      pi.sendMessage({
+        customType: "atdd-flow-mail",
+        content: mailNotice(typeof thread.id === "string" ? thread.id : "unknown", { ...mail, subject: typeof thread.subject === "string" ? thread.subject : undefined }),
+        display: true, details: { thread: thread.id, message: mail.id, path },
+      }, { triggerTurn: true, deliverAs: "followUp" });
+    } });
+    await inbox.start();
+    pi.sendMessage({ customType: "atdd-flow-start", content: `SYSTEM: you are ${seat}. Read your durable seat and assigned work with: atdd-flow open ${seat}. Continue assigned in_progress work until it is review-ready or explicitly blocked.`, display: true, details: { seat, root } }, { triggerTurn: true, deliverAs: "followUp" });
     if (ctx.hasUI) ctx.ui.notify(`ATDD Flow native mail active for ${seat}`, "info");
   });
-
-  pi.on("session_shutdown", () => {
-    threadsWatcher?.close();
-    for (const watcher of threadWatchers.values()) watcher.close();
-    threadWatchers.clear();
-  });
+  pi.on("session_shutdown", () => { inbox?.stop(); });
 }

@@ -1,10 +1,13 @@
 import { afterEach, expect, test } from "bun:test";
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { discoverAddress, notificationCommand } from "../src/adapters";
-import { addressedTo, mailNotice } from "../extensions/pi/index";
-import { resolveExecutable } from "../src/seats";
+import { discoverAddress, launchCommand, launchedAddress, notificationCommand } from "../src/adapters";
+import { atomicYaml } from "../src/core";
+import { addressedTo, createInboxReconciler, mailNotice } from "../extensions/pi/index";
+import { isPiExecutable, launchNotice, piLaunchArgs, resolveExecutable } from "../src/seats";
+import { enqueueNativeMail } from "../src/threads";
+import { parse } from "yaml";
 
 const roots: string[] = [];
 const cli = join(import.meta.dir, "..", "src", "cli.ts");
@@ -89,6 +92,160 @@ test("a message can be read directly without opening its entire thread", async (
   const other = await run(site, "thread", "start", "--with", "coordinator@demo,driver.runtime@demo", "--subject", "Duplicate id");
   await writeFile(join(site, "threads", other, `${first}.yaml`), duplicate);
   expect(await fail(site, "message", "read", first)).toContain("ambiguous across threads");
+});
+
+test("durable inbox reconciliation recovers missed mail without duplicate delivery", async () => {
+  const root = await mkdtemp(join(tmpdir(), "atdd-workflow-"));
+  roots.push(root);
+  const site = join(root, "site");
+  await run(root, "init", site);
+  await run(site, "project", "init", "demo");
+  await run(site, "spawn", "demo", "coordinator", "main", "--worktree", "/tmp/demo-main");
+  await run(site, "spawn", "demo", "driver", "pi", "--worktree", "/tmp/demo-pi");
+  const seat = "driver.pi@demo";
+  await run(site, "bind", seat, "--application", "herdr", "--address", "w-test:p-native", "--wake", "native");
+  const thread = await run(site, "thread", "start", "--with", `coordinator@demo,${seat}`, "--subject", "Durable inbox");
+  const first = await run(site, "post", thread, "--from", "coordinator@demo", "--to", seat, "--body", "Missed while Pi was offline.");
+  const delivered: string[] = [];
+  const initial = createInboxReconciler({ root: site, seat, deliver: async (mail) => { delivered.push(mail.id as string); } });
+  await initial.reconcile();
+  expect(delivered).toEqual([first]);
+
+  const second = await run(site, "post", thread, "--from", "coordinator@demo", "--to", seat, "--body", "Reject once.");
+  const third = await run(site, "post", thread, "--from", "coordinator@demo", "--to", seat, "--body", "Deliver after the retry.");
+  const failed = createInboxReconciler({ root: site, seat, batchSize: 2, deliver: async (mail) => {
+    if (mail.id === second) throw new Error("Pi rejected delivery");
+    delivered.push(mail.id as string);
+  } });
+  await failed.reconcile();
+  expect(delivered).toEqual([first]);
+
+  const restarted = createInboxReconciler({ root: site, seat, batchSize: 2, deliver: async (mail) => { delivered.push(mail.id as string); } });
+  await restarted.reconcile();
+  await restarted.reconcile();
+  expect(delivered).toEqual([first, second, third]);
+
+  const delayedThread = await run(site, "thread", "start", "--with", `coordinator@demo,${seat}`, "--subject", "Delayed first mail");
+  const delayed = await run(site, "post", delayedThread, "--from", "coordinator@demo", "--to", seat, "--body", "Created first but hidden.");
+  const delayedFile = join(site, "threads", delayedThread, `${delayed}.yaml`);
+  const hiddenFile = join(site, "threads", delayedThread, `.${delayed}.hidden`);
+  await rename(delayedFile, hiddenFile);
+  const laterThread = await run(site, "thread", "start", "--with", `coordinator@demo,${seat}`, "--subject", "Visible later mail");
+  const later = await run(site, "post", laterThread, "--from", "coordinator@demo", "--to", seat, "--body", "Visible while the first mail is hidden.");
+  await restarted.reconcile();
+  await rename(hiddenFile, delayedFile);
+  await restarted.reconcile();
+  expect(delivered).toEqual([first, second, third, delayed, later]);
+  expect(await Bun.file(join(site, ".atdd-flow", "pi-inbox", "driver.pi%40demo", "pending", `${later}.yaml`)).exists()).toBe(false);
+});
+
+test("a Pi-designated unbound seat queues ordered native mail in bounded segments", async () => {
+  const root = await mkdtemp(join(tmpdir(), "atdd-workflow-"));
+  roots.push(root);
+  const site = join(root, "site");
+  await run(root, "init", site);
+  await run(site, "project", "init", "demo");
+  await run(site, "spawn", "demo", "coordinator", "main", "--worktree", "/tmp/demo-main");
+  await run(site, "spawn", "demo", "driver", "offline", "--worktree", "/tmp/demo-offline");
+  const seat = "driver.offline@demo";
+  await run(site, "bind", seat, "--application", "herdr", "--address", "w-test:p-offline", "--agent", "pi", "--wake", "native");
+  const seatPath = join(site, "work", "demo", "seats", "driver.offline", "seat.yaml");
+  await writeFile(seatPath, (await readFile(seatPath, "utf8")).replace(/\nruntime:[\s\S]*$/, "\n"));
+  const thread = await run(site, "thread", "start", "--with", `coordinator@demo,${seat}`, "--subject", "Offline Pi inbox");
+  const expected: string[] = [];
+  for (let index = 0; index < 33; index += 1) {
+    expected.push(await run(site, "post", thread, "--from", "coordinator@demo", "--to", seat, "--body", `Queued ${index}`));
+  }
+  const delivered: string[] = [];
+  const inbox = createInboxReconciler({ root: site, seat, batchSize: 32, deliver: async (mail) => { delivered.push(mail.id); } });
+  await inbox.reconcile();
+  expect(delivered).toEqual(expected.slice(0, 32));
+  await inbox.reconcile();
+  expect(delivered).toEqual(expected);
+});
+
+test("concurrent native posts survive queue rollover without losing references", async () => {
+  const root = await mkdtemp(join(tmpdir(), "atdd-workflow-"));
+  roots.push(root);
+  const site = join(root, "site");
+  await run(root, "init", site);
+  await run(site, "project", "init", "demo");
+  await run(site, "spawn", "demo", "coordinator", "main", "--worktree", "/tmp/demo-main");
+  await run(site, "spawn", "demo", "driver", "pi", "--worktree", "/tmp/demo-pi");
+  const seat = "driver.pi@demo";
+  await run(site, "bind", seat, "--application", "herdr", "--address", "w-test:p-native", "--wake", "native");
+  const thread = await run(site, "thread", "start", "--with", `coordinator@demo,${seat}`, "--subject", "Concurrent inbox");
+  const posted = await Promise.all(Array.from({ length: 40 }, (_, index) => run(site, "post", thread, "--from", "coordinator@demo", "--to", seat, "--body", `Concurrent ${index}`)));
+  const delivered: string[] = [];
+  const inbox = createInboxReconciler({ root: site, seat, batchSize: 32, deliver: async (mail) => { delivered.push(mail.id); } });
+  await inbox.reconcile();
+  await inbox.reconcile();
+  expect(delivered).toHaveLength(40);
+  expect(new Set(delivered)).toEqual(new Set(posted));
+  const expected = (await Promise.all(posted.map(async (id) => ({ id, created_at: (parse(await readFile(join(site, "threads", thread, `${id}.yaml`), "utf8")) as { created_at: string }).created_at })))).sort((left, right) => left.created_at.localeCompare(right.created_at) || left.id.localeCompare(right.id)).map(({ id }) => id);
+  expect(delivered).toEqual(expected);
+});
+
+test("a failed rollover child write leaves later native mail recoverable", async () => {
+  const root = await mkdtemp(join(tmpdir(), "atdd-workflow-"));
+  roots.push(root);
+  const site = join(root, "site");
+  await run(root, "init", site);
+  await run(site, "project", "init", "demo");
+  await run(site, "spawn", "demo", "coordinator", "main", "--worktree", "/tmp/demo-main");
+  await run(site, "spawn", "demo", "driver", "pi", "--worktree", "/tmp/demo-pi");
+  const seat = "driver.pi@demo";
+  await run(site, "bind", seat, "--application", "herdr", "--address", "w-test:p-native", "--wake", "native");
+  const thread = await run(site, "thread", "start", "--with", `coordinator@demo,${seat}`, "--subject", "Rollover write failure");
+  const posted: string[] = [];
+  for (let index = 0; index < 32; index += 1) {
+    posted.push(await run(site, "post", thread, "--from", "coordinator@demo", "--to", seat, "--body", `Queued ${index}`));
+  }
+  const inbox = join(site, ".atdd-flow", "pi-inbox", encodeURIComponent(seat));
+  const failedMessage = "M-crashed-rollover";
+  const failedChild = join(inbox, "pending", `S-${failedMessage}.yaml`);
+  // This throw models a process crash or storage failure while the new child is
+  // written. The parent must remain unlinked and therefore reachable mail stays intact.
+  await expect(enqueueNativeMail(site, seat, { thread, message: failedMessage, created_at: "9999-12-31T23:59:59.999Z" }, async (path, value) => {
+    if (path === failedChild) throw new Error("simulated child segment write failure");
+    await atomicYaml(path, value);
+  })).rejects.toThrow("simulated child segment write failure");
+  expect(await readFile(join(inbox, "pending", `S-${posted[0]}.yaml`), "utf8")).not.toContain("next:");
+
+  const later = await run(site, "post", thread, "--from", "coordinator@demo", "--to", seat, "--body", "Must recover after rollover failure.");
+  const delivered: string[] = [];
+  const restarted = createInboxReconciler({ root: site, seat, batchSize: 32, deliver: async (mail) => { delivered.push(mail.id); } });
+  await restarted.reconcile();
+  await restarted.reconcile();
+  expect(delivered).toHaveLength(33);
+  expect(new Set(delivered)).toEqual(new Set([...posted, later]));
+  expect(delivered).toContain(later);
+});
+
+test("an incomplete inbox intent never delivers or blocks later durable mail", async () => {
+  const root = await mkdtemp(join(tmpdir(), "atdd-workflow-"));
+  roots.push(root);
+  const site = join(root, "site");
+  await run(root, "init", site);
+  await run(site, "project", "init", "demo");
+  await run(site, "spawn", "demo", "coordinator", "main", "--worktree", "/tmp/demo-main");
+  await run(site, "spawn", "demo", "driver", "pi", "--worktree", "/tmp/demo-pi");
+  const seat = "driver.pi@demo";
+  await run(site, "bind", seat, "--application", "herdr", "--address", "w-test:p-native", "--wake", "native");
+  const thread = await run(site, "thread", "start", "--with", `coordinator@demo,${seat}`, "--subject", "Orphan intent");
+  const inboxRoot = join(site, ".atdd-flow", "pi-inbox", encodeURIComponent(seat));
+  await mkdir(join(inboxRoot, "pending"), { recursive: true });
+  await writeFile(join(inboxRoot, "queue.yaml"), "schema: atdd-flow/pi-inbox-queue/v1\nhead: S-orphan\ntail: S-orphan\n");
+  await writeFile(join(inboxRoot, "pending", "S-orphan.yaml"), `schema: atdd-flow/pi-inbox-segment/v1\nentries:\n  - thread: ${thread}\n    message: M-orphan\n    created_at: ${new Date().toISOString()}\n    published: false\n`);
+  const later = await run(site, "post", thread, "--from", "coordinator@demo", "--to", seat, "--body", "Must survive the orphan.");
+  // Simulate a crash after authoritative M persistence but before the advisory publish marker write.
+  await writeFile(join(inboxRoot, "pending", "S-orphan.yaml"), (await readFile(join(inboxRoot, "pending", "S-orphan.yaml"), "utf8")).replace("published: true", "published: false"));
+  const delivered: string[] = [];
+  const restarted = createInboxReconciler({ root: site, seat, deliver: async (mail) => { delivered.push(mail.id); } });
+  await restarted.reconcile();
+  await restarted.reconcile();
+  expect(delivered).toEqual([later]);
+  expect(delivered).not.toContain("M-orphan");
 });
 
 test("an operator can initialize a standalone Desk Git repository", async () => {
