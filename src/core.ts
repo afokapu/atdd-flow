@@ -81,7 +81,31 @@ export type Checkpoint = {
 };
 
 export const now = () => new Date().toISOString();
-export const id = (prefix: "T" | "M" | "R") => `${prefix}-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`;
+
+/** Converts human input into the stable, filesystem-safe part of a durable ID. */
+export function kebabCase(value: string, fallback: string) {
+  const slug = value.normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return slug || fallback;
+}
+
+function utcSecond(value: Date) {
+  return value.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
+}
+
+/**
+ * New thread/message IDs are readable without sacrificing independent-process
+ * allocation: UUID entropy keeps simultaneous same-second allocations distinct.
+ * Review IDs retain their established format because this migration is T/M-only.
+ */
+export const id = (prefix: "T" | "M" | "R", label?: string, timestamp = new Date()) => {
+  if (prefix === "R") return `${prefix}-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`;
+  const fallback = prefix === "T" ? "thread" : "message";
+  return `${prefix}-${utcSecond(timestamp)}-${kebabCase(label ?? fallback, fallback)}_${randomUUID().replace(/-/g, "").slice(0, 8)}`;
+};
 export const words = (args: string[], flag: string) => {
   const index = args.indexOf(flag);
   return index < 0 ? undefined : args[index + 1];
