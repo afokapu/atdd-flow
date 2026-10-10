@@ -51,7 +51,19 @@ export type Project = {
 export type HerdrLocator = { session: string; pane: string };
 /** Strings are legacy native addresses; new Herdr bindings retain their session. */
 export type RuntimeAddress = string | HerdrLocator;
-export type Runtime = { application: string; addresses: Record<string, RuntimeAddress>; attached_at?: string; model?: string; wake?: "host" | "native" };
+export type Runtime = {
+  application: string;
+  addresses: Record<string, RuntimeAddress>;
+  attached_at?: string;
+  model?: string;
+  wake?: "host" | "native";
+  /** Exact Pi session used by the narrow Pi/Herdr launch command. */
+  pi_session?: string;
+  /** Exact durable JSONL path reported by Herdr for that Pi session. */
+  pi_session_path?: string;
+  /** Immutable, non-secret receipt for that selected launch. */
+  launch_receipt?: string;
+};
 
 export function runtimeAddress(application: string, value: RuntimeAddress, legacyHerdrSession?: string) {
   if (application !== "herdr" || typeof value === "string") return { address: value, ...(application === "herdr" && legacyHerdrSession ? { session: legacyHerdrSession } : {}) };
