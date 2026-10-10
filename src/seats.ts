@@ -189,61 +189,54 @@ async function chooseLaunchModel(root: string, config: Desk, record: Seat, portf
 /** Pi loads this extension inside its own process, so it can wake without host text injection. */
 export const piExtensionPath = () => join(import.meta.dir, "..", "extensions", "pi", "index.ts");
 
-export type HerdrPaneReport = { session: string; pane: string; state: string; pi_session?: string };
-export type HerdrStartReport = { session: string; pane: string; pi_session: string };
 type HerdrRequest = { session: string; pane: string; seat: string; root: string; piSession: string; args: string[] };
+type Command = (command: string[]) => Promise<string>;
 export type PiRuntimeLaunchDependencies = {
   select?: (input: ModelSelectionInput) => Promise<ModelSelectionResponse>;
-  herdr?: {
-    inspect: (session: string, pane: string) => Promise<HerdrPaneReport>;
-    stop?: (request: Pick<HerdrRequest, "session" | "pane" | "piSession">) => Promise<void>;
-    start: (request: HerdrRequest) => Promise<HerdrStartReport>;
-  };
+  command?: Command;
   sessionId?: () => string;
   at?: () => string;
 };
 
-async function inspectHerdrPane(session: string, pane: string): Promise<HerdrPaneReport> {
-  const output = await runOutput(["herdr", "--session", session, "agent", "inspect", pane, "--json"]);
-  try {
-    const report = JSON.parse(output) as HerdrPaneReport;
-    if (typeof report.session !== "string" || typeof report.pane !== "string" || typeof report.state !== "string") throw new Error("missing session, pane, or state");
-    return report;
-  } catch (error) {
-    throw new Error(`Herdr did not report a usable pane: ${(error as Error).message}`);
-  }
-}
+type PaneReport = { pane: string; agent?: string; status?: string; session?: string };
+type ProcessReport = { shell?: number; processes: Array<{ name?: string; argv0?: string; cmdline?: string; argv?: string[] }> };
 
-function herdrStartCommand(request: HerdrRequest) {
-  return [
-    "herdr", "--session", request.session, "agent", "start", `flow-${request.seat}`, "--kind", "pi", "--pane", request.pane, "--json",
-    "--env", `ATDD_WORKFLOW_ROOT=${request.root}`, "--env", `ATDD_WORKFLOW_SEAT=${request.seat}`, "--",
-    "--session", request.piSession, ...request.args,
-  ];
+const object = (value: unknown): Record<string, unknown> | undefined => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+const text = (value: unknown) => typeof value === "string" ? value : undefined;
+const number = (value: unknown) => typeof value === "number" ? value : undefined;
+function result(value: unknown) { const root = object(value); return object(root?.result) ?? root; }
+function paneReport(value: unknown): PaneReport {
+  const pane = object(result(value)?.pane) ?? result(value);
+  const session = object(pane?.agent_session);
+  const id = text(pane?.pane_id);
+  if (!id) throw new Error("Herdr pane get did not report a pane id.");
+  return { pane: id, ...(text(pane?.agent) ? { agent: text(pane?.agent) } : {}), ...(text(pane?.agent_status) ? { status: text(pane?.agent_status) } : {}), ...(text(session?.value) ? { session: text(session?.value) } : {}) };
 }
-
-async function startPiInHerdr(request: HerdrRequest): Promise<HerdrStartReport> {
-  const output = await runOutput(herdrStartCommand(request));
-  try {
-    const report = JSON.parse(output) as HerdrStartReport;
-    if (typeof report.session !== "string" || typeof report.pane !== "string" || typeof report.pi_session !== "string") throw new Error("missing session, pane, or Pi session");
-    return report;
-  } catch (error) {
-    throw new Error(`Herdr did not verify the started Pi runtime: ${(error as Error).message}`);
-  }
+function processReport(value: unknown): ProcessReport {
+  const report = object(result(value)?.process_info) ?? result(value);
+  const processes = Array.isArray(report?.foreground_processes) ? report.foreground_processes.flatMap((entry) => {
+    const process = object(entry);
+    return process ? [{ name: text(process.name), argv0: text(process.argv0), cmdline: text(process.cmdline), argv: Array.isArray(process.argv) ? process.argv.filter((part): part is string => typeof part === "string") : undefined }] : [];
+  }) : [];
+  return { ...(number(report?.shell_pid) ? { shell: number(report?.shell_pid) } : {}), processes };
 }
-
-async function stopIdlePiInHerdr(request: Pick<HerdrRequest, "session" | "pane" | "piSession">) {
-  // Deliberately stop only the agent. The named shell pane remains available
-  // until the replacement has reported the exact requested session.
-  await run(["herdr", "--session", request.session, "agent", "stop", "--pane", request.pane, "--session-id", request.piSession], true);
+function agentReport(value: unknown) {
+  const agent = object(result(value)?.agent) ?? result(value);
+  const name = text(agent?.name);
+  const pane = text(agent?.pane_id);
+  if (!name || !pane) throw new Error("Herdr agent get did not report agent name and pane id.");
+  return { name, pane, status: text(agent?.status) ?? text(agent?.state) };
 }
-
-function receiptPath(root: string, piSession: string) {
-  return join(root, ".atdd-flow", "runtime-launch", `${encodeURIComponent(piSession)}-${crypto.randomUUID().slice(0, 8)}.yaml`);
+function piProcess(processes: ProcessReport["processes"]) {
+  return processes.find((entry) => entry.name === "pi" || entry.argv0?.endsWith("/pi") || entry.argv0 === "pi" || /(^|\/)pi(?:\s|$)/.test(entry.cmdline ?? ""));
 }
+function shellQuote(value: string) { return `'${value.replaceAll("'", "'\\''")}'`; }
+function agentName(address: string) { return `flow-${address.replace(/[^a-z0-9_-]/gi, "-").toLowerCase()}`.slice(0, 32); }
+function herdr(session: string, ...args: string[]) { return ["herdr", "--session", session, ...args]; }
+function startCommand(request: HerdrRequest) { return herdr(request.session, "agent", "start", agentName(request.seat), "--kind", "pi", "--pane", request.pane, "--", "--session", request.piSession, ...request.args); }
+function receiptPath(root: string, piSession: string) { return join(root, ".atdd-flow", "runtime-launch", `${encodeURIComponent(piSession)}-${crypto.randomUUID().slice(0, 8)}.yaml`); }
 
-/** A deliberately narrow Pi+Herdr launch: an existing pane only, no pane lifecycle management. */
+/** A deliberately narrow Pi+Herdr launch using only installed CLI commands on an existing shell pane. */
 export async function launchPiRuntime(root: string, address: string, args: string[], dependencies: PiRuntimeLaunchDependencies = {}) {
   const resolved = await canonicalAddress(root, address);
   const record = await seat(root, resolved);
@@ -252,57 +245,47 @@ export async function launchPiRuntime(root: string, address: string, args: strin
   const herdrSession = required(words(args, "--herdr-session"), "--herdr-session");
   const resume = args.includes("--resume");
   const dryRun = args.includes("--dry-run");
-  if (args.some((argument) => !["--pane", pane, "--herdr-session", herdrSession, "--resume", "--dry-run"].includes(argument))) {
-    throw new Error("Use `pi runtime launch <seat> --pane <existing-pane> --herdr-session <session> [--resume] [--dry-run]`.");
-  }
-  const portfolio = required(await modelPortfolio(root), "models.yaml for Pi runtime launch");
+  if (args.some((argument) => !["--pane", pane, "--herdr-session", herdrSession, "--resume", "--dry-run"].includes(argument))) throw new Error("Use `pi runtime launch <seat> --pane <existing-pane> --herdr-session <session> [--resume] [--dry-run]`.");
   const active = (await seatTasks(root, record.project, resolved)).filter((entry) => entry.task.status === "in_progress");
   if (!active.length) throw new Error(`${resolved} has no active bounded task; refusing runtime launch.`);
-  const selection = await chooseLaunchModel(root, config, record, portfolio, dependencies.select);
-  const command = resolveModelCommand(config, selection.candidate);
-  if (basename(command.agent) !== "pi") throw new Error(`Pi runtime launch requires a Pi candidate, received ${selection.candidate.id}.`);
-  const inspect = dependencies.herdr?.inspect ?? inspectHerdrPane;
-  const start = dependencies.herdr?.start ?? startPiInHerdr;
-  const observed = await inspect(herdrSession, pane);
-  if (observed.session !== herdrSession || observed.pane !== pane) throw new Error("Herdr reported a different session or pane; refusing runtime launch.");
+  const selection = await chooseLaunchModel(root, config, record, required(await modelPortfolio(root), "models.yaml for Pi runtime launch"), dependencies.select);
+  const model = resolveModelCommand(config, selection.candidate);
+  if (basename(model.agent) !== "pi") throw new Error(`Pi runtime launch requires a Pi candidate, received ${selection.candidate.id}.`);
+  const command = dependencies.command ?? runOutput;
+  const [paneRaw, processRaw] = await Promise.all([command(herdr(herdrSession, "pane", "get", pane)), command(herdr(herdrSession, "pane", "process-info", "--pane", pane))]);
+  const currentPane = paneReport(JSON.parse(paneRaw));
+  const currentProcess = processReport(JSON.parse(processRaw));
+  if (currentPane.pane !== pane) throw new Error("Herdr reported a different pane; refusing runtime launch.");
+  if (currentPane.agent || piProcess(currentProcess.processes)) throw new Error(resume ? "Resume requires the prior Pi to have exited and been released." : "New launch requires an available shell pane.");
   const piSession = resume ? record.runtime?.pi_session : (dependencies.sessionId ?? (() => crypto.randomUUID()))();
   if (!piSession) throw new Error("Resume requires the exact Pi session stored on the seat.");
   if (resume) {
-    if (observed.state !== "idle") throw new Error(`Resume requires an idle Pi session; Herdr reports ${observed.state}.`);
-    if (observed.pi_session !== piSession) throw new Error("Herdr Pi session does not match the exact session stored on the seat.");
     const prior = record.runtime?.launch_receipt;
     if (!prior) throw new Error("Resume requires an existing Flow launch receipt.");
     try {
-      const receipt = await readYaml<{ seat?: string; pi_session?: string }>(prior);
-      if (receipt.seat !== resolved || receipt.pi_session !== piSession) throw new Error("receipt does not match seat/session");
-    } catch (error) {
-      throw new Error(`Resume requires a valid Flow launch receipt: ${(error as Error).message}`);
-    }
-  } else if (observed.state !== "available") {
-    throw new Error(`New launch requires an available shell pane; Herdr reports ${observed.state}.`);
+      const receipt = await readYaml<{ seat?: string; pi_session?: string; herdr_session?: string; pane?: string }>(prior);
+      if (receipt.seat !== resolved || receipt.pi_session !== piSession || receipt.herdr_session !== herdrSession || receipt.pane !== pane) throw new Error("receipt does not match seat/session/pane");
+    } catch (error) { throw new Error(`Resume requires a valid Flow launch receipt: ${(error as Error).message}`); }
   }
-  const receipt = receiptPath(root, piSession);
-  const modelArgs = [...command.args, "--extension", piExtensionPath()];
-  const startRequest: HerdrRequest = { session: herdrSession, pane, seat: resolved, root, piSession, args: modelArgs };
-  const plan = {
-    candidate: selection.candidate.id, piSession, pane, herdrSession, receipt, command: herdrStartCommand(startRequest),
-    ...(dryRun ? { dryRun: true } : {}),
-  };
+  const request: HerdrRequest = { session: herdrSession, pane, seat: resolved, root, piSession, args: [...model.args, "--extension", piExtensionPath()] };
+  const plan = { candidate: selection.candidate.id, piSession, pane, herdrSession, receipt: receiptPath(root, piSession), command: startCommand(request), ...(dryRun ? { dryRun: true } : {}) };
   if (dryRun) return plan;
+  await command(herdr(herdrSession, "pane", "run", pane, `export ATDD_WORKFLOW_ROOT=${shellQuote(root)} ATDD_WORKFLOW_SEAT=${shellQuote(resolved)}`));
+  await command(startCommand(request));
+  const [agentRaw, verifiedPaneRaw, verifiedProcessRaw] = await Promise.all([command(herdr(herdrSession, "agent", "get", agentName(resolved))), command(herdr(herdrSession, "pane", "get", pane)), command(herdr(herdrSession, "pane", "process-info", "--pane", pane))]);
+  const agent = agentReport(JSON.parse(agentRaw));
+  const verifiedPane = paneReport(JSON.parse(verifiedPaneRaw));
+  const verifiedProcess = piProcess(processReport(JSON.parse(verifiedProcessRaw)).processes);
+  const exactSession = verifiedPane.session === piSession && verifiedProcess?.argv?.includes(piSession);
+  if (agent.name !== agentName(resolved) || agent.pane !== pane || ![agent.status, verifiedPane.status].every((status) => status === "idle" || status === "done") || verifiedPane.pane !== pane || !exactSession) throw new Error("Herdr did not verify the exact requested Pi session; seat binding was not changed.");
+  const receipt = plan.receipt;
   const receiptRecord = {
     schema: "atdd-flow/pi-runtime-launch-receipt/v1", seat: resolved, tasks: active.map((entry) => entry.id), candidate: selection.candidate.id,
-    selection: selection.fallback
-      ? { result: "fallback", reason: selection.fallback }
-      : { result: "selected", confidence: selection.selection.confidence, ...(selection.selection.available && selection.selection.model ? { model: selection.selection.model } : {}) },
+    selection: selection.fallback ? { result: "fallback", reason: selection.fallback } : { result: "selected", confidence: selection.selection.confidence, ...(selection.selection.available && selection.selection.model ? { model: selection.selection.model } : {}) },
     pi_session: piSession, herdr_session: herdrSession, pane, created_at: dependencies.at?.() ?? now(),
   };
   await mkdir(dirname(receipt), { recursive: true });
   await writeFile(receipt, yaml.print(receiptRecord), { encoding: "utf8", flag: "wx" });
-  if (resume) await (dependencies.herdr?.stop ?? stopIdlePiInHerdr)({ session: herdrSession, pane, piSession });
-  const verified = await start(startRequest);
-  if (verified.session !== herdrSession || verified.pane !== pane || verified.pi_session !== piSession) {
-    throw new Error("Herdr did not verify the exact requested Pi session; seat binding was not changed.");
-  }
   await bind(root, resolved, ["--application", "herdr", "--address", pane, "--session", herdrSession], selection.candidate.id, "native", piSession, receipt);
   return plan;
 }
