@@ -26,7 +26,7 @@ export type HerdrPolicy = {
 
 type Workspace = { workspace_id: string; label?: string; worktree?: { checkout_path?: string } };
 type Tab = { tab_id: string; workspace_id: string; label?: string };
-type Pane = { pane_id: string; tab_id: string; label?: string; agent_status?: string };
+type Pane = { pane_id: string; tab_id: string; label?: string; agent?: string; agent_status?: string };
 type Target = { project: string; worktree: string; workspaceLabel: string; seat?: Seat };
 type WorkspaceState = { id: string; label: string; worktree: string; rootTab?: string; rootPane?: string };
 type HerdrCommand = (command: string[]) => Promise<string>;
@@ -307,7 +307,7 @@ export async function projectHerdrSeat(root: string, address: string, session: s
   return (await ensureTarget(session, target, workspaces, command, primary))!;
 }
 
-type StaleWorkspace = { workspace: Workspace; address: string };
+type StaleWorkspace = { workspace: Workspace; address: string; reason: "retired" | "no active task" };
 
 async function commonDirectory(path: string) {
   return runOutput(["git", "-C", path, "rev-parse", "--path-format=absolute", "--git-common-dir"]);
@@ -344,19 +344,42 @@ async function staleWorkspaces(root: string, workspaces: Workspace[], activeDriv
       for (const workspace of workspaces.filter((candidate) => candidate.label === entry.address)) {
         const checkout = workspace.worktree?.checkout_path;
         if (typeof checkout !== "string" || checkout === "" || resolve(checkout) === primary) continue;
-        if (await linkedOrMissing(checkout, primary)) result.push({ workspace, address: entry.address });
+        if (await linkedOrMissing(checkout, primary)) result.push({ workspace, address: entry.address, reason: entry.retired ? "retired" : "no active task" });
       }
     }
   }
   return result;
 }
 
-/** Closes one stale workspace unless any of its agents is working or blocked. */
-async function closeStale(session: string, stale: StaleWorkspace, command: HerdrCommand) {
-  const busy = (await panes(session, stale.workspace.workspace_id, command)).find((entry) => entry.agent_status === "working" || entry.agent_status === "blocked");
-  if (busy) return `kept  ${stale.address}  ${stale.workspace.workspace_id}: agent in ${busy.pane_id} is ${busy.agent_status}`;
-  await command(["herdr", "--session", session, "workspace", "close", stale.workspace.workspace_id]);
-  return `closed  ${stale.address}  ${stale.workspace.workspace_id}`;
+type StaleDecision = {
+  address: string;
+  workspace_id: string;
+  reason: StaleWorkspace["reason"];
+  agents: Array<Pick<Pane, "pane_id" | "agent" | "agent_status">>;
+  outcome: "close" | "keep";
+  because?: string;
+};
+
+const closeInactiveOff = "close_inactive is off";
+
+/**
+ * Read-only decision for one stale workspace, shared by `status` and `apply`: it is closed only when
+ * close_inactive is on and none of its agents is working or blocked.
+ */
+async function decideStale(session: string, stale: StaleWorkspace, close: boolean, command: HerdrCommand): Promise<StaleDecision> {
+  const agents = (await panes(session, stale.workspace.workspace_id, command))
+    .map(({ pane_id, agent, agent_status }) => ({ pane_id, ...(agent ? { agent } : {}), ...(agent_status ? { agent_status } : {}) }));
+  const busy = agents.find((entry) => entry.agent_status === "working" || entry.agent_status === "blocked");
+  const because = !close ? closeInactiveOff : busy ? `agent in ${busy.pane_id} is ${busy.agent_status}` : undefined;
+  return { address: stale.address, workspace_id: stale.workspace.workspace_id, reason: stale.reason, agents, outcome: because ? "keep" : "close", ...(because ? { because } : {}) };
+}
+
+/** Acts on one stale-workspace decision: closes it, or reports why it is kept. */
+async function applyStale(session: string, decision: StaleDecision, command: HerdrCommand) {
+  const label = `${decision.address}  ${decision.workspace_id}`;
+  if (decision.outcome === "keep") return `${decision.because === closeInactiveOff ? "stale" : "kept"}  ${label}: ${decision.because}`;
+  await command(["herdr", "--session", session, "workspace", "close", decision.workspace_id]);
+  return `closed  ${label}`;
 }
 
 const closeInactive = async (root: string) => (await desk(root)).multiplexer?.close_inactive === true;
@@ -374,7 +397,7 @@ export async function closeRetiredDriverWorkspace(root: string, entry: Seat, com
     if (!session) return;
     const workspaces = (await liveWorkspaces(session, command)).filter((workspace) => workspace.label === entry.address);
     if (!workspaces.length) return;
-    for (const stale of await staleWorkspaces(root, workspaces, new Set())) console.log(await closeStale(session, stale, command));
+    for (const stale of await staleWorkspaces(root, workspaces, new Set())) console.log(await applyStale(session, await decideStale(session, stale, true, command), command));
   } catch (error) {
     console.log(`Workspace close for ${entry.address} was not completed: ${(error as Error).message}`);
   }
@@ -406,15 +429,16 @@ export async function multiplexer(root: string, args: string[]) {
   const activeDrivers = new Set<string>();
   const desired = await targets(root, { unprojected, live: livePane(session, command), activeDrivers });
   const workspaces = await liveWorkspaces(session, command);
-  const stale = await staleWorkspaces(root, workspaces, activeDrivers);
   const close = await closeInactive(root);
+  const stale = await staleWorkspaces(root, workspaces, activeDrivers);
+  const decide = (entry: StaleWorkspace) => decideStale(session, entry, close, command);
   if (action === "status") {
     const present = desired.filter((target) => matchWorkspace(workspaces, target));
     const topology = await Promise.all(desired.map(async (target) => {
       const workspace = matchWorkspace(workspaces, target);
       return workspace ? topologyCompliant(session, target, workspace, command) : false;
     }));
-    console.log(JSON.stringify({ schema: "atdd-workflow/multiplexer-status/v1", application: "herdr", session, desired: desired.length, present: present.length, topology_compliant: topology.filter(Boolean).length, stale: stale.length, close_inactive: close, unprojected }, null, 2));
+    console.log(JSON.stringify({ schema: "atdd-workflow/multiplexer-status/v1", application: "herdr", session, desired: desired.length, present: present.length, topology_compliant: topology.filter(Boolean).length, stale: stale.length, stale_workspaces: await Promise.all(stale.map(decide)), close_inactive: close, unprojected }, null, 2));
     return;
   }
   const primary = new Map<string, WorkspaceState>();
@@ -429,8 +453,7 @@ export async function multiplexer(root: string, args: string[]) {
     await ensureTarget(session, target, workspaces, command, projectPrimary);
   }
   for (const entry of unprojected) console.log(`unprojected  ${entry.address}: ${entry.reason}`);
-  for (const entry of stale) {
-    console.log(close ? await closeStale(session, entry, command) : `stale  ${entry.address}  ${entry.workspace.workspace_id}: close_inactive is off`);
-  }
+  // Decided at close time with the same read-only rule `status` reports.
+  for (const entry of stale) console.log(await applyStale(session, await decide(entry), command));
   console.log(`Projected ${desired.length} Desk seat worktree(s) into Herdr session ${session}.`);
 }
