@@ -1,8 +1,10 @@
-# Exact-base finding ratchet for the project-local Flow integration only.
-# Deliberately no `profiles:` adoption: the full-profile rollout remains separately blocked.
+# Full-profile governance: every concrete ATDD Bun profile, including optional `flow`, is explicitly
+# activated (one-time --ratchet-activate-profiles adoption). The matching reject-new ratchet carries the
+# exact-base debt without accepting it; remove carried findings through debt-remediation branches.
+profiles: [traceability, topology, docs, planner, telemetry, coder, tester, security, architecture, metrics, runtime, interlocking, htmx, design, flow]
 ratchet:
   mode: reject-new
-  profiles: [flow]
+  profiles: [traceability, topology, docs, planner, telemetry, coder, tester, security, architecture, metrics, runtime, interlocking, htmx, design, flow]
 # Linked delivery worktrees live beside the primary checkout; `atdd-bun worktree finish` performs
 # convention-compliant driver retirement (clean + merged into main) for `task done --retire-assignee`.
 worktrees:
