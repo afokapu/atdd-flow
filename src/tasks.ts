@@ -151,20 +151,17 @@ async function governedBase(root: string, projectName: string, coordinatorAddres
 }
 
 async function eligibleAssignee(root: string, projectName: string, address: string) {
-  const config = await project(root, projectName);
   const candidate = await seat(root, address);
   if (candidate.project !== projectName) throw new Error(`Task assignee ${candidate.address} does not belong to project ${projectName}.`);
   if (candidate.retired) throw new Error(`Task assignee ${candidate.address} is retired.`);
-  if (candidate.role === "coordinator") {
-    // Generic (coordinator@project) and nested coordinators are topology-invalid.
-    const suffix = `@${config.project}`;
-    const local = candidate.address.endsWith(suffix) ? candidate.address.slice(0, -suffix.length) : "";
-    const match = local.match(/^coordinator\.([a-z0-9_-]+)$/);
-    if (!match || candidate.branch !== `integration/${match[1]}` || (config.repository && resolve(candidate.worktree) === resolve(config.repository))) {
-      throw new Error(`Task assignee ${candidate.address} is a generic or nested coordinator and cannot be assigned.`);
-    }
-  }
   return candidate;
+}
+
+/** Legacy topology evidence is recorded only when it is exactly provable; it never gates assignment. */
+async function evidenceBase(root: string, projectName: string, coordinator: string, assignee: Seat): Promise<GovernedBase | undefined> {
+  if (assignee.role !== "driver") return undefined;
+  try { return await governedBase(root, projectName, coordinator, assignee.address); }
+  catch { return undefined; }
 }
 
 async function retireAssignee(root: string, projectName: string, id: string, task: Task) {
@@ -295,7 +292,7 @@ export async function add(root: string, projectName: string, id: string, args: s
   const assigneeValue = words(args, "--assignee");
   const assignee = assigneeValue ? await canonicalAddress(root, assigneeValue) : undefined;
   await seat(root, coordinator);
-  if (assignee) await eligibleAssignee(root, projectName, assignee);
+  const base = assignee ? await evidenceBase(root, projectName, coordinator, await eligibleAssignee(root, projectName, assignee)) : undefined;
   const doneWhen = values(args, "--done-when").map((text) => ({ text }));
   if (!doneWhen.length) throw new Error("A task needs at least one --done-when criterion.");
   const dependsOn = words(args, "--depends-on")?.split(",").filter(Boolean).map(taskId);
@@ -305,6 +302,7 @@ export async function add(root: string, projectName: string, id: string, args: s
     status: "todo",
     coordinator,
     ...(assignee ? { assignee } : {}),
+    ...(base ? { governed_base: base } : {}),
     ...(words(args, "--body") ? { body: words(args, "--body") } : {}),
     ...(words(args, "--source") ? { source: words(args, "--source") } : {}),
     ...(dependsOn?.length ? { depends_on: dependsOn } : {}),
@@ -321,8 +319,9 @@ export async function assign(root: string, projectName: string, id: string, args
   if (task.status !== "todo") throw new Error(`Task ${id} can only be assigned while todo.`);
   if (task.assignee) throw new Error(`Task ${id} is already assigned to ${task.assignee}.`);
   const assignee = await canonicalAddress(root, required(words(args, "--assignee"), "--assignee"));
-  await eligibleAssignee(root, projectName, assignee);
+  const base = await evidenceBase(root, projectName, task.coordinator, await eligibleAssignee(root, projectName, assignee));
   task.assignee = assignee;
+  if (base) task.governed_base = base;
   await writeTask(root, projectName, id, task);
   console.log(`${id}  assigned  ${assignee}`);
 }

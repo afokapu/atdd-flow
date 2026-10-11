@@ -90,22 +90,26 @@ afterEach(async () => {
 });
 
 test("RED: add and assign accept every live same-project role without changing seat resources", async () => {
-  const { site, main, coordinator, named, driver } = await fixture();
+  const { site, main, coordinator, named, mismatched, driver } = await fixture();
   const coordinatorSeat = await Bun.file(join(site, "work", "demo", "seats", "coordinator.ops", "seat.yaml")).text();
 
   await run(site, "task", "add", "demo", "main-owned", "--title", "Main work", "--coordinator", coordinator, "--assignee", main, "--done-when", "Recorded.");
   await run(site, "task", "add", "demo", "coordinator-owned", "--title", "Coordinator work", "--coordinator", coordinator, "--assignee", named, "--done-when", "Recorded.");
+  await run(site, "task", "add", "demo", "generic-owned", "--title", "Generic coordinator work", "--coordinator", coordinator, "--assignee", coordinator, "--done-when", "Recorded.");
+  await run(site, "task", "add", "demo", "mismatched-owned", "--title", "Mismatched coordinator work", "--coordinator", coordinator, "--assignee", mismatched, "--done-when", "Recorded.");
   await run(site, "task", "add", "demo", "unassigned", "--title", "Driver work", "--coordinator", coordinator, "--done-when", "Recorded.");
   await run(site, "task", "assign", "demo", "unassigned", "--assignee", driver, "--by", coordinator);
 
   expect(await taskText(site, "main-owned")).toContain(`assignee: ${main}`);
   expect(await taskText(site, "coordinator-owned")).toContain(`assignee: ${named}`);
+  expect(await taskText(site, "generic-owned")).toContain(`assignee: ${coordinator}`);
+  expect(await taskText(site, "mismatched-owned")).toContain(`assignee: ${mismatched}`);
   expect(await taskText(site, "unassigned")).toContain(`assignee: ${driver}`);
   expect(await Bun.file(join(site, "work", "demo", "seats", "coordinator.ops", "seat.yaml")).text()).toBe(coordinatorSeat);
 });
 
 test("RED: invalid assignment paths fail closed without partial task creation", async () => {
-  const { site, coordinator, mismatched, driver, retired, foreign } = await fixture();
+  const { site, coordinator, driver, retired, foreign } = await fixture();
   const options = ["--title", "Bounded work", "--coordinator", coordinator, "--done-when", "Recorded."];
 
   await fail(site, "task", "add", "demo", "unknown", ...options, "--assignee", "driver.missing@demo");
@@ -114,12 +118,6 @@ test("RED: invalid assignment paths fail closed without partial task creation", 
   expect(await Bun.file(taskFile(site, "foreign")).exists()).toBe(false);
   await fail(site, "task", "add", "demo", "retired", ...options, "--assignee", retired);
   expect(await Bun.file(taskFile(site, "retired")).exists()).toBe(false);
-
-  // Generic and nested/mismatched coordinators are topology-invalid assignees.
-  await fail(site, "task", "add", "demo", "generic", ...options, "--assignee", coordinator);
-  expect(await Bun.file(taskFile(site, "generic")).exists()).toBe(false);
-  await fail(site, "task", "add", "demo", "nested", ...options, "--assignee", mismatched);
-  expect(await Bun.file(taskFile(site, "nested")).exists()).toBe(false);
 
   await run(site, "task", "add", "demo", "duplicate", ...options, "--assignee", driver);
   const before = await taskText(site, "duplicate");
@@ -134,12 +132,6 @@ test("RED: invalid assignment paths fail closed without partial task creation", 
   const assigned = await taskText(site, "assign-once");
   await fail(site, "task", "assign", "demo", "assign-once", "--assignee", coordinator, "--by", coordinator);
   expect(await taskText(site, "assign-once")).toBe(assigned);
-  await run(site, "task", "add", "demo", "assign-generic", ...options);
-  const generic = await taskText(site, "assign-generic");
-  const rejection = await fail(site, "task", "assign", "demo", "assign-generic", "--assignee", coordinator, "--by", coordinator);
-  expect(rejection).toContain("generic or nested coordinator");
-  await fail(site, "task", "assign", "demo", "assign-generic", "--assignee", mismatched, "--by", coordinator);
-  expect(await taskText(site, "assign-generic")).toBe(generic);
 });
 
 test("RED: terminal dispositions are coordinator-authored and defer is bounded", async () => {
