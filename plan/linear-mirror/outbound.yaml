@@ -1,0 +1,8 @@
+# Acceptance for the one-way Flow-to-Linear mirror.
+# Flow stays authoritative; no Linear-to-Flow path exists.
+acceptances:
+  - urn: acc:linear-mirror:E001-LINEAR-001-one-way-mirror-fails-closed
+    description: >-
+      Duplicate delivery, retries, unsupported fields, inbound changes, missing routing,
+      sensitive content, and unauthorized live writes fail closed without duplicate Linear
+      objects or Flow mutation.

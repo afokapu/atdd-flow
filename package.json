@@ -14,6 +14,7 @@
   "files": [
     "bin",
     "conventions",
+    "docs",
     "extensions",
     "src",
     "README.md",

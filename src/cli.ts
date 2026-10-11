@@ -17,6 +17,7 @@ import * as reviews from "./reviews";
 import { status } from "./overview";
 import { multiplexer } from "./multiplexer";
 import * as cleanup from "./ephemeral-resources";
+import { linearCommand } from "./linear-cli";
 import * as ownerAlerts from "./owner-escalations";
 import { recoveryFor } from "./recovery-bundle";
 import { reconcileOnce } from "./reconcile";
@@ -69,6 +70,9 @@ Usage:
   atdd-flow cleanup status <project>
   atdd-flow cleanup checklist <project> <task-id>
   atdd-flow reconcile --once [--dry-run]
+  atdd-flow linear mirror authorize --config <file> --id <LMA-id> --by operator@desk
+  atdd-flow linear mirror task <project> <task-id> --config <file> [--apply --authorization <LMA-id>]
+  atdd-flow linear mirror message <project> <task-id> <thread-id> <message-id> --config <file> [--apply --authorization <LMA-id>]
   atdd-flow owner-alert scan --by <coordinator-or-main> [--re-notify-after-ms <milliseconds>]
   atdd-flow owner-alert deliver|acknowledge|execute|resolve <alert-id> --by <address> [--note <text>|--option <id>|--reason <text>]
   atdd-flow thread start --with <address,...> --subject <text> [--task <project/task-id>]
@@ -177,6 +181,7 @@ async function main() {
       process.stdout.write(Bun.YAML.stringify(await reconcileOnce(root, { dryRun: rest.includes("--dry-run") })));
       return;
     },
+    linear: () => linearCommand(root, rest),
     "owner-alert": async () => {
       const [subcommand, alertId, ...tail] = rest;
       if (subcommand === "scan") {
