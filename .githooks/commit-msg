@@ -1,0 +1,12 @@
+#!/bin/sh
+root="$(git rev-parse --show-toplevel)" || exit $?
+entry="$root/node_modules/@afokapu/atdd-bun/src/cli.ts"
+if [ ! -f "$entry" ]; then
+  if [ -f "$root/package.json" ] && grep -Eq '"name"[[:space:]]*:[[:space:]]*"@afokapu/atdd-bun"' "$root/package.json" && [ -f "$root/src/cli.ts" ]; then
+    entry="$root/src/cli.ts"
+  else
+    echo "atdd-bun hook: install @afokapu/atdd-bun in this project before running hooks" >&2
+    exit 1
+  fi
+fi
+exec bun "$entry" hook commit-msg "$@"

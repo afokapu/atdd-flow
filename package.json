@@ -41,7 +41,7 @@
     "bun": ">=1.3.0"
   },
   "devDependencies": {
-    "@afokapu/atdd-bun": "0.10.61"
+    "@afokapu/atdd-bun": "0.10.71"
   },
   "dependencies": {
     "@typesafe-ai/sdk": "^0.6.0",
