@@ -151,6 +151,51 @@ test("RED: multiplexer status reports inactive driver workspaces as stale", asyn
   expect(await fixture.herdr.calls()).not.toContain(" close");
 });
 
+type StaleEntry = { address: string; workspace_id: string; reason: string; agents: Array<{ pane_id: string; agent?: string; agent_status?: string }>; outcome: string; because?: string };
+const staleEntries = (status: { stale_workspaces?: StaleEntry[] }) => [...(status.stale_workspaces ?? [])].sort((left, right) => left.workspace_id.localeCompare(right.workspace_id));
+
+test("RED: multiplexer status lists each stale workspace with the close/keep outcome apply acts on", async () => {
+  const fixture = await mixedSession();
+  const status = JSON.parse(await run(fixture.site, fixture.herdr.environment, "multiplexer", "status", "herdr", "--session", "chosen"));
+  expect(status.stale).toBe(2);
+  expect(staleEntries(status)).toEqual([
+    { address: "driver.busy@demo", workspace_id: "wBusy", reason: "no active task", agents: [{ pane_id: "wBusy:p1", agent: "pi", agent_status: "working" }], outcome: "keep", because: "agent in wBusy:p1 is working" },
+    { address: "driver.done@demo", workspace_id: "wDone", reason: "no active task", agents: [{ pane_id: "wDone:p1", agent: "pi", agent_status: "idle" }], outcome: "close" },
+  ]);
+  // Status is read-only: listing the stale set never closes, renames or creates anything.
+  expect(await fixture.herdr.calls()).not.toMatch(/ (close|rename|create|open) /);
+  const output = await run(fixture.site, fixture.herdr.environment, "multiplexer", "apply", "herdr", "--session", "chosen");
+  const closed = [...(await fixture.herdr.calls()).matchAll(/workspace close (\S+)/g)].map((match) => match[1]);
+  expect(closed).toEqual(staleEntries(status).filter((entry) => entry.outcome === "close").map((entry) => entry.workspace_id));
+  expect(output).toContain("kept  driver.busy@demo  wBusy: agent in wBusy:p1 is working");
+});
+
+test("RED: status names a retired driver's stale workspace as retired", async () => {
+  const fixture = await desk(["gone"]);
+  await finishTask(fixture.site, fixture.clean, "driver.gone@demo", "W-gone", "--retire-assignee");
+  const herdr = await fakeHerdr(fixture.root, [
+    { id: "wPrimary", label: "demo", path: fixture.repository },
+    { id: "wGone", label: "driver.gone@demo", path: join(fixture.worktrees, "gone") },
+  ]);
+  const status = JSON.parse(await run(fixture.site, herdr.environment, "multiplexer", "status", "herdr", "--session", "chosen"));
+  expect(staleEntries(status)).toEqual([
+    { address: "driver.gone@demo", workspace_id: "wGone", reason: "retired", agents: [{ pane_id: "wGone:p1", agent: "pi", agent_status: "idle" }], outcome: "close" },
+  ]);
+  expect(await herdr.calls()).not.toContain("workspace close");
+});
+
+test("RED: without close_inactive every listed stale workspace is kept, as apply keeps it", async () => {
+  const fixture = await mixedSession();
+  const deskFile = join(fixture.site, "desk.yaml");
+  await writeFile(deskFile, stringify({ ...parse(await readFile(deskFile, "utf8")), multiplexer: { close_inactive: false } }));
+  const status = JSON.parse(await run(fixture.site, fixture.herdr.environment, "multiplexer", "status", "herdr", "--session", "chosen"));
+  expect(staleEntries(status).map(({ workspace_id, outcome, because }) => ({ workspace_id, outcome, because }))).toEqual([
+    { workspace_id: "wBusy", outcome: "keep", because: "close_inactive is off" },
+    { workspace_id: "wDone", outcome: "keep", because: "close_inactive is off" },
+  ]);
+  expect(await fixture.herdr.calls()).not.toContain("workspace close");
+});
+
 test("RED: multiplexer apply closes only idle inactive driver workspaces when close_inactive is enabled", async () => {
   const fixture = await mixedSession();
   const output = await run(fixture.site, fixture.herdr.environment, "multiplexer", "apply", "herdr", "--session", "chosen");
