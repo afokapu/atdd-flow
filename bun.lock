@@ -9,12 +9,12 @@
         "yaml": "2.9.0",
       },
       "devDependencies": {
-        "@afokapu/atdd-bun": "0.10.61",
+        "@afokapu/atdd-bun": "0.10.71",
       },
     },
   },
   "packages": {
-    "@afokapu/atdd-bun": ["@afokapu/atdd-bun@0.10.61", "", { "dependencies": { "@afokapu/atdd-flow": "^0.3.0", "ajv": "^8.17.1", "ajv-formats": "^3.0.1", "typescript": "6.0.3" }, "bin": { "atdd-bun": "src/cli.ts" } }, "sha512-0s1cW+M8s7U4oZPS8+RPudPb6s7WIeplciWGDxd+H0gForopn6jQiTCnt5WkoDD/hPxUQp79O2WVX9/8CBMvGw=="],
+    "@afokapu/atdd-bun": ["@afokapu/atdd-bun@0.10.71", "", { "dependencies": { "@afokapu/atdd-flow": "^0.3.0", "ajv": "^8.17.1", "ajv-formats": "^3.0.1", "typescript": "6.0.3" }, "bin": { "atdd-bun": "src/cli.ts" } }, "sha512-dnhV3R01sjI06UCz2R8ddFVT2jVD9bHrRWK/HUdOEhCEfgiR5OerGI4r24pp/RZ4ugczki5W6lm7pa5zVcV1zA=="],
 
     "@afokapu/atdd-flow": ["@afokapu/atdd-flow@0.3.6", "", { "dependencies": { "@typesafe-ai/sdk": "^0.6.0", "yaml": "2.9.0" }, "bin": { "atdd-flow": "bin/atdd-flow" } }, "sha512-eDUQ4JnuhIxjiCs+zPPE9ww9aYI+cOTraCB4hGazyD/bFkZSq0o03UGZq0TbZQWdNnDdH/3Ju+dAxFj/Lcbyxw=="],
 
