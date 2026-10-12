@@ -113,11 +113,7 @@ roles:
   const deskFile = join(site, "desk.yaml");
   await writeFile(deskFile, stringify({ ...parse(await readFile(deskFile, "utf8")), multiplexer: { close_inactive: true } }));
   await run(site, clean, "spawn", "demo", "coordinator", "main");
-  for (const name of drivers) {
-    await run(site, clean, "spawn", "demo", "driver", name);
-    await mkdir(join(worktrees, name, "node_modules", ".bin"), { recursive: true });
-    await symlink(join(import.meta.dir, "..", "node_modules", ".bin", "atdd-bun"), join(worktrees, name, "node_modules", ".bin", "atdd-bun"));
-  }
+  for (const name of drivers) await run(site, clean, "spawn", "demo", "driver", name);
   return { root, site, repository, worktrees, clean, coordinator: "coordinator@demo" };
 }
 
@@ -384,7 +380,7 @@ async function wrapper(directory: string, label: string, log: string) {
 }
 
 /** A repository with linked-worktree policy, main@demo on the primary checkout, and named coordinators/drivers. */
-async function topologyDesk(options: { coordinators?: string[]; drivers?: string[]; packageSource?: boolean } = {}) {
+async function topologyDesk(options: { coordinators?: string[]; drivers?: string[]; packageSource?: boolean; primaryBun?: boolean } = {}) {
   const root = await mkdtemp(join(tmpdir(), "atdd-coordinator-retire-"));
   roots.push(root);
   const repository = join(root, "repository");
@@ -410,6 +406,11 @@ process.exit(child.exitCode ?? 1);
   }
   await git(repository, "add", ...tracked);
   await git(repository, "commit", "-m", "configure worktrees");
+  // Retirement resolves ATDD Bun from the primary checkout; node_modules is gitignored there.
+  if (options.primaryBun !== false && !options.packageSource) {
+    await mkdir(join(repository, "node_modules", ".bin"), { recursive: true });
+    await symlink(join(import.meta.dir, "..", "node_modules", ".bin", "atdd-bun"), join(repository, "node_modules", ".bin", "atdd-bun"));
+  }
   await run(root, environment, "init", site);
   await run(site, environment, "project", "init", "demo");
   await writeFile(join(site, "work", "demo", "project.yaml"), `schema: atdd-workflow/project/v1
@@ -496,7 +497,7 @@ test("guard: a coordinator with an open coordinated task, a non-main actor, main
 });
 
 test("RED: retirement prefers the primary checkout ATDD Bun over the seat worktree copy, run in the seat worktree", async () => {
-  const fixture = await topologyDesk({ drivers: ["alpha"] });
+  const fixture = await topologyDesk({ drivers: ["alpha"], primaryBun: false });
   const worktree = await realpath(join(fixture.worktrees, "alpha"));
   await wrapper(join(fixture.repository, "node_modules", ".bin"), "primary", fixture.log);
   await wrapper(join(worktree, "node_modules", ".bin"), "seat", fixture.log);
@@ -519,7 +520,7 @@ test("RED: retirement runs the ATDD Bun package source when the primary checkout
 });
 
 test("RED: without a primary copy, retirement uses PATH ATDD Bun even when the seat worktree has its own", async () => {
-  const fixture = await topologyDesk({ drivers: ["gamma"] });
+  const fixture = await topologyDesk({ drivers: ["gamma"], primaryBun: false });
   const worktree = await realpath(join(fixture.worktrees, "gamma"));
   const bin = join(fixture.root, "bin");
   await wrapper(bin, "path", fixture.log);

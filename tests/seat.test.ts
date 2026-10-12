@@ -795,8 +795,9 @@ roles:
 `);
   await run(site, "spawn", "demo", "coordinator", "main");
   await run(site, "spawn", "demo", "driver", "runtime");
-  await mkdir(join(worktrees, "runtime", "node_modules", ".bin"), { recursive: true });
-  await symlink(join(import.meta.dir, "..", "node_modules", ".bin", "atdd-bun"), join(worktrees, "runtime", "node_modules", ".bin", "atdd-bun"));
+  // Retirement resolves ATDD Bun from the primary checkout, never the seat worktree.
+  await mkdir(join(repository, "node_modules", ".bin"), { recursive: true });
+  await symlink(join(import.meta.dir, "..", "node_modules", ".bin", "atdd-bun"), join(repository, "node_modules", ".bin", "atdd-bun"));
   const coordinator = "coordinator@demo";
   const driver = "driver.runtime@demo";
   await run(site, "task", "add", "demo", "W-runtime", "--title", "Retire runtime", "--coordinator", coordinator, "--assignee", driver, "--done-when", "Delivery branch is merged.");
