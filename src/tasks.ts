@@ -172,9 +172,26 @@ async function absentUnregisteredWorktree(root: string, projectName: string, own
   return `Worktree ${owner.worktree} is absent and unregistered; retired without worktree finish; branch ${owner.branch} retained.`;
 }
 
+/**
+ * Resolves the ATDD Bun that retires a seat: the primary checkout's local copy, then the primary
+ * checkout's package source when it is ATDD Bun itself, then PATH. A seat worktree copy is never used:
+ * a finished branch may pin an older toolkit that refuses the seat being retired.
+ */
+async function retirementBun(root: string, projectName: string) {
+  const primary = resolve(required((await project(root, projectName)).repository, `a repository for project ${projectName}`));
+  const local = join(primary, "node_modules", ".bin", "atdd-bun");
+  if (await exists(local)) return [local];
+  const source = join(primary, "src", "cli.ts");
+  try {
+    if ((await Bun.file(join(primary, "package.json")).json()).name === "@afokapu/atdd-bun" && await exists(source)) return [process.execPath, source];
+  } catch { /* no readable package manifest; fall through to PATH */ }
+  // Absolute so command execution never substitutes the seat worktree's local copy.
+  return [required(Bun.which("atdd-bun") ?? undefined, "atdd-bun in the primary checkout node_modules/.bin or on PATH")];
+}
+
 async function retireDriver(root: string, projectName: string, assignee: string, id: string, allowAbsentWorktree = false) {
   const unfinished = (await allTasks(root, projectName))
-    .filter((entry) => entry.id !== id && entry.task.assignee === assignee && entry.task.status !== "done")
+    .filter((entry) => entry.id !== id && (entry.task.assignee === assignee || entry.task.coordinator === assignee) && entry.task.status !== "done")
     .map((entry) => entry.id);
   if (unfinished.length) throw new Error(`Cannot retire ${assignee}; it still owns unfinished tasks: ${unfinished.join(", ")}.`);
 
@@ -182,7 +199,7 @@ async function retireDriver(root: string, projectName: string, assignee: string,
   if (owner.retired) throw new Error(`Seat ${assignee} is already retired.`);
   try {
     const summary = (allowAbsentWorktree ? await absentUnregisteredWorktree(root, projectName, owner) : undefined)
-      ?? await runOutput(["atdd-bun", "worktree", "finish", "--delete-branch"], owner.worktree);
+      ?? await runOutput([...await retirementBun(root, projectName), "worktree", "finish", "--delete-branch"], owner.worktree);
     owner.retired = { task: `${projectName}/${id}`, completed_at: now(), summary };
     await atomicYaml(paths(root).seatFile(assignee), owner);
     const checkpoint: Checkpoint = {
@@ -206,20 +223,40 @@ async function retireDriver(root: string, projectName: string, assignee: string,
   await closeRetiredDriverWorkspace(root, owner);
 }
 
-/** Retires a driver whose assigned tasks are all already done. */
+/**
+ * Only main retires a coordinator, and never one seated on the primary checkout; a driver may also be
+ * retired by the coordinator of every task assigned to it.
+ */
+async function assertRetireAuthority(root: string, owner: Seat, actor: string, owned: ListedTask[]) {
+  const main = `main@${owner.project}`;
+  if (owner.role === "coordinator") {
+    if (actor !== main) throw new Error(`Only ${main} may retire coordinator ${owner.address}.`);
+    const primary = (await project(root, owner.project)).repository;
+    if (primary && await canonicalPath(owner.worktree) === await canonicalPath(primary)) {
+      throw new Error(`Cannot retire ${owner.address}; its worktree is the primary checkout.`);
+    }
+  } else if (actor !== main && owned.some((entry) => entry.task.coordinator !== actor)) {
+    throw new Error(`Only ${main} or the coordinator of every task assigned to ${owner.address} may retire it.`);
+  }
+}
+
+/**
+ * Retires a driver whose assigned tasks are all already done, or, for main only, a coordinator
+ * (never main or the primary checkout) whose coordinated and assigned tasks are all done.
+ */
 export async function retireSeat(root: string, address: string, args: string[]) {
   const resolved = await canonicalAddress(root, address);
   const actor = await canonicalAddress(root, required(words(args, "--by"), "--by"));
   const owner = await seat(root, resolved);
-  if (owner.role !== "driver") throw new Error(`Only driver seats can be retired; ${resolved} is ${owner.role}.`);
+  const coordinator = owner.role === "coordinator";
+  if (owner.role !== "driver" && !coordinator) throw new Error(`Only driver or coordinator seats can be retired; ${resolved} is ${owner.role}.`);
   if (owner.retired) throw new Error(`Seat ${resolved} is already retired.`);
-  const owned = (await allTasks(root, owner.project)).filter((entry) => entry.task.assignee === resolved);
-  if (!owned.length) throw new Error(`Cannot retire ${resolved}; it has no assigned tasks.`);
+  const owned = (await allTasks(root, owner.project))
+    .filter((entry) => entry.task.assignee === resolved || (coordinator && entry.task.coordinator === resolved));
+  if (!owned.length) throw new Error(`Cannot retire ${resolved}; it has no ${coordinator ? "coordinated or " : ""}assigned tasks.`);
   const unfinished = owned.filter((entry) => entry.task.status !== "done").map((entry) => entry.id);
   if (unfinished.length) throw new Error(`Cannot retire ${resolved}; it still owns unfinished tasks: ${unfinished.join(", ")}.`);
-  if (actor !== `main@${owner.project}` && owned.some((entry) => entry.task.coordinator !== actor)) {
-    throw new Error(`Only main@${owner.project} or the coordinator of every task assigned to ${resolved} may retire it.`);
-  }
+  await assertRetireAuthority(root, owner, actor, owned);
   await retireDriver(root, owner.project, resolved, owned.at(-1)!.id, true);
   console.log(`${resolved}  retired`);
 }
