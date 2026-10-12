@@ -344,7 +344,7 @@ async function launchEligibleTasks(root: string, record: Seat, address: string) 
     if (entry.task.status === "in_progress") return entry;
     if (entry.task.status !== "todo") return undefined;
     const dependencies = await Promise.all((entry.task.depends_on ?? []).map(async (id) => {
-      try { return (await readYaml<{ status?: string }>(paths(root).taskFile(record.project, id))).status === "done"; }
+      try { return terminal(await readYaml<{ status: Task["status"] }>(paths(root).taskFile(record.project, id))); }
       catch { return false; }
     }));
     return dependencies.every(Boolean) ? entry : undefined;

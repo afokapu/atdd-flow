@@ -103,7 +103,7 @@ export async function seatTasks(root: string, projectName: string, address: stri
 
 async function ready(root: string, projectName: string, task: Task) {
   const dependencies = await Promise.all((task.depends_on ?? []).map(async (id) => ({ id, task: await readTask(root, projectName, id) })));
-  return dependencies.filter((entry) => entry.task.status !== "done").map((entry) => entry.id);
+  return dependencies.filter((entry) => !terminal(entry.task)).map((entry) => entry.id);
 }
 
 function allProofs(task: Task) {

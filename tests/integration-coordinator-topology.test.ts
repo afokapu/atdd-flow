@@ -350,3 +350,22 @@ test("terminal dispositions leave no directive, routing, overview attention, or 
   expect(released).not.toContain("deferred:");
   expect(released).not.toContain("blocker:");
 });
+
+test("a task depending on a superseded or rejected task is ready, not waiting", async () => {
+  const { site, main, driver } = await roleNeutralFixture();
+  for (const [id, verb] of [["old-superseded", "supersede"], ["old-rejected", "reject"]] as const) {
+    await run(site, "task", "add", "demo", id, "--title", "Closed", "--coordinator", main, "--done-when", "Recorded.");
+    await run(site, "task", verb, "demo", id, "--by", main, "--reason", "Closed without delivery.");
+    const dependent = `after-${id}`;
+    await run(site, "task", "add", "demo", dependent, "--title", "Dependent", "--coordinator", main, "--assignee", driver, "--depends-on", id, "--done-when", "Recorded.");
+    expect(await run(site, "task", "list", "demo")).not.toContain(`waiting:${id}`);
+    expect(await run(site, "status", "task", "demo", dependent)).not.toContain("WAITING");
+    expect(await run(site, "task", "start", "demo", dependent, "--by", driver)).toBe(`${dependent}  in_progress`);
+    await run(site, "task", "prove", "demo", dependent, "--by", driver, "--item", "1", "--proof", "ok");
+    await run(site, "task", "review", "demo", dependent, "--by", driver);
+    await run(site, "task", "return", "demo", dependent, "--by", main);
+  }
+  await run(site, "task", "add", "demo", "open-dep", "--title", "Open", "--coordinator", main, "--done-when", "Recorded.");
+  await run(site, "task", "add", "demo", "after-open", "--title", "Dependent", "--coordinator", main, "--assignee", driver, "--depends-on", "open-dep", "--done-when", "Recorded.");
+  expect(await run(site, "task", "list", "demo")).toContain("waiting:open-dep");
+});

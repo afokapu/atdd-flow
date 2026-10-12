@@ -55,7 +55,7 @@ async function tasks(root: string, project: string): Promise<ListedTask[]> {
   const byId = new Map(entries.map((entry) => [entry.id, entry.task]));
   return entries.map((entry) => ({
     ...entry,
-    waiting: (entry.task.depends_on ?? []).filter((dependency) => byId.get(dependency)?.status !== "done"),
+    waiting: (entry.task.depends_on ?? []).filter((dependency) => !(byId.get(dependency) && terminal(byId.get(dependency)!))),
   }));
 }
 
