@@ -150,6 +150,10 @@ async function governedBase(root: string, projectName: string, coordinatorAddres
   return { coordinator: coordinator.address, branch, commit };
 }
 
+/**
+ * Assignment is accountability only: any existing, non-retired seat of the same project is eligible
+ * regardless of role. Validation happens before any task write, so a rejection leaves no partial record.
+ */
 async function eligibleAssignee(root: string, projectName: string, address: string) {
   const candidate = await seat(root, address);
   if (candidate.project !== projectName) throw new Error(`Task assignee ${candidate.address} does not belong to project ${projectName}.`);
@@ -584,6 +588,11 @@ export async function block(root: string, projectName: string, id: string, args:
   console.log(`${id}  blocked`);
 }
 
+/**
+ * Records a terminal coordinator decision (superseded or rejected). Only the task coordinator may
+ * decide, a completed or already-disposed task is never rewritten, and the decision keeps its
+ * author, time, and reason as immutable audit history.
+ */
 export async function disposition(root: string, projectName: string, id: string, kind: TerminalDisposition["kind"], args: string[]) {
   const task = await readTask(root, projectName, taskId(id));
   const actor = await canonicalAddress(root, required(words(args, "--by"), "--by"));
@@ -596,6 +605,10 @@ export async function disposition(root: string, projectName: string, id: string,
   console.log(`${id}  ${kind}`);
 }
 
+/**
+ * Holds a task behind a bounded deferral. The accountable owner, the trigger, and an ISO-8601 review
+ * point are mandatory, so a deferral can never become an indefinite open blocker; unblocking clears it.
+ */
 export async function defer(root: string, projectName: string, id: string, args: string[]) {
   const task = await readTask(root, projectName, taskId(id));
   const actor = await canonicalAddress(root, required(words(args, "--by"), "--by"));
