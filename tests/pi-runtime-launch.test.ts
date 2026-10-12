@@ -201,6 +201,17 @@ test("resume refuses a prior Pi still present, a mismatched reported path, or a 
   await expect(launchPiRuntime(root, seat, ["--pane", "w1:p2", "--herdr-session", "forge", "--resume"], { select: selectEconomy, command: fakeHerdr({ verifiedPath: sessionPath.replace(sessionId, "01a99999-6789-7abc-8def-0123456789ab") }).command })).rejects.toThrow("exact requested Pi session");
 });
 
+test("model selection considers only non-terminal tasks", async () => {
+  const root = await desk();
+  await atomicYaml(paths(root).taskFile("demo", "obsolete"), { schema: "atdd-workflow/task/v1", title: "Obsolete work", status: "superseded", coordinator: "coordinator@demo", assignee: seat, disposition: { kind: "superseded", by: "coordinator@demo", at: "2026-10-10T00:00:00.000Z", reason: "Replaced." }, done_when: [{ text: "Never delivered." }] });
+  const seen: string[][] = [];
+  await launchPiRuntime(root, seat, ["--pane", "w1:p2", "--herdr-session", "forge", "--dry-run"], {
+    select: async (input) => { seen.push(input.tasks.map((task) => task.id)); return selectEconomy(); },
+    command: fakeHerdr().command, sessionId: () => sessionId,
+  });
+  expect(seen).toEqual([["runtime"]]);
+});
+
 test("RED: cross-session or pane relocation cannot use legacy resume", async () => {
   const root = await desk();
   await priorRuntime(root);

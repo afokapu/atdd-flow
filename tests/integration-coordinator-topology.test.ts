@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { projectHerdrSeat } from "../src/multiplexer";
+import { nextDirective } from "../src/tasks";
 
 const roots: string[] = [];
 const cli = join(import.meta.dir, "..", "src", "cli.ts");
@@ -319,4 +320,33 @@ test("RED: terminal dispositions are coordinator-authored and defer is bounded",
   await fail(site, "task", "defer", "demo", "deferred", "--by", coordinator, "--reason", "Wait.");
   await run(site, "task", "defer", "demo", "deferred", "--by", coordinator, "--reason", "Wait for release.", "--owner", coordinator, "--trigger", "Release complete", "--review-at", "2026-11-01T00:00:00.000Z");
   expect(await taskText(site, "deferred")).toContain("review_at: 2026-11-01T00:00:00.000Z");
+});
+
+test("terminal dispositions leave no directive, routing, overview attention, or stale deferral", async () => {
+  const { site, main, driver } = await roleNeutralFixture();
+  const options = ["--coordinator", main, "--assignee", driver, "--done-when", "Recorded."];
+  await run(site, "task", "add", "demo", "closing", "--title", "Closing work", ...options);
+  await run(site, "task", "start", "demo", "closing", "--by", driver);
+  const thread = await run(site, "thread", "start", "--with", `${main},${driver}`, "--subject", "Routing");
+  await run(site, "post", thread, "--from", driver, "--to", main, "--body", "Live task may route to its coordinator.");
+  expect(await nextDirective(site, driver)).toMatchObject({ role: "assignee", lifecycle: "PLAN" });
+  expect(await nextDirective(site, main)).toBeUndefined();
+  expect(await run(site, "status", "project", "demo")).toContain("demo/closing");
+
+  await run(site, "task", "supersede", "demo", "closing", "--by", main, "--reason", "Replaced.");
+  expect(await nextDirective(site, driver)).toBeUndefined();
+  expect(await nextDirective(site, main)).toBeUndefined();
+  expect(await fail(site, "post", thread, "--from", driver, "--to", main, "--body", "Terminal task grants no route.")).toContain("may message only a coordinator");
+  const overview = await run(site, "status", "project", "demo");
+  expect(overview).not.toContain("demo/closing");
+  expect(overview).toContain("closed without delivery");
+  expect(await run(site, "status", "task", "demo", "closing")).toContain("Closed by terminal disposition (superseded)");
+
+  await run(site, "task", "add", "demo", "held", "--title", "Held work", "--coordinator", main, "--done-when", "Recorded.");
+  await run(site, "task", "defer", "demo", "held", "--by", main, "--reason", "Wait.", "--owner", main, "--trigger", "Release", "--review-at", "2026-11-01T00:00:00.000Z");
+  expect(await taskText(site, "held")).toContain("deferred:");
+  await run(site, "task", "unblock", "demo", "held", "--by", main);
+  const released = await taskText(site, "held");
+  expect(released).not.toContain("deferred:");
+  expect(released).not.toContain("blocker:");
 });

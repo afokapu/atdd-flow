@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { atomicYaml, exists, now as workflowNow, paths, readYaml, required, seat } from "./core";
-import { type Task } from "./tasks";
+import { type Task, terminal } from "./tasks";
 import { post, startThread } from "./threads";
 
 type Option = "authorize-safe-fallback" | "provide-cross-project-decision" | "hold-or-resolve";
@@ -70,7 +70,7 @@ async function independent(root: string, entry: { project: string; id: string },
   return false;
 }
 function candidate(entry: { project: string; id: string; task: Task }): Candidate | undefined {
-  if (entry.task.status === "done" || !entry.task.blocker) return;
+  if (terminal(entry.task) || !entry.task.blocker) return;
   const material = classification(entry.task.blocker); if (!material) return;
   return { schema: "atdd-workflow/owner-alert/v1", state: "blocked", material_class: material, affected_tasks: [`${entry.project}/${entry.id}`], evidence: redactOwnerEvidence(entry.task.blocker),
     fallback: { state: "absent", evidence: "No independent checkpoint-active task is visibly executing in the affected project.", safe_automatic_action: "none" }, owner_options: options,

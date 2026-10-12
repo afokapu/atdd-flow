@@ -484,7 +484,7 @@ async function transition(root: string, projectName: string, id: string, next: T
     if (retire) await retireAssignee(root, projectName, id, task);
   }
   task.status = next;
-  if (next !== "in_progress") delete task.blocker;
+  if (next !== "in_progress") { delete task.blocker; delete task.deferred; }
   await writeTask(root, projectName, id, task);
   console.log(`${id}  ${next}`);
 }
@@ -626,6 +626,7 @@ export async function unblock(root: string, projectName: string, id: string, arg
   const { assertDependentsMayUnblock } = await import("./ephemeral-resources");
   await assertDependentsMayUnblock(root, { project: projectName, task: id });
   delete task.blocker;
+  delete task.deferred;
   await writeTask(root, projectName, id, task);
   console.log(`${id}  unblocked`);
 }
@@ -684,7 +685,7 @@ async function directiveFor(root: string, projectName: string, id: string, task:
       command: `atdd-flow task handoff ${projectName} ${id} --by ${address} --phase ${current} --evidence <message-or-reference>`,
     };
   }
-  if (task.coordinator === address && task.status !== "done") {
+  if (task.coordinator === address && !terminal(task)) {
     const as = { ...base, role: "coordinator" as const };
     if (task.blocker) return { ...as, lifecycle: "BLOCKED", action: `Resolve the blocker (${task.blocker}) and then unblock the task.`, command: `atdd-flow task unblock ${projectName} ${id} --by ${address}` };
     if (task.status === "review") return { ...as, lifecycle: "REVIEW", action: "Review the submitted task; complete it or return it to work.", command: `atdd-flow task open ${projectName} ${id}` };

@@ -1,6 +1,6 @@
 import { readdir } from "node:fs/promises";
 import { canonicalAddress, desk, exists, paths, readYaml, type Checkpoint, type Seat } from "./core";
-import { type Task, type TaskHandoff, type TaskStatus } from "./tasks";
+import { type Task, type TaskHandoff, type TaskStatus, terminal } from "./tasks";
 import { isRuntimeStateStale, readRuntimeState } from "./runtime-state";
 import { type Message, type Thread } from "./threads";
 
@@ -14,7 +14,7 @@ const useColor = Boolean(process.stdout.isTTY && !process.env.NO_COLOR && proces
 const paint = (text: string, code: number) => useColor ? `\u001B[${code}m${text}\u001B[0m` : text;
 const muted = (text: string) => paint(text, 2);
 const strong = (text: string) => paint(text, 1);
-const tone = (text: string, state: string) => paint(text, ({ BLOCKED: 31, RE_SEAT: 31, REVIEW: 33, WAITING: 33, ASSIGN: 36, VERIFY: 35, ACTIVE: 36, DONE: 32 } as Record<string, number>)[state] ?? 37);
+const tone = (text: string, state: string) => paint(text, ({ SUPERSEDED: 90, REJECTED: 90, BLOCKED: 31, RE_SEAT: 31, REVIEW: 33, WAITING: 33, ASSIGN: 36, VERIFY: 35, ACTIVE: 36, DONE: 32 } as Record<string, number>)[state] ?? 37);
 const truncate = (value: string, width: number) => value.length <= width ? value : `${value.slice(0, Math.max(1, width - 1))}…`;
 const dot = " · ";
 
@@ -99,10 +99,11 @@ function bar(done: number, total: number, width = 16) {
 }
 
 function stateName(status: TaskStatus) {
-  return ({ todo: "READY", in_progress: "ACTIVE", review: "REVIEW", done: "DONE" } as Record<TaskStatus, string>)[status];
+  return ({ todo: "READY", in_progress: "ACTIVE", review: "REVIEW", done: "DONE", superseded: "SUPERSEDED", rejected: "REJECTED" } as Record<TaskStatus, string>)[status];
 }
 
 function taskPhase(entry: ListedTask) {
+  if (terminal(entry.task)) return stateName(entry.task.status);
   if (entry.task.blocker) return "BLOCKED";
   if (entry.waiting.length) return "WAITING";
   return stateName(entry.task.status);
@@ -115,7 +116,7 @@ function handoffStateName(value: TaskHandoff["state"]) {
 function attentionForTask(entry: ListedTask, checkpointBySeat: Map<string, Checkpoint | undefined>): Attention | undefined {
   const { task } = entry;
   const inspect = `atdd-flow task open ${entry.project} ${entry.id}`;
-  if (task.status === "done") return undefined;
+  if (terminal(task)) return undefined;
   if (task.blocker) return {
     project: entry.project, id: entry.id, label: task.title, state: "BLOCKED", detail: task.blocker,
     command: inspect, priority: 0,
@@ -174,11 +175,12 @@ function printProjects(projects: string[], allTasks: ListedTask[], allSeats: Lis
     const tasks = allTasks.filter((entry) => entry.project === project);
     const seats = allSeats.filter((entry) => entry.project === project);
     const done = tasks.filter((entry) => entry.task.status === "done").length;
+    const closed = tasks.filter((entry) => terminal(entry.task)).length;
     const active = seats.filter((entry) => entry.checkpoint?.status === "active").length;
     const blocked = seats.filter((entry) => entry.checkpoint?.status === "blocked").length;
     const nameWidth = Math.min(22, Math.max(14, Math.floor(width / 4)));
-    const counts = `${done}/${tasks.length} done${active ? `${dot}${active} active` : ""}${blocked ? `${dot}${blocked} blocked` : ""}`;
-    console.log(`  ${strong(truncate(project, nameWidth).padEnd(nameWidth))} ${bar(done, tasks.length)}  ${counts}`);
+    const counts = `${done}/${tasks.length} done${closed > done ? `${dot}${closed - done} closed without delivery` : ""}${active ? `${dot}${active} active` : ""}${blocked ? `${dot}${blocked} blocked` : ""}`;
+    console.log(`  ${strong(truncate(project, nameWidth).padEnd(nameWidth))} ${bar(closed, tasks.length)}  ${counts}`);
   }
 }
 
@@ -311,7 +313,8 @@ async function taskDashboard(root: string, projectName: string, taskId: string) 
 
   rule("NEXT");
   let next: string;
-  if (entry.task.blocker) next = "Resolve the recorded blocker before changing state.";
+  if (terminal(entry.task)) next = `Closed by terminal disposition (${entry.task.status}); no further action.`;
+  else if (entry.task.blocker) next = "Resolve the recorded blocker before changing state.";
   else if (entry.waiting.length) next = "Complete the unmet dependencies first.";
   else if (entry.task.status === "review" && reviewRequired && !latestReview) next = `Coordinator: launch final review with \`atdd-flow behavioral-review launch ${projectName} ${taskId} --by ${entry.task.coordinator} --application <application> --placement <container>.\``;
   else if (entry.task.status === "review" && latestReview?.status === "pending") next = `Await reviewer ${latestReview.reviewer.address}; inspect with \`atdd-flow behavioral-review open ${projectName} ${taskId}.\``;
