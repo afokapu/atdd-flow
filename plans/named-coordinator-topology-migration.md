@@ -2,7 +2,7 @@
 
 ## Acceptance identity
 
-`acc:flow:E001-RED-001` is the RED acceptance for the explicit
+`acc:flow:E001-UNIT-001` is the isolated-Desk acceptance for the explicit
 `project migrate-named-coordinator-topology` command. It proves that an existing
 project can migrate only its generic coordinator role policy after the caller
 supplies the exact remote `main` baseline.
@@ -19,6 +19,6 @@ and named/generic seat, branch, or worktree collisions without side effects.
 ## RED witness
 
 `tests/named-coordinator-topology-migration.test.ts` carries
-`test:flow:named-coordinator-topology-migration:E001-RED-001` and asserts the
+`test:flow:named-coordinator-topology-migration:E001-UNIT-001` and asserts the
 command contract and every refusal boundary from this acceptance. The test is
-intentionally RED until the supported command exists.
+executes the supported command without touching a live Desk or consumer repository.

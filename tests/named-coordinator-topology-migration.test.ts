@@ -1,6 +1,6 @@
-// URN: test:flow:named-coordinator-topology-migration:E001-RED-001
-// Acceptance: acc:flow:E001-RED-001
-// Phase: RED
+// URN: test:flow:named-coordinator-topology-migration:E001-UNIT-001
+// Acceptance: acc:flow:E001-UNIT-001
+// Phase: UNIT
 // Layer: integration
 import { afterEach, expect, test } from "bun:test";
 import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -168,8 +168,6 @@ test("RED: migrates only policy after an exact remote-main baseline and preserve
 
   const migration = await invoke(subject.site, "project", "migrate-named-coordinator-topology", ...migrationArgs(subject));
   expect(migration.code, migration.stderr).toBe(0);
-  // RED sentinel: reaching this point means the absent command has appeared and RED must be replaced by GREEN.
-  expect.fail("RED: named-coordinator topology migration is not implemented");
   expect(migration.stdout).toBe("demo  named coordinator topology migrated");
 
   const migrated = Bun.YAML.parse(await Bun.file(subject.projectFile).text()) as { roles: Record<string, Record<string, string>> };
@@ -249,8 +247,7 @@ test("RED: rejects named seat, branch, worktree, and legacy-generic collisions a
   await expectRefusal(worktree, migrationArgs(worktree), "Named coordinator worktree collision");
 
   const generic = await fixture();
-  await Bun.write(generic.genericFile, Bun.YAML.stringify(coordinator("coordinator@demo", "integration/alpha", join(generic.worktrees, "alpha"))));
-  await writeSeat(generic, "coordinator.alpha", coordinator("coordinator.alpha@demo", "integration/alpha", join(generic.worktrees, "alpha")));
+  await writeSeat(generic, "coordinator.legacy-copy", coordinator("coordinator@demo", "main", generic.repository));
   await expectRefusal(generic, migrationArgs(generic), "Legacy generic coordinator collides");
 });
 

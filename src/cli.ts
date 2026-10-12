@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import { basename, resolve } from "node:path";
-import { init, initProject, configureProject, spawn, bind, useApplication, attach, describe, checkpoint, launchPiRuntime, migrate, openSeat, piExtensionPath } from "./seats";
+import { init, initProject, configureProject, migrateNamedCoordinatorTopology, spawn, bind, useApplication, attach, describe, checkpoint, launchPiRuntime, migrate, openSeat, piExtensionPath } from "./seats";
 import { createExactSessionAdoptionAuthorization } from "./adoption-authorizations";
 import { addParticipant, openThread, post, readMessage, receipt, result, startThread } from "./threads";
 import * as tasks from "./tasks";
@@ -25,6 +25,7 @@ Usage:
   atdd-flow desk migrate
   atdd-flow project init <project>
   atdd-flow project configure <project> [--repository <primary-checkout>] [--worktree-root <directory>]
+  atdd-flow project migrate-named-coordinator-topology <project> --baseline <40-lowercase-hex-remote-main-sha>
   atdd-flow spawn <project> <role> <name> [--worktree <path>] [--branch <branch>] [--agent <legacy-executable>]
   atdd-flow bind <address> [--application <application>] --address <native-address> [--session <name>] [--agent <executable>] [--worktree <path>] [--wake host|native]
   atdd-flow attach <address> [--application <application>] [--wake host|native]
@@ -95,7 +96,8 @@ async function main() {
     project: async () => {
       if (rest[0] === "init") return initProject(root, required(rest[1], "project"));
       if (rest[0] === "configure") return configureProject(root, required(rest[1], "project"), rest.slice(2));
-      throw new Error("Use `atdd-flow project init <project>` or `atdd-flow project configure <project> [--repository <primary-checkout>] [--worktree-root <directory>]`.");
+      if (rest[0] === "migrate-named-coordinator-topology") return migrateNamedCoordinatorTopology(root, required(rest[1], "project"), rest.slice(2));
+      throw new Error("Use `atdd-flow project init <project>`, `atdd-flow project configure <project> [--repository <primary-checkout>] [--worktree-root <directory>]`, or `atdd-flow project migrate-named-coordinator-topology <project> --baseline <40-lowercase-hex-remote-main-sha>`.");
     },
     spawn: () => spawn(root, required(rest[0], "project"), required(rest[1], "role"), required(rest[2], "name"), rest.slice(3)),
     bind: () => bind(root, required(rest[0], "address"), rest.slice(1)),

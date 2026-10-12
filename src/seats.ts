@@ -1,5 +1,5 @@
 import { existsSync, realpathSync } from "node:fs";
-import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { basename, dirname, join, resolve } from "node:path";
 import { discoverAddress, discoverHerdrLocator, notify } from "./adapters";
@@ -77,6 +77,102 @@ const configureUsage = "Use `atdd-flow project configure <project> [--repository
  * The supported way to declare an existing project's primary checkout and linked-worktree root.
  * Everything is validated before one atomic write; only those two project fields change.
  */
+type MigrationSeat = { folder: string; record: Seat };
+
+const namedTopologyMigrationUsage = "Use `atdd-flow project migrate-named-coordinator-topology <project> --baseline <40-lowercase-hex-remote-main-sha>`.";
+
+async function migrationSeats(root: string, config: Project): Promise<MigrationSeat[]> {
+  const directory = paths(root).seats(config.project);
+  if (!await exists(directory)) return [];
+  return Promise.all((await readdir(directory, { withFileTypes: true })).filter((entry) => entry.isDirectory()).map(async (entry) => ({
+    folder: entry.name,
+    record: await readYaml<Seat>(join(directory, entry.name, "seat.yaml")),
+  })));
+}
+
+/**
+ * Validates existing coordinator records without provisioning anything. A policy
+ * migration must preserve generic history while refusing ambiguous named resources.
+ */
+function assertMigrationTopology(config: Project, seats: MigrationSeat[]) {
+  const primary = resolve(config.repository!);
+  const root = resolve(config.worktree_root!);
+  const coordinators = seats.filter(({ record }) => record.role === "coordinator");
+  const genericAddress = `coordinator@${config.project}`;
+  const generic = coordinators.filter(({ record }) => record.address === genericAddress);
+  if (generic.length > 1 || generic.some(({ folder }) => folder !== "coordinator")) throw new Error("Legacy generic coordinator collides with another coordinator record.");
+
+  const named = coordinators.filter(({ record }) => record.address !== genericAddress);
+  for (const { record } of generic) for (const namedRecord of named) {
+    if (record.branch === namedRecord.branch || record.worktree === namedRecord.worktree) {
+      throw new Error("Legacy generic coordinator collides with a named coordinator resource.");
+    }
+  }
+  const addresses = new Set<string>(), branches = new Set<string>(), worktrees = new Set<string>();
+  for (const { record } of named) {
+    if (!record.address.match(new RegExp(`^coordinator\\.([a-z0-9_-]+)@${config.project}$`))) throw new Error("Named coordinator seat collision.");
+    if (addresses.has(record.address)) throw new Error("Named coordinator seat collision.");
+    addresses.add(record.address);
+    if (branches.has(record.branch)) throw new Error("Named coordinator branch collision.");
+    branches.add(record.branch);
+    const worktree = resolve(record.worktree);
+    if (worktrees.has(worktree)) throw new Error("Named coordinator worktree collision.");
+    worktrees.add(worktree);
+  }
+  for (const { record } of named) {
+    const stream = record.address.slice("coordinator.".length, -(`@${config.project}`).length);
+    const worktree = resolve(record.worktree);
+    if (record.branch !== `integration/${stream}` || worktree !== resolve(join(root, stream)) || worktree === primary) {
+      throw new Error("Named coordinator seat collision.");
+    }
+  }
+  for (const { record } of seats.filter(({ record }) => record.role !== "coordinator")) for (const namedRecord of named) {
+    if (record.branch === namedRecord.branch) throw new Error("Named coordinator branch collision.");
+    if (resolve(record.worktree) === resolve(namedRecord.worktree)) throw new Error("Named coordinator worktree collision.");
+  }
+}
+
+/**
+ * Migrates only an existing project's coordinator role template. Validation is
+ * read-only and precedes the one atomic policy write, so no resource can leak.
+ */
+export async function migrateNamedCoordinatorTopology(root: string, name: string, args: string[]) {
+  if (args.length !== 2 || args[0] !== "--baseline" || !args[1]) throw new Error(args.includes("--baseline") ? namedTopologyMigrationUsage : "Missing --baseline.");
+  const baseline = args[1]!;
+  if (!/^[0-9a-f]{40}$/.test(baseline)) throw new Error("--baseline must be a full lowercase SHA-1.");
+  if (!await exists(paths(root).projectFile(name))) throw new Error(`Project ${name} does not exist.`);
+  const config = await project(root, name);
+  if (!config.repository) throw new Error(`Project ${name} has no repository.`);
+  if (!config.worktree_root) throw new Error(`Project ${name} has no worktree_root.`);
+  const repository = resolve(config.repository), worktreeRoot = resolve(config.worktree_root);
+  const top = existsSync(repository) ? Bun.spawnSync(["git", "-C", repository, "rev-parse", "--show-toplevel"], { stdout: "pipe", stderr: "pipe" }) : undefined;
+  if (!top || top.exitCode !== 0 || realpathSync(top.stdout.toString().trim()) !== realpathSync(repository)) throw new Error(`Project ${name} repository is not a Git top level.`);
+  try { if (!(await stat(worktreeRoot)).isDirectory()) throw new Error(); }
+  catch { throw new Error(`Project ${name} has no worktree_root.`); }
+
+  const remote = (await runOutput(["git", "-C", repository, "ls-remote", "--exit-code", "origin", "refs/heads/main"])).trim().split(/\s+/)[0];
+  if (remote !== baseline) throw new Error(`Baseline ${baseline} does not equal origin/main.`);
+  try { await runOutput(["git", "-C", repository, "cat-file", "-e", `${baseline}^{commit}`]); }
+  catch { throw new Error(`Baseline ${baseline} is not available locally.`); }
+  assertMigrationTopology(config, await migrationSeats(root, config));
+
+  const coordinator = config.roles.coordinator;
+  if (!coordinator) throw new Error(`Project ${name} has no coordinator role policy.`);
+  const next: Project = {
+    ...config,
+    roles: {
+      ...config.roles,
+      coordinator: {
+        ...coordinator,
+        address: "coordinator.{name}@{project}", branch: "integration/{name}", base: "main", worktree: "{worktree_root}/{name}",
+      },
+    },
+  };
+  try { await atomicYaml(paths(root).projectFile(name), next); }
+  catch { throw new Error("Unable to atomically write migration policy."); }
+  console.log(`${name}  named coordinator topology migrated`);
+}
+
 export async function configureProject(root: string, name: string, args: string[]) {
   const config = await project(root, name);
   const values = new Map<string, string>();
