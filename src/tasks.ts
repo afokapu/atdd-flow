@@ -264,8 +264,8 @@ async function assertRetireAuthority(root: string, owner: Seat, actor: string, o
 }
 
 /**
- * Retires a driver whose assigned tasks are all already done, or, for main only, a coordinator
- * (never main or the primary checkout) whose coordinated and assigned tasks are all done.
+ * Retires a driver whose assigned tasks are all terminal (done, superseded, or rejected), or, for main only, a coordinator
+ * (never main or the primary checkout) whose coordinated and assigned tasks are all terminal.
  */
 export async function retireSeat(root: string, address: string, args: string[]) {
   const resolved = await canonicalAddress(root, address);
@@ -277,7 +277,7 @@ export async function retireSeat(root: string, address: string, args: string[]) 
   const owned = (await allTasks(root, owner.project))
     .filter((entry) => entry.task.assignee === resolved || (coordinator && entry.task.coordinator === resolved));
   if (!owned.length) throw new Error(`Cannot retire ${resolved}; it has no ${coordinator ? "coordinated or " : ""}assigned tasks.`);
-  const unfinished = owned.filter((entry) => entry.task.status !== "done").map((entry) => entry.id);
+  const unfinished = owned.filter((entry) => !terminal(entry.task)).map((entry) => entry.id);
   if (unfinished.length) throw new Error(`Cannot retire ${resolved}; it still owns unfinished tasks: ${unfinished.join(", ")}.`);
   await assertRetireAuthority(root, owner, actor, owned);
   await retireDriver(root, owner.project, resolved, owned.at(-1)!.id, true);
@@ -667,6 +667,7 @@ async function directiveFor(root: string, projectName: string, id: string, task:
   if (task.assignee === address) {
     const as = { ...base, role: "assignee" as const };
     if (task.status === "done") return { ...as, lifecycle: "DONE", action: "Perform DONE housekeeping only; start no new implementation." };
+    if (terminal(task)) return undefined;
     if (task.blocker) return { ...as, lifecycle: "BLOCKED", action: `Remain blocked and await coordinator resolution (${task.blocker}). Continue only independent required work.` };
     if (task.status === "review") return { ...as, lifecycle: "REVIEW", action: "Await coordinator review; do not continue implementation." };
     if (task.status === "todo") {
