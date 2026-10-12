@@ -246,8 +246,9 @@ content:
     review and writes a blocked checkpoint for investigation.
 
     Before working in or retiring a driver worktree, install that repository's local dependencies there.
-    Retirement resolves ATDD Bun from the worktree's local node_modules/.bin so it does not depend on a
-    developer's global executable installation.
+    Retirement runs in the seat worktree but resolves ATDD Bun from the primary checkout's local
+    node_modules/.bin, then the primary checkout's own source when it is the ATDD Bun package, then PATH.
+    It never uses the seat worktree's copy, which may pin an older toolkit that refuses its own retirement.
 
     Use the atdd-flow CLI to mutate workflow records. Read task, seat, checkpoint, and thread YAML
     before acting; do not treat terminal pane history, a multiplexer, an optional judgment helper, or an
