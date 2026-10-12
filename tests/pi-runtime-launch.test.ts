@@ -201,6 +201,28 @@ test("resume refuses a prior Pi still present, a mismatched reported path, or a 
   await expect(launchPiRuntime(root, seat, ["--pane", "w1:p2", "--herdr-session", "forge", "--resume"], { select: selectEconomy, command: fakeHerdr({ verifiedPath: sessionPath.replace(sessionId, "01a99999-6789-7abc-8def-0123456789ab") }).command })).rejects.toThrow("exact requested Pi session");
 });
 
+test("a TODO depending on a superseded or rejected task is launch-eligible", async () => {
+  for (const status of ["superseded", "rejected"]) {
+    const root = await desk();
+    const file = paths(root).taskFile("demo", "runtime");
+    const todo = await readYaml<Record<string, unknown>>(file);
+    await atomicYaml(paths(root).taskFile("demo", "closed"), { schema: "atdd-workflow/task/v1", title: "Closed", status, coordinator: "coordinator@demo", disposition: { kind: status, by: "coordinator@demo", at: "2026-10-10T00:00:00.000Z", reason: "Closed." }, done_when: [{ text: "Never." }] });
+    await atomicYaml(file, { ...todo, status: "todo", depends_on: ["closed"] });
+    await expect(launchPiRuntime(root, seat, ["--pane", "w1:p2", "--herdr-session", "forge", "--dry-run"], { select: selectEconomy, command: fakeHerdr().command, sessionId: () => sessionId })).resolves.toMatchObject({ dryRun: true });
+  }
+});
+
+test("model selection considers only non-terminal tasks", async () => {
+  const root = await desk();
+  await atomicYaml(paths(root).taskFile("demo", "obsolete"), { schema: "atdd-workflow/task/v1", title: "Obsolete work", status: "superseded", coordinator: "coordinator@demo", assignee: seat, disposition: { kind: "superseded", by: "coordinator@demo", at: "2026-10-10T00:00:00.000Z", reason: "Replaced." }, done_when: [{ text: "Never delivered." }] });
+  const seen: string[][] = [];
+  await launchPiRuntime(root, seat, ["--pane", "w1:p2", "--herdr-session", "forge", "--dry-run"], {
+    select: async (input) => { seen.push(input.tasks.map((task) => task.id)); return selectEconomy(); },
+    command: fakeHerdr().command, sessionId: () => sessionId,
+  });
+  expect(seen).toEqual([["runtime"]]);
+});
+
 test("RED: cross-session or pane relocation cannot use legacy resume", async () => {
   const root = await desk();
   await priorRuntime(root);

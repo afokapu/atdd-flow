@@ -4,7 +4,7 @@ import {
   type Checkpoint, type Seat, atomicYaml, canonicalAddress, exists, now, paths, project, readYaml, required, runOutput, seat, taskId, values, words,
 } from "./core";
 
-export type TaskStatus = "todo" | "in_progress" | "review" | "done";
+export type TaskStatus = "todo" | "in_progress" | "review" | "done" | "superseded" | "rejected";
 /** An optional, descriptive implementation phase; task status remains the lifecycle authority. */
 export type TaskPhase = "plan" | "red" | "green" | "refactor";
 export type HandoffState = "executing" | "awaiting_coordinator" | "awaiting_assignee";
@@ -22,6 +22,8 @@ export type CoordinatorTransfer = {
   exact_head: { branch: string; commit: string };
   effective_at: string;
 };
+export type TerminalDisposition = { kind: "superseded" | "rejected"; by: string; at: string; reason: string };
+export type DeferredDisposition = { by: string; at: string; reason: string; owner: string; trigger: string; review_at: string };
 export type Task = {
   schema: "atdd-workflow/task/v1";
   title: string;
@@ -36,20 +38,27 @@ export type Task = {
   phase?: TaskPhase;
   /** Absent on legacy tasks; evidence remains an opaque immutable message/reference. */
   handoff?: TaskHandoff;
-  /** Exact named-coordinator or main head from which an assigned driver is governed. */
+  /** Legacy topology evidence is preserved but is not created for role-neutral assignments. */
   governed_base?: GovernedBase;
   /** Absent on legacy tasks; later entries never rewrite earlier coordinator evidence. */
   coordinator_transfers?: CoordinatorTransfer[];
+  /** Immutable terminal coordinator decision. */
+  disposition?: TerminalDisposition;
+  /** Bounded hold with an accountable owner, trigger, and review point. */
+  deferred?: DeferredDisposition;
   done_when: DoneWhen[];
 };
 
 export type ListedTask = { id: string; task: Task };
+export const terminal = (task: Pick<Task, "status">) => task.status === "done" || task.status === "superseded" || task.status === "rejected";
 
 const transitions: Record<TaskStatus, TaskStatus[]> = {
   todo: ["in_progress"],
   in_progress: ["review"],
   review: ["in_progress", "done"],
   done: [],
+  superseded: [],
+  rejected: [],
 };
 
 function assertCoordinatorIntegrity(task: Task, id: string) {
@@ -94,7 +103,7 @@ export async function seatTasks(root: string, projectName: string, address: stri
 
 async function ready(root: string, projectName: string, task: Task) {
   const dependencies = await Promise.all((task.depends_on ?? []).map(async (id) => ({ id, task: await readTask(root, projectName, id) })));
-  return dependencies.filter((entry) => entry.task.status !== "done").map((entry) => entry.id);
+  return dependencies.filter((entry) => !terminal(entry.task)).map((entry) => entry.id);
 }
 
 function allProofs(task: Task) {
@@ -139,6 +148,24 @@ async function governedBase(root: string, projectName: string, coordinatorAddres
   const common = await runOutput(["git", "-C", driver.worktree, "merge-base", commit, driver.branch]);
   if (common !== commit) throw new Error(`Driver ${driver.address} is not based on the exact coordinator head ${commit}.`);
   return { coordinator: coordinator.address, branch, commit };
+}
+
+/**
+ * Assignment is accountability only: any existing, non-retired seat of the same project is eligible
+ * regardless of role. Validation happens before any task write, so a rejection leaves no partial record.
+ */
+async function eligibleAssignee(root: string, projectName: string, address: string) {
+  const candidate = await seat(root, address);
+  if (candidate.project !== projectName) throw new Error(`Task assignee ${candidate.address} does not belong to project ${projectName}.`);
+  if (candidate.retired) throw new Error(`Task assignee ${candidate.address} is retired.`);
+  return candidate;
+}
+
+/** Legacy topology evidence is recorded only when it is exactly provable; it never gates assignment. */
+async function evidenceBase(root: string, projectName: string, coordinator: string, assignee: Seat): Promise<GovernedBase | undefined> {
+  if (assignee.role !== "driver") return undefined;
+  try { return await governedBase(root, projectName, coordinator, assignee.address); }
+  catch { return undefined; }
 }
 
 async function retireAssignee(root: string, projectName: string, id: string, task: Task) {
@@ -191,7 +218,7 @@ async function retirementBun(root: string, projectName: string) {
 
 async function retireDriver(root: string, projectName: string, assignee: string, id: string, allowAbsentWorktree = false) {
   const unfinished = (await allTasks(root, projectName))
-    .filter((entry) => entry.id !== id && (entry.task.assignee === assignee || entry.task.coordinator === assignee) && entry.task.status !== "done")
+    .filter((entry) => entry.id !== id && (entry.task.assignee === assignee || entry.task.coordinator === assignee) && !terminal(entry.task))
     .map((entry) => entry.id);
   if (unfinished.length) throw new Error(`Cannot retire ${assignee}; it still owns unfinished tasks: ${unfinished.join(", ")}.`);
 
@@ -241,8 +268,8 @@ async function assertRetireAuthority(root: string, owner: Seat, actor: string, o
 }
 
 /**
- * Retires a driver whose assigned tasks are all already done, or, for main only, a coordinator
- * (never main or the primary checkout) whose coordinated and assigned tasks are all done.
+ * Retires a driver whose assigned tasks are all terminal (done, superseded, or rejected), or, for main only, a coordinator
+ * (never main or the primary checkout) whose coordinated and assigned tasks are all terminal.
  */
 export async function retireSeat(root: string, address: string, args: string[]) {
   const resolved = await canonicalAddress(root, address);
@@ -254,7 +281,7 @@ export async function retireSeat(root: string, address: string, args: string[]) 
   const owned = (await allTasks(root, owner.project))
     .filter((entry) => entry.task.assignee === resolved || (coordinator && entry.task.coordinator === resolved));
   if (!owned.length) throw new Error(`Cannot retire ${resolved}; it has no ${coordinator ? "coordinated or " : ""}assigned tasks.`);
-  const unfinished = owned.filter((entry) => entry.task.status !== "done").map((entry) => entry.id);
+  const unfinished = owned.filter((entry) => !terminal(entry.task)).map((entry) => entry.id);
   if (unfinished.length) throw new Error(`Cannot retire ${resolved}; it still owns unfinished tasks: ${unfinished.join(", ")}.`);
   await assertRetireAuthority(root, owner, actor, owned);
   await retireDriver(root, owner.project, resolved, owned.at(-1)!.id, true);
@@ -262,13 +289,14 @@ export async function retireSeat(root: string, address: string, args: string[]) 
 }
 
 export async function add(root: string, projectName: string, id: string, args: string[]) {
+  const normalizedId = taskId(id);
   await project(root, projectName);
+  if (await exists(paths(root).taskFile(projectName, normalizedId))) throw new Error(`Task ${normalizedId} already exists and cannot be replaced.`);
   const coordinator = await canonicalAddress(root, required(words(args, "--coordinator"), "--coordinator"));
   const assigneeValue = words(args, "--assignee");
   const assignee = assigneeValue ? await canonicalAddress(root, assigneeValue) : undefined;
   await seat(root, coordinator);
-  if (assignee) await seat(root, assignee);
-  const base = await governedBase(root, projectName, coordinator, assignee);
+  const base = assignee ? await evidenceBase(root, projectName, coordinator, await eligibleAssignee(root, projectName, assignee)) : undefined;
   const doneWhen = values(args, "--done-when").map((text) => ({ text }));
   if (!doneWhen.length) throw new Error("A task needs at least one --done-when criterion.");
   const dependsOn = words(args, "--depends-on")?.split(",").filter(Boolean).map(taskId);
@@ -284,8 +312,8 @@ export async function add(root: string, projectName: string, id: string, args: s
     ...(dependsOn?.length ? { depends_on: dependsOn } : {}),
     done_when: doneWhen,
   };
-  await writeTask(root, projectName, taskId(id), task);
-  console.log(id);
+  await writeTask(root, projectName, normalizedId, task);
+  console.log(normalizedId);
 }
 
 export async function assign(root: string, projectName: string, id: string, args: string[]) {
@@ -295,8 +323,7 @@ export async function assign(root: string, projectName: string, id: string, args
   if (task.status !== "todo") throw new Error(`Task ${id} can only be assigned while todo.`);
   if (task.assignee) throw new Error(`Task ${id} is already assigned to ${task.assignee}.`);
   const assignee = await canonicalAddress(root, required(words(args, "--assignee"), "--assignee"));
-  await seat(root, assignee);
-  const base = await governedBase(root, projectName, task.coordinator, assignee);
+  const base = await evidenceBase(root, projectName, task.coordinator, await eligibleAssignee(root, projectName, assignee));
   task.assignee = assignee;
   if (base) task.governed_base = base;
   await writeTask(root, projectName, id, task);
@@ -391,6 +418,7 @@ export async function transfer(root: string, projectName: string, id: string, ar
 
 export async function amend(root: string, projectName: string, id: string, args: string[]) {
   const task = await readTask(root, projectName, taskId(id));
+  if (task.disposition) throw new Error(`Task ${id} has a terminal disposition and cannot be amended.`);
   const title = words(args, "--title");
   const body = words(args, "--body");
   const source = words(args, "--source");
@@ -413,6 +441,7 @@ export async function amend(root: string, projectName: string, id: string, args:
  */
 export async function importCompleted(root: string, projectName: string, id: string, args: string[]) {
   const task = await readTask(root, projectName, taskId(id));
+  if (task.disposition) throw new Error(`Task ${id} has a terminal disposition and cannot be imported.`);
   const proofs = values(args, "--proof");
   if (!proofs.length) throw new Error("An imported completion needs at least one --proof reference.");
 
@@ -459,7 +488,7 @@ async function transition(root: string, projectName: string, id: string, next: T
     if (retire) await retireAssignee(root, projectName, id, task);
   }
   task.status = next;
-  if (next !== "in_progress") delete task.blocker;
+  if (next !== "in_progress") { delete task.blocker; delete task.deferred; }
   await writeTask(root, projectName, id, task);
   console.log(`${id}  ${next}`);
 }
@@ -550,12 +579,53 @@ export async function prove(root: string, projectName: string, id: string, args:
 
 export async function block(root: string, projectName: string, id: string, args: string[]) {
   const task = await readTask(root, projectName, taskId(id));
+  if (task.disposition) throw new Error(`Task ${id} has a terminal disposition and cannot be blocked.`);
   const actor = await canonicalAddress(root, required(words(args, "--by"), "--by"));
   if (actor !== task.assignee && actor !== task.coordinator) throw new Error(`Only the assignee or coordinator may block task ${id}.`);
   if (task.status === "done") throw new Error(`Completed task ${id} cannot be blocked.`);
   task.blocker = required(words(args, "--reason"), "--reason");
   await writeTask(root, projectName, id, task);
   console.log(`${id}  blocked`);
+}
+
+/**
+ * Records a terminal coordinator decision (superseded or rejected). Only the task coordinator may
+ * decide, a completed or already-disposed task is never rewritten, and the decision keeps its
+ * author, time, and reason as immutable audit history.
+ */
+export async function disposition(root: string, projectName: string, id: string, kind: TerminalDisposition["kind"], args: string[]) {
+  const task = await readTask(root, projectName, taskId(id));
+  const actor = await canonicalAddress(root, required(words(args, "--by"), "--by"));
+  if (actor !== task.coordinator) throw new Error(`Only ${task.coordinator} may ${kind} task ${id}.`);
+  if (task.disposition || task.status === "done") throw new Error(`Task ${id} already has terminal history and cannot be ${kind}.`);
+  task.status = kind;
+  task.disposition = { kind, by: actor, at: now(), reason: required(words(args, "--reason"), "--reason") };
+  delete task.blocker;
+  await writeTask(root, projectName, taskId(id), task);
+  console.log(`${id}  ${kind}`);
+}
+
+/**
+ * Holds a task behind a bounded deferral. The accountable owner, the trigger, and an ISO-8601 review
+ * point are mandatory, so a deferral can never become an indefinite open blocker; unblocking clears it.
+ */
+export async function defer(root: string, projectName: string, id: string, args: string[]) {
+  const task = await readTask(root, projectName, taskId(id));
+  const actor = await canonicalAddress(root, required(words(args, "--by"), "--by"));
+  if (actor !== task.coordinator) throw new Error(`Only ${task.coordinator} may defer task ${id}.`);
+  if (task.disposition || task.status === "done") throw new Error(`Task ${id} has terminal history and cannot be deferred.`);
+  const ownerValue = words(args, "--owner");
+  const trigger = words(args, "--trigger");
+  const reviewAt = words(args, "--review-at");
+  if (!ownerValue || !trigger || !reviewAt) throw new Error("A defer needs --owner, --trigger, and --review-at.");
+  if (Number.isNaN(Date.parse(reviewAt))) throw new Error("--review-at must be an ISO-8601 timestamp.");
+  const owner = await canonicalAddress(root, ownerValue);
+  if ((await seat(root, owner)).project !== projectName) throw new Error(`Deferred owner ${owner} does not belong to project ${projectName}.`);
+  const reason = required(words(args, "--reason"), "--reason");
+  task.deferred = { by: actor, at: now(), reason, owner, trigger, review_at: reviewAt };
+  task.blocker = `Deferred until ${reviewAt}: ${reason}`;
+  await writeTask(root, projectName, taskId(id), task);
+  console.log(`${id}  deferred`);
 }
 
 export async function unblock(root: string, projectName: string, id: string, args: string[]) {
@@ -569,6 +639,7 @@ export async function unblock(root: string, projectName: string, id: string, arg
   const { assertDependentsMayUnblock } = await import("./ephemeral-resources");
   await assertDependentsMayUnblock(root, { project: projectName, task: id });
   delete task.blocker;
+  delete task.deferred;
   await writeTask(root, projectName, id, task);
   console.log(`${id}  unblocked`);
 }
@@ -610,6 +681,7 @@ async function directiveFor(root: string, projectName: string, id: string, task:
   if (task.assignee === address) {
     const as = { ...base, role: "assignee" as const };
     if (task.status === "done") return { ...as, lifecycle: "DONE", action: "Perform DONE housekeeping only; start no new implementation." };
+    if (terminal(task)) return undefined;
     if (task.blocker) return { ...as, lifecycle: "BLOCKED", action: `Remain blocked and await coordinator resolution (${task.blocker}). Continue only independent required work.` };
     if (task.status === "review") return { ...as, lifecycle: "REVIEW", action: "Await coordinator review; do not continue implementation." };
     if (task.status === "todo") {
@@ -626,7 +698,7 @@ async function directiveFor(root: string, projectName: string, id: string, task:
       command: `atdd-flow task handoff ${projectName} ${id} --by ${address} --phase ${current} --evidence <message-or-reference>`,
     };
   }
-  if (task.coordinator === address && task.status !== "done") {
+  if (task.coordinator === address && !terminal(task)) {
     const as = { ...base, role: "coordinator" as const };
     if (task.blocker) return { ...as, lifecycle: "BLOCKED", action: `Resolve the blocker (${task.blocker}) and then unblock the task.`, command: `atdd-flow task unblock ${projectName} ${id} --by ${address}` };
     if (task.status === "review") return { ...as, lifecycle: "REVIEW", action: "Review the submitted task; complete it or return it to work.", command: `atdd-flow task open ${projectName} ${id}` };

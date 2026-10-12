@@ -9,7 +9,7 @@ import {
   required, run, runOutput, runtimeAddress, seat, taskId, words, yaml,
 } from "./core";
 import { type ModelSelectionInput, type ModelSelectionResponse, selectModel } from "./judgment";
-import { type Task, seatTasks } from "./tasks";
+import { type Task, seatTasks, terminal } from "./tasks";
 import { misplacedSeats, projectHerdrSeat } from "./multiplexer";
 import { isRuntimeStateStale, readRuntimeState } from "./runtime-state";
 import { resolveExactSessionAdoptionAuthorization } from "./adoption-authorizations";
@@ -344,7 +344,7 @@ async function launchEligibleTasks(root: string, record: Seat, address: string) 
     if (entry.task.status === "in_progress") return entry;
     if (entry.task.status !== "todo") return undefined;
     const dependencies = await Promise.all((entry.task.depends_on ?? []).map(async (id) => {
-      try { return (await readYaml<{ status?: string }>(paths(root).taskFile(record.project, id))).status === "done"; }
+      try { return terminal(await readYaml<{ status: Task["status"] }>(paths(root).taskFile(record.project, id))); }
       catch { return false; }
     }));
     return dependencies.every(Boolean) ? entry : undefined;
@@ -355,7 +355,7 @@ async function launchEligibleTasks(root: string, record: Seat, address: string) 
 async function chooseLaunchModel(root: string, config: Desk, record: Seat, portfolio: ModelPortfolio, select: (input: ModelSelectionInput) => Promise<ModelSelectionResponse> = selectModel) {
   const candidates = availableModelCandidates(config, portfolio);
   if (!candidates.length) throw new Error("No enabled model in models.yaml has an available executable.");
-  const work = (await seatTasks(root, record.project, record.address)).filter((entry) => entry.task.status !== "done");
+  const work = (await seatTasks(root, record.project, record.address)).filter((entry) => !terminal(entry.task));
   const selection = await select({
     seat: { address: record.address, role: record.role, ...(record.purpose ? { purpose: record.purpose } : {}) },
     tasks: work.map((entry) => ({

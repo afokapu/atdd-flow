@@ -299,6 +299,21 @@ test("RED: an already-DONE driver can be retired by its coordinator, which also 
   expect(calls).not.toContain("workspace close wPrimary");
 });
 
+test("an assignee whose only task is superseded can be retired by its coordinator", async () => {
+  const fixture = await desk(["obsolete"]);
+  const herdr = await fakeHerdr(fixture.root, [
+    { id: "wPrimary", label: "demo", path: fixture.repository },
+    { id: "wObsolete", label: "driver.obsolete@demo", path: join(fixture.worktrees, "obsolete") },
+  ]);
+  const environment = { ...herdr.environment, HERDR_SESSION: "chosen" };
+  await run(fixture.site, environment, "task", "add", "demo", "W-obsolete", "--title", "Obsolete", "--coordinator", "coordinator@demo", "--assignee", "driver.obsolete@demo", "--done-when", "Never delivered.");
+  await run(fixture.site, environment, "task", "supersede", "demo", "W-obsolete", "--by", "coordinator@demo", "--reason", "Replaced.");
+  await run(fixture.site, environment, "seat", "retire", "driver.obsolete@demo", "--by", fixture.coordinator);
+  await expect(stat(join(fixture.worktrees, "obsolete"))).rejects.toThrow();
+  expect(await run(fixture.site, environment, "open", "driver.obsolete@demo")).toContain("retired:");
+  expect(await herdr.calls()).toContain("--session chosen workspace close wObsolete");
+});
+
 test("guard: without close_inactive, status still reports stale workspaces but apply never closes them", async () => {
   const fixture = await mixedSession();
   const deskFile = join(fixture.site, "desk.yaml");

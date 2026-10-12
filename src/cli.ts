@@ -49,6 +49,8 @@ Usage:
   atdd-flow task handoff <project> <task-id> --by <assignee> --phase <plan|red|green|refactor> --evidence <message-or-reference>
   atdd-flow task respond <project> <task-id> --by <coordinator> --outcome <accept|return> --phase <plan|red|green|refactor>
   atdd-flow task block <project> <task-id> --by <address> --reason <text>
+  atdd-flow task supersede|reject <project> <task-id> --by <coordinator-address> --reason <text>
+  atdd-flow task defer <project> <task-id> --by <coordinator-address> --reason <text> --owner <address> --trigger <text> --review-at <ISO-8601>
   atdd-flow task unblock <project> <task-id> --by <coordinator-address>
   atdd-flow task list <project> [--coordinator <address>] [--assignee <address>]
   atdd-flow task open <project> <task-id>
@@ -132,10 +134,13 @@ async function main() {
       if (subcommand === "handoff") return tasks.submitHandoff(root, required(projectName, "project"), required(taskId, "task id"), tail);
       if (subcommand === "respond") return tasks.respondToHandoff(root, required(projectName, "project"), required(taskId, "task id"), tail);
       if (subcommand === "block") return tasks.block(root, required(projectName, "project"), required(taskId, "task id"), tail);
+      if (subcommand === "supersede") return tasks.disposition(root, required(projectName, "project"), required(taskId, "task id"), "superseded", tail);
+      if (subcommand === "reject") return tasks.disposition(root, required(projectName, "project"), required(taskId, "task id"), "rejected", tail);
+      if (subcommand === "defer") return tasks.defer(root, required(projectName, "project"), required(taskId, "task id"), tail);
       if (subcommand === "unblock") return tasks.unblock(root, required(projectName, "project"), required(taskId, "task id"), tail);
       if (subcommand === "list") return tasks.list(root, required(projectName, "project"), rest.slice(2));
       if (subcommand === "open") return tasks.open(root, required(projectName, "project"), required(taskId, "task id"));
-      throw new Error("Use `atdd-flow task add|assign|transfer|amend|import|start|prove|handoff|respond|review|return|done|block|unblock|list|open`.");
+      throw new Error("Use `atdd-flow task add|assign|transfer|amend|import|start|prove|handoff|respond|review|return|done|block|supersede|reject|defer|unblock|list|open`.");
     },
     seat: async () => {
       if (rest[0] === "retire") return tasks.retireSeat(root, required(rest[1], "address"), rest.slice(2));
