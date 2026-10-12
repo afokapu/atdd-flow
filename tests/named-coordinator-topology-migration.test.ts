@@ -1,3 +1,7 @@
+// URN: test:flow:named-coordinator-topology-migration:E001-RED-001
+// Acceptance: acc:flow:E001-RED-001
+// Phase: RED
+// Layer: integration
 import { afterEach, expect, test } from "bun:test";
 import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -144,8 +148,10 @@ async function expectRefusal(fixture: Fixture, args: string[], expected: string)
   const before = await snapshot(fixture);
   const result = await invoke(fixture.site, "project", "migrate-named-coordinator-topology", ...args);
   expect(result.code).not.toBe(0);
-  expect(`${result.stdout}\n${result.stderr}`).toContain(expected);
+  const output = `${result.stdout}\n${result.stderr}`;
+  expect(output).toContain(expected);
   expect(await snapshot(fixture)).toEqual(before);
+  return output;
 }
 
 function migrationArgs(fixture: Fixture, baseline = fixture.baseline) {
@@ -160,7 +166,11 @@ test("RED: migrates only policy after an exact remote-main baseline and preserve
   const subject = await fixture();
   const before = await snapshot(subject);
 
-  expect(await run(subject.site, "project", "migrate-named-coordinator-topology", ...migrationArgs(subject))).toBe("demo  named coordinator topology migrated");
+  const migration = await invoke(subject.site, "project", "migrate-named-coordinator-topology", ...migrationArgs(subject));
+  expect(migration.code, migration.stderr).toBe(0);
+  // RED sentinel: reaching this point means the absent command has appeared and RED must be replaced by GREEN.
+  expect.fail("RED: named-coordinator topology migration is not implemented");
+  expect(migration.stdout).toBe("demo  named coordinator topology migrated");
 
   const migrated = Bun.YAML.parse(await Bun.file(subject.projectFile).text()) as { roles: Record<string, Record<string, string>> };
   expect(migrated.roles.coordinator).toEqual({
@@ -180,7 +190,8 @@ test("RED: migrates only policy after an exact remote-main baseline and preserve
 
 test("RED: rejects malformed, missing, wrong, non-remote, and remote-only baselines without side effects", async () => {
   const subject = await fixture();
-  await expectRefusal(subject, ["demo"], "Missing --baseline.");
+  const missingBaseline = await expectRefusal(subject, ["demo"], "Missing --baseline.");
+  expect(missingBaseline).toContain("Missing --baseline.");
   await expectRefusal(subject, migrationArgs(subject, "not-a-sha"), "--baseline must be a full lowercase SHA-1.");
   await expectRefusal(subject, migrationArgs(subject, "0000000000000000000000000000000000000000"), "does not equal origin/main");
 
@@ -204,7 +215,8 @@ test("RED: rejects malformed, missing, wrong, non-remote, and remote-only baseli
 
 test("RED: rejects missing project, repository, or worktree root without writing policy", async () => {
   const subject = await fixture();
-  await expectRefusal(subject, ["missing", "--baseline", subject.baseline], "Project missing does not exist.");
+  const missingProject = await expectRefusal(subject, ["missing", "--baseline", subject.baseline], "Project missing does not exist.");
+  expect(missingProject).toContain("Project missing does not exist.");
 
   const withoutRepository = await fixture();
   const repositoryProject = Bun.YAML.parse(await Bun.file(withoutRepository.projectFile).text()) as Record<string, unknown>;
@@ -223,7 +235,8 @@ test("RED: rejects named seat, branch, worktree, and legacy-generic collisions a
   const subject = await fixture();
   await writeSeat(subject, "coordinator.alpha", coordinator("coordinator.alpha@demo", "integration/alpha", join(subject.worktrees, "alpha")));
   await writeSeat(subject, "coordinator.duplicate", coordinator("coordinator.alpha@demo", "integration/duplicate", join(subject.worktrees, "duplicate")));
-  await expectRefusal(subject, migrationArgs(subject), "Named coordinator seat collision");
+  const seatCollision = await expectRefusal(subject, migrationArgs(subject), "Named coordinator seat collision");
+  expect(seatCollision).toContain("Named coordinator seat collision");
 
   const branch = await fixture();
   await writeSeat(branch, "coordinator.alpha", coordinator("coordinator.alpha@demo", "integration/alpha", join(branch.worktrees, "alpha")));
