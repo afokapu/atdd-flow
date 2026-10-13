@@ -1,3 +1,6 @@
+// URN: test:atdd-flow:context-handover-session-replacement
+// Acceptance: acc:flow:E003-UNIT-001
+// Phase: UNIT
 import { expect, test } from "bun:test";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";

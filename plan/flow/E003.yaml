@@ -1,0 +1,5 @@
+urn: acc:flow:E003-UNIT-001
+phase: UNIT
+description: >-
+  A validated Path-A main-seat handover request refuses unauthorised or
+  mismatched source runtime tuples before successor launch.

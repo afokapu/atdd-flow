@@ -162,6 +162,7 @@ export async function requestHandoverReplacement(root: string, address: string, 
     throw new Error("Path-A replacement source tuple must exactly match the recorded live runtime.");
   }
   const target = { herdr_session: nonEmpty(words(args, "--herdr-session"), "--herdr-session"), pane: nonEmpty(words(args, "--target-pane"), "--target-pane"), cwd: targetCwd };
+  if (target.herdr_session !== source.herdr_session || target.pane !== source.pane) throw new Error("Path-A replacement target must be the exact released source pane.");
   const authorization = await resolveExactSessionAdoptionAuthorization(root, nonEmpty(words(args, "--authorization"), "--authorization"), {
     seat: resolved, pi_session: source.pi_session, pi_session_path: source.pi_session_path,
     source: { herdr_session: source.herdr_session, pane: source.pane }, target,
