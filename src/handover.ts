@@ -3,6 +3,8 @@ import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { atomicYaml, canonicalAddress, desk, exists, has, now, paths, project, readYaml, required, seat, words, yaml } from "./core";
 import { type Task, terminal } from "./tasks";
+import { resolveExactSessionAdoptionAuthorization } from "./adoption-authorizations";
+import { readRuntimeState } from "./runtime-state";
 
 export type Handover = {
   schema: "atdd-workflow/handover/v1";
@@ -97,7 +99,7 @@ export type HandoverReplacementRequest = {
   seat: string;
   task: string;
   handover: { id: string; sha256: string };
-  authorization: string;
+  authorization: { id: string; hash: string };
   source: { pi_session: string; pi_session_path: string; herdr_session: string; pane: string };
   target: { herdr_session: string; pane: string; cwd: string };
   created_at: string;
@@ -150,17 +152,28 @@ export async function requestHandoverReplacement(root: string, address: string, 
   const { record } = await exactMainTakeoverTask(root, resolved, nonEmpty(words(args, "--takeover-task"), "--takeover-task"));
   const targetCwd = resolve(nonEmpty(words(args, "--target-cwd"), "--target-cwd"));
   if (targetCwd !== resolve(record.worktree)) throw new Error("Path-A replacement target CWD must be the exact canonical main worktree.");
+  const source = {
+    pi_session: nonEmpty(words(args, "--source-pi-session"), "--source-pi-session"), pi_session_path: resolve(nonEmpty(words(args, "--source-pi-session-path"), "--source-pi-session-path")),
+    herdr_session: nonEmpty(words(args, "--source-herdr-session"), "--source-herdr-session"), pane: nonEmpty(words(args, "--source-pane"), "--source-pane"),
+  };
+  const locator = record.runtime?.addresses.herdr;
+  if (!record.runtime || typeof locator === "string" || locator?.session !== source.herdr_session || locator.pane !== source.pane
+    || record.runtime.pi_session !== source.pi_session || record.runtime.pi_session_path !== source.pi_session_path) {
+    throw new Error("Path-A replacement source tuple must exactly match the recorded live runtime.");
+  }
+  const target = { herdr_session: nonEmpty(words(args, "--herdr-session"), "--herdr-session"), pane: nonEmpty(words(args, "--target-pane"), "--target-pane"), cwd: targetCwd };
+  const authorization = await resolveExactSessionAdoptionAuthorization(root, nonEmpty(words(args, "--authorization"), "--authorization"), {
+    seat: resolved, pi_session: source.pi_session, pi_session_path: source.pi_session_path,
+    source: { herdr_session: source.herdr_session, pane: source.pane }, target,
+  });
   const request: HandoverReplacementRequest = {
     schema: "atdd-flow/context-handover-replacement-request/v1",
     seat: resolved,
     task: nonEmpty(words(args, "--takeover-task"), "--takeover-task"),
     handover: { id: handover.handover_id, sha256: createHash("sha256").update(handover.text).digest("hex") },
-    authorization: nonEmpty(words(args, "--authorization"), "--authorization"),
-    source: {
-      pi_session: nonEmpty(words(args, "--source-pi-session"), "--source-pi-session"), pi_session_path: resolve(nonEmpty(words(args, "--source-pi-session-path"), "--source-pi-session-path")),
-      herdr_session: nonEmpty(words(args, "--source-herdr-session"), "--source-herdr-session"), pane: nonEmpty(words(args, "--source-pane"), "--source-pane"),
-    },
-    target: { herdr_session: nonEmpty(words(args, "--herdr-session"), "--herdr-session"), pane: nonEmpty(words(args, "--target-pane"), "--target-pane"), cwd: targetCwd },
+    authorization,
+    source,
+    target,
     created_at: now(),
   };
   const file = handoverReplacementPath(root, resolved);
@@ -180,19 +193,25 @@ export async function resumedHandoverReplacement(root: string, address: string) 
   const resolved = await canonicalAddress(root, address);
   const [request, record] = await Promise.all([readHandoverReplacement(root, resolved), seat(root, resolved)]);
   const runtime = record.runtime;
+  const locator = runtime?.addresses.herdr;
+  const receipt = runtime?.launch_receipt && await exists(runtime.launch_receipt) ? await readYaml<Record<string, unknown>>(runtime.launch_receipt) : undefined;
+  const replacement = receipt?.handover_replacement as Record<string, unknown> | undefined;
+  const runtimeState = await readRuntimeState(root, resolved);
   const verified = [
     request.schema === "atdd-flow/context-handover-replacement-request/v1" && request.seat === resolved,
-    runtime?.application === "herdr",
-    runtime?.pi_session !== request.source.pi_session,
-    Boolean(runtime?.pi_session_path),
-    Boolean(runtime?.launch_receipt && await exists(runtime.launch_receipt)),
+    runtime?.application === "herdr" && runtime.wake === "native",
+    runtime?.pi_session !== request.source.pi_session && Boolean(runtime?.pi_session_path),
+    typeof locator !== "string" && locator?.session === request.target.herdr_session && locator?.pane === request.target.pane,
+    replacement?.successor_session === runtime?.pi_session && replacement?.request && JSON.stringify(replacement.request) === JSON.stringify(request),
+    Boolean(runtimeState && runtimeState.seat === resolved),
   ];
   const discrepancies = [
     !verified[0] ? "request" : undefined,
-    !verified[1] ? "application" : undefined,
-    !verified[2] ? "fresh Pi session" : undefined,
-    !verified[3] ? "Pi JSONL path" : undefined,
-    !verified[4] ? "launch receipt" : undefined,
+    !verified[1] ? "native delivery" : undefined,
+    !verified[2] ? "fresh Pi session/JSONL path" : undefined,
+    !verified[3] ? "target tuple" : undefined,
+    !verified[4] ? "successor receipt" : undefined,
+    !verified[5] ? "fresh heartbeat" : undefined,
   ].filter((entry): entry is string => Boolean(entry));
   console.log(`RESUMED; verified ${verified.filter(Boolean).length}/${verified.length}; discrepancies: ${discrepancies.join(", ") || "none"}.`);
   if (discrepancies.length) throw new Error("Path-A successor is not reconciled against the live Desk.");

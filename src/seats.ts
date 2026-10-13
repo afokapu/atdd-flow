@@ -625,8 +625,11 @@ export async function launchPiRuntime(root: string, address: string, args: strin
   const replacement = main ? await readHandoverReplacement(root, resolved).catch(() => {
     throw new Error(`${resolved} requires one validated Path-A replacement request; refusing runtime launch.`);
   }) : undefined;
-  if (replacement && replacement.source.pi_session === record.runtime?.pi_session) {
-    // The source remains the recorded writer until its Pi process releases the pane; the checks below fail closed before any start.
+  const recordedSource = record.runtime;
+  const recordedLocator = recordedSource?.addresses.herdr;
+  if (replacement && (!recordedSource || typeof recordedLocator === "string" || recordedSource.pi_session !== replacement.source.pi_session
+    || recordedSource.pi_session_path !== replacement.source.pi_session_path || recordedLocator?.session !== replacement.source.herdr_session || recordedLocator.pane !== replacement.source.pane)) {
+    throw new Error("Path-A replacement source tuple no longer matches the recorded runtime.");
   }
   const selection = await chooseLaunchModel(root, config, record, required(await modelPortfolio(root), "models.yaml for Pi runtime launch"), dependencies.select);
   const model = resolveModelCommand(config, selection.candidate);
@@ -648,6 +651,17 @@ export async function launchPiRuntime(root: string, address: string, args: strin
   const pane = projection.pane;
   if (replacement && (replacement.target.herdr_session !== herdrSession || replacement.target.pane !== pane || replacement.target.cwd !== resolve(record.worktree))) {
     throw new Error("Path-A replacement request does not match the exact projected target tuple.");
+  }
+  if (replacement) {
+    const [sourcePaneRaw, sourceProcessRaw] = await Promise.all([
+      command(herdr(replacement.source.herdr_session, "pane", "get", replacement.source.pane)),
+      command(herdr(replacement.source.herdr_session, "pane", "process-info", "--pane", replacement.source.pane)),
+    ]);
+    const sourcePane = paneReport(JSON.parse(sourcePaneRaw));
+    const sourceProcess = processReport(JSON.parse(sourceProcessRaw));
+    if (sourcePane.pane !== replacement.source.pane || sourcePane.agent || piProcess(sourceProcess.processes)) {
+      throw new Error("Path-A replacement requires the exact source Pi to have exited and been released.");
+    }
   }
   const [paneRaw, processRaw] = await Promise.all([command(herdr(herdrSession, "pane", "get", pane)), command(herdr(herdrSession, "pane", "process-info", "--pane", pane))]);
   const currentPane = paneReport(JSON.parse(paneRaw));
