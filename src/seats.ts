@@ -213,7 +213,7 @@ async function noBranch(config: Project, branch: string) {
   if (await probe.exited === 0) throw new Error(`Driver branch ${branch} already exists; refusing to reuse it.`);
 }
 
-async function taskCoordinatorBase(root: string, config: Project, task: Task) {
+async function taskCoordinatorBase(root: string, config: Project, task: Task, requireCleanCheckout = true) {
   const coordinatorAddress = await canonicalAddress(root, task.coordinator);
   const suffix = `@${config.project}`;
   if (!coordinatorAddress.endsWith(suffix)) throw new Error(`Task coordinator ${coordinatorAddress} is outside project ${config.project}.`);
@@ -235,15 +235,17 @@ async function taskCoordinatorBase(root: string, config: Project, task: Task) {
     throw new Error(`Task coordinator ${coordinator.address} must be main or a named coordinator.`);
   }
   if (coordinator.project !== config.project) throw new Error(`Task coordinator ${coordinator.address} is outside project ${config.project}.`);
+  const repository = required(config.repository, "project repository");
+  const branchHead = await runOutput(["git", "-C", repository, "rev-parse", branch]);
+  if (!requireCleanCheckout) return { coordinator, branch, commit: branchHead };
   if (await runOutput(["git", "-C", coordinator.worktree, "status", "--porcelain"])) {
     throw new Error(`Coordinator ${coordinator.address} worktree is dirty.`);
   }
   const checkedOut = await runOutput(["git", "-C", coordinator.worktree, "branch", "--show-current"]);
   if (checkedOut !== branch) throw new Error(`Coordinator ${coordinator.address} is not checked out at ${branch}.`);
   const head = await runOutput(["git", "-C", coordinator.worktree, "rev-parse", "HEAD"]);
-  const branchHead = await runOutput(["git", "-C", required(config.repository, "project repository"), "rev-parse", branch]);
   if (head !== branchHead) throw new Error(`Coordinator ${coordinator.address} head is stale relative to ${branch}.`);
-  return { coordinator, branch, commit: head };
+  return { coordinator, branch, commit: branchHead };
 }
 
 /** Creates a fresh driver and assigns its existing todo task from the task coordinator's exact head. */
@@ -252,6 +254,22 @@ async function spawnTaskDriver(root: string, config: Project, role: Role, name: 
     throw new Error("Task-aware driver spawn requires the canonical driver role topology.");
   }
   if (has(args, "--worktree") || has(args, "--branch")) throw new Error("Task-aware driver spawn derives its worktree and branch; do not provide --worktree or --branch.");
+  const baseArgument = words(args, "--base");
+  const dryRun = has(args, "--dry-run");
+  const explicit = args.includes("--base") || dryRun;
+  if (explicit) {
+    const allowed = new Set(["--task", "--base", "--dry-run"]);
+    const taskArgument = words(args, "--task");
+    const onlyExpectedValues = args.every((arg, index) => allowed.has(arg)
+      || (index > 0 && ["--task", "--base"].includes(args[index - 1]!)));
+    if (!onlyExpectedValues || args.filter((arg) => arg === "--task").length !== 1
+      || args.filter((arg) => arg === "--base").length !== 1
+      || args.filter((arg) => arg === "--dry-run").length > 1
+      || !taskArgument || taskArgument.startsWith("--")
+      || !baseArgument || !/^[0-9a-f]{40}$/.test(baseArgument)) {
+      throw new Error("Task-aware explicit base requires one --task <task-id> and one --base <full-40-lowercase-commit-sha>.");
+    }
+  }
   const id = taskId(required(words(args, "--task"), "--task"));
   const task = await readYaml<Task>(paths(root).taskFile(config.project, id));
   if (task.schema !== "atdd-workflow/task/v1") throw new Error(`Unsupported task schema: ${id}`);
@@ -263,7 +281,23 @@ async function spawnTaskDriver(root: string, config: Project, role: Role, name: 
   if (await exists(paths(root).seatFile(address))) throw new Error(`Driver seat ${address} already exists; refusing to reuse it.`);
   if (await exists(worktree)) throw new Error(`Driver worktree ${worktree} already exists; refusing to reuse it.`);
   await noBranch(config, branch);
-  const base = await taskCoordinatorBase(root, config, task);
+  // An explicit baseline is governed by the repository ref, never by a
+  // potentially dirty or stale coordinator checkout. Legacy spawn retains its
+  // existing clean-checkout guard and derives exactly as before.
+  const coordinatorBase = await taskCoordinatorBase(root, config, task, !baseArgument);
+  let base = coordinatorBase;
+  if (baseArgument) {
+    try { await runOutput(["git", "-C", required(config.repository, "project repository"), "cat-file", "-e", `${baseArgument}^{commit}`]); }
+    catch { throw new Error(`Explicit base ${baseArgument} does not exist locally in the configured repository.`); }
+    try { await run(["git", "-C", required(config.repository, "project repository"), "merge-base", "--is-ancestor", coordinatorBase.commit, baseArgument], true); }
+    catch { throw new Error(`Explicit base ${baseArgument} does not descend ${coordinatorBase.branch}.`); }
+    base = { ...coordinatorBase, commit: baseArgument };
+  }
+  if (dryRun) {
+    if (!baseArgument) throw new Error("--dry-run is supported only with explicit --base task-aware spawn.");
+    console.log(`${address}  dry-run ${id}  base ${base.commit}  branch ${branch}  worktree ${worktree}`);
+    return;
+  }
   const portfolio = await modelPortfolio(root);
   const requestedAgent = words(args, "--agent");
   if (portfolio && requestedAgent) throw new Error("--agent is a legacy pin and cannot be used when models.yaml owns model allocation.");
@@ -280,17 +314,23 @@ async function spawnTaskDriver(root: string, config: Project, role: Role, name: 
     await mkdir(dirname(worktree), { recursive: true });
     await run(["git", "-C", required(config.repository, "project repository"), "worktree", "add", "-b", branch, worktree, base.commit], true);
     created = true;
-    const current = await runOutput(["git", "-C", base.coordinator.worktree, "rev-parse", "HEAD"]);
-    const currentBranch = await runOutput(["git", "-C", required(config.repository, "project repository"), "rev-parse", base.branch]);
-    if (current !== base.commit || currentBranch !== base.commit) throw new Error(`Coordinator ${base.coordinator.address} advanced during driver provisioning.`);
+    const currentBranch = await runOutput(["git", "-C", required(config.repository, "project repository"), "rev-parse", coordinatorBase.branch]);
+    if (currentBranch !== coordinatorBase.commit) throw new Error(`Coordinator ${base.coordinator.address} advanced during driver provisioning.`);
+    if (!baseArgument) {
+      const current = await runOutput(["git", "-C", base.coordinator.worktree, "rev-parse", "HEAD"]);
+      if (current !== coordinatorBase.commit) throw new Error(`Coordinator ${base.coordinator.address} advanced during driver provisioning.`);
+    }
     await atomicYaml(paths(root).seatFile(address), record);
     await atomicYaml(paths(root).taskFile(config.project, id), task);
   } catch (error) {
-    if (created) await run(["git", "-C", required(config.repository, "project repository"), "worktree", "remove", "--force", worktree], true).catch(() => undefined);
+    if (created) {
+      await run(["git", "-C", required(config.repository, "project repository"), "worktree", "remove", "--force", worktree], true).catch(() => undefined);
+      await run(["git", "-C", required(config.repository, "project repository"), "branch", "-D", branch], true).catch(() => undefined);
+    }
     await rm(paths(root).seat(address), { recursive: true, force: true });
     throw error;
   }
-  console.log(`${address}  assigned ${id}  return ${base.branch}`);
+  console.log(`${address}  assigned ${id}  return ${base.branch}${baseArgument ? `  base ${base.commit}` : ""}`);
 }
 
 export async function spawn(root: string, projectName: string, roleName: string, name: string, args: string[]) {

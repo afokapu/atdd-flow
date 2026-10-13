@@ -1,9 +1,9 @@
 // URN: test:flow:explicit-baseline-governed-spawn:E002-RED-001
 // Acceptance: acc:flow:E002-RED-001
-// Phase: RED
+// Phase: UNIT
 // Layer: integration
 import { afterEach, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 
@@ -75,7 +75,7 @@ function spawnArgs(subject: Fixture, base = subject.base, extra: string[] = []) 
 
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
 
-test("RED: explicit base dry-run reports an exact proposal without Desk, ref, worktree, or runtime effects", async () => {
+test("GREEN: explicit base dry-run reports an exact proposal without Desk, ref, worktree, or runtime effects", async () => {
   const subject = await fixture(); const before = await snapshot(subject);
   const result = await invoke(subject.site, ...spawnArgs(subject, subject.base, ["--dry-run"]));
   expect(result.code, result.stderr).toBe(0);
@@ -83,27 +83,90 @@ test("RED: explicit base dry-run reports an exact proposal without Desk, ref, wo
   expect(await snapshot(subject)).toEqual(before);
 });
 
-test("RED: invalid explicit bases and invalid targets fail closed without partial effects", async () => {
+test("GREEN: malformed, missing, unrelated, and non-descendant explicit bases fail closed", async () => {
   const subject = await fixture();
-  const unrelated = await git(subject.repository, "rev-parse", "HEAD^");
-  for (const base of ["abc", "0".repeat(40), unrelated]) {
+  const nonDescendant = await git(subject.repository, "rev-parse", "HEAD^");
+  const unrelated = await git(subject.repository, "commit-tree", "HEAD^{tree}", "-m", "unrelated");
+  for (const base of ["abc", subject.base.slice(0, 12), "0".repeat(40), unrelated, nonDescendant]) {
     const before = await snapshot(subject); const result = await invoke(subject.site, ...spawnArgs(subject, base, ["--dry-run"]));
-    // The unsupported implementation currently accepts --base; this is an intentional RED behavioral witness.
-    if (result.code === 0) expect(true).toBe(false);
     expect(result.code).not.toBe(0); expect(await snapshot(subject)).toEqual(before);
   }
-  // GREEN must additionally cover missing base, dirty/existing targets, branch/worktree/seat collisions,
-  // unready/assigned/cross-project tasks, role/topology mismatch, and atomic post-write rollback.
+  const missingBefore = await snapshot(subject);
+  const missing = await invoke(subject.site, "spawn", "demo", "driver", "child", "--task", subject.task, "--dry-run");
+  expect(missing.code).not.toBe(0); expect(await snapshot(subject)).toEqual(missingBefore);
 });
 
-test("RED: explicit-base success creates only the exact governed target while legacy spawn remains unchanged without --base", async () => {
+test("GREEN: invalid targets, task state, and topology fail closed without Desk, ref, worktree, or runtime effects", async () => {
+  const collision = await fixture();
+  await mkdir(join(collision.worktrees, "child"));
+  const collisionBefore = await snapshot(collision);
+  expect((await invoke(collision.site, ...spawnArgs(collision, collision.base, ["--dry-run"]))).code).not.toBe(0);
+  expect(await snapshot(collision)).toEqual(collisionBefore);
+
+  const branch = await fixture();
+  await git(branch.repository, "branch", "delivery/child", "main");
+  const branchBefore = await snapshot(branch);
+  expect((await invoke(branch.site, ...spawnArgs(branch))).code).not.toBe(0);
+  expect(await snapshot(branch)).toEqual(branchBefore);
+
+  const seat = await fixture();
+  await run(seat.site, "spawn", "demo", "driver", "child");
+  const seatBefore = await snapshot(seat);
+  expect((await invoke(seat.site, ...spawnArgs(seat))).code).not.toBe(0);
+  expect(await snapshot(seat)).toEqual(seatBefore);
+
+  const assigned = await fixture();
+  const assignedTask = join(assigned.site, "work", "demo", "tasks", `${assigned.task}.yaml`);
+  const assignedRecord = Bun.YAML.parse(await Bun.file(assignedTask).text()) as Record<string, unknown>;
+  assignedRecord.status = "in_progress"; assignedRecord.assignee = "driver.elsewhere@demo";
+  await Bun.write(assignedTask, Bun.YAML.stringify(assignedRecord));
+  const assignedBefore = await snapshot(assigned);
+  expect((await invoke(assigned.site, ...spawnArgs(assigned))).code).not.toBe(0);
+  expect(await snapshot(assigned)).toEqual(assignedBefore);
+
+  const crossProject = await fixture();
+  const crossTask = join(crossProject.site, "work", "demo", "tasks", `${crossProject.task}.yaml`);
+  const crossRecord = Bun.YAML.parse(await Bun.file(crossTask).text()) as Record<string, unknown>;
+  crossRecord.coordinator = "main@other";
+  await Bun.write(crossTask, Bun.YAML.stringify(crossRecord));
+  const crossBefore = await snapshot(crossProject);
+  expect((await invoke(crossProject.site, ...spawnArgs(crossProject))).code).not.toBe(0);
+  expect(await snapshot(crossProject)).toEqual(crossBefore);
+
+  const topology = await fixture();
+  const projectFile = join(topology.site, "work", "demo", "project.yaml");
+  const project = Bun.YAML.parse(await Bun.file(projectFile).text()) as { roles: { driver: { branch: string } } };
+  project.roles.driver.branch = "delivery/not-{name}";
+  await Bun.write(projectFile, Bun.YAML.stringify(project));
+  const topologyBefore = await snapshot(topology);
+  expect((await invoke(topology.site, ...spawnArgs(topology))).code).not.toBe(0);
+  expect(await snapshot(topology)).toEqual(topologyBefore);
+});
+
+test("GREEN: a post-Git Desk write failure removes only the new branch, worktree, and seat", async () => {
   const subject = await fixture();
-  const result = await invoke(subject.site, ...spawnArgs(subject));
+  const taskDirectory = join(subject.site, "work", "demo", "tasks");
+  const before = await snapshot(subject);
+  await chmod(taskDirectory, 0o555);
+  try {
+    const result = await invoke(subject.site, ...spawnArgs(subject));
+    expect(result.code).not.toBe(0);
+  } finally {
+    await chmod(taskDirectory, 0o755);
+  }
+  expect(await snapshot(subject)).toEqual(before);
+});
+
+test("GREEN: explicit-base success creates only the exact governed target while legacy spawn remains unchanged without --base", async () => {
+  const subject = await fixture();
+  const explicitBase = await git(subject.repository, "commit-tree", `${subject.base}^{tree}`, "-p", subject.base, "-m", "descendant baseline");
+  await writeFile(join(subject.repository, "DIRTY.md"), "primary is deliberately dirty\n");
+  const result = await invoke(subject.site, ...spawnArgs(subject, explicitBase));
   expect(result.code, result.stderr).toBe(0);
-  expect(result.stdout).toBe(`driver.child@demo  assigned ${subject.task}  return main  base ${subject.base}`);
+  expect(result.stdout).toBe(`driver.child@demo  assigned ${subject.task}  return main  base ${explicitBase}`);
   const task = await Bun.file(join(subject.site, "work", "demo", "tasks", `${subject.task}.yaml`)).text();
-  expect(task).toContain(`commit: ${subject.base}`);
-  expect(await git(join(subject.worktrees, "child"), "rev-parse", "HEAD")).toBe(subject.base);
+  expect(task).toContain(`commit: ${explicitBase}`);
+  expect(await git(join(subject.worktrees, "child"), "rev-parse", "HEAD")).toBe(explicitBase);
 
   const legacy = await fixture();
   expect(await run(legacy.site, "spawn", "demo", "driver", "legacy", "--task", legacy.task)).toBe(`driver.legacy@demo  assigned ${legacy.task}  return main`);
