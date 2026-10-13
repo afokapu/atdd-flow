@@ -15,3 +15,5 @@ When the authorized work includes the `coder` profile, read `node_modules/@afoka
 
 A governed agent needs an assigned seat and role unless the operator explicitly requests general discussion. A coordinator assigns, coordinates, reviews, and checkpoints; a driver performs only assigned ready work, proves it, and submits review. Do not mutate coordination or repository state outside explicitly authorized scope. Never modify either toolkit or generated files.
 <!-- atdd-bun:end -->
+
+For context handovers, follow `conventions/atdd-workflow.workflow/atdd-workflow.workflow.lifecycle.convention.yaml`; before reporting `RESUMED`, verify the exact seat, session, pane, and receipt.
