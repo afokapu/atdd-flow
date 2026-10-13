@@ -7,7 +7,7 @@ import { clearStaleRuntimeState, clearRuntimeState, heartbeatRuntimeState, ownsR
 import { paths, readYaml, type Seat } from "../../src/core";
 import { directiveNotice, nextDirective } from "../../src/tasks";
 import { runtimeStartupInstruction } from "../../src/collaboration-policy";
-import { contextHandoverThreshold } from "../../src/handover";
+import { contextHandoverThreshold, readHandoverReplacement } from "../../src/handover";
 
 type Thread = { id?: unknown; participants?: unknown; subject?: unknown };
 export type Mail = { id?: unknown; from?: unknown; to?: unknown; subject?: unknown; created_at?: unknown };
@@ -352,6 +352,20 @@ export default function (pi: ExtensionAPI) {
       }, { triggerTurn: true, deliverAs: "followUp" });
     } catch { /* Desk policy is re-read on the next safe boundary. */ }
   });
+  pi.on("turn_end", async (_event, ctx) => {
+    const sourceSession = process.env.ATDD_FLOW_PI_SESSION;
+    if (!sourceSession) return;
+    try {
+      const request = await readHandoverReplacement(root, seat);
+      if (request.source.pi_session !== sourceSession) return;
+      pi.sendMessage({
+        customType: "atdd-flow-context-handover-replacement",
+        content: `SYSTEM: Validated Path-A request for ${seat} observed. The successor must not start until this Pi has shut down and Herdr reports the exact source pane released.`,
+        display: true, details: { seat, handover: request.handover.id, authority: "handover-replacement" },
+      }, { triggerTurn: true, deliverAs: "followUp" });
+      ctx.shutdown();
+    } catch { /* No validated replacement request exists for this source session. */ }
+  });
   pi.on("session_start", async (_event, ctx) => {
     runtime = createPiRuntime({ root, seat, deferActivation: true, deliver: async (mail, thread, path, sendIfOwned) => {
       if (!sendIfOwned) return false;
@@ -376,6 +390,16 @@ export default function (pi: ExtensionAPI) {
       activate: async () => {
         if (!await current.activate()) return;
         pi.sendMessage({ customType: "atdd-flow-start", content: runtimeStartupInstruction(seat), display: true, details: { seat, root } }, { triggerTurn: true, deliverAs: "followUp" });
+        try {
+          const request = await readHandoverReplacement(root, seat);
+          if (request.source.pi_session !== piSession) {
+            pi.sendMessage({
+              customType: "atdd-flow-context-handover-replacement",
+              content: `SYSTEM: Path-A handover ${request.handover.id} is injected for ${seat}. Read atdd-flow handover show ${seat}, reconcile the live Desk, then report RESUMED with verified/total counts and discrepancies.`,
+              display: true, details: { seat, handover: request.handover.id, authority: "handover-replacement" },
+            }, { triggerTurn: true, deliverAs: "followUp" });
+          }
+        } catch { /* This is an ordinary launch, not a Path-A successor. */ }
         await sendTaskDirective(pi, root, seat);
         if (ctx.hasUI) ctx.ui.notify(`ATDD Flow native mail active for ${seat}`, "info");
       },

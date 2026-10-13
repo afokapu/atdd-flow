@@ -103,7 +103,7 @@ export type HandoverReplacementRequest = {
   created_at: string;
 };
 
-const replacementPath = (root: string, address: string) => join(root, ".atdd-flow", "handover-replacements", `${encodeURIComponent(address)}.yaml`);
+export const handoverReplacementPath = (root: string, address: string) => join(root, ".atdd-flow", "handover-replacements", `${encodeURIComponent(address)}.yaml`);
 const nonEmpty = (value: string | undefined, flag: string) => required(value, flag).trim();
 
 /** The threshold is Desk policy, not an instruction from transient mail. */
@@ -163,16 +163,22 @@ export async function requestHandoverReplacement(root: string, address: string, 
     target: { herdr_session: nonEmpty(words(args, "--herdr-session"), "--herdr-session"), pane: nonEmpty(words(args, "--target-pane"), "--target-pane"), cwd: targetCwd },
     created_at: now(),
   };
-  const file = replacementPath(root, resolved);
+  const file = handoverReplacementPath(root, resolved);
   await mkdir(dirname(file), { recursive: true });
   await writeFile(file, yaml.print(request), { encoding: "utf8", flag: "wx" });
   console.log(`Recorded Path-A replacement request for ${resolved}.`);
 }
 
 /** Reports only a live receipt reconciliation; source archival remains an external, post-proof operation. */
+export async function readHandoverReplacement(root: string, address: string) {
+  const request = await readYaml<HandoverReplacementRequest>(handoverReplacementPath(root, address));
+  if (request.schema !== "atdd-flow/context-handover-replacement-request/v1" || request.seat !== address) throw new Error(`Invalid Path-A replacement request for ${address}.`);
+  return request;
+}
+
 export async function resumedHandoverReplacement(root: string, address: string) {
   const resolved = await canonicalAddress(root, address);
-  const [request, record] = await Promise.all([readYaml<HandoverReplacementRequest>(replacementPath(root, resolved)), seat(root, resolved)]);
+  const [request, record] = await Promise.all([readHandoverReplacement(root, resolved), seat(root, resolved)]);
   const runtime = record.runtime;
   const verified = [
     request.schema === "atdd-flow/context-handover-replacement-request/v1" && request.seat === resolved,
