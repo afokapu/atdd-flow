@@ -7,6 +7,7 @@ import { clearStaleRuntimeState, clearRuntimeState, heartbeatRuntimeState, ownsR
 import { paths, readYaml, type Seat } from "../../src/core";
 import { directiveNotice, nextDirective } from "../../src/tasks";
 import { runtimeStartupInstruction } from "../../src/collaboration-policy";
+import { contextHandoverThreshold } from "../../src/handover";
 
 type Thread = { id?: unknown; participants?: unknown; subject?: unknown };
 export type Mail = { id?: unknown; from?: unknown; to?: unknown; subject?: unknown; created_at?: unknown };
@@ -335,6 +336,22 @@ export default function (pi: ExtensionAPI) {
   const seat = process.env.ATDD_WORKFLOW_SEAT;
   if (!root || !seat) return;
   let runtime: ReturnType<typeof createPiRuntime> | undefined;
+  let handoverPrompted = false;
+  pi.on("turn_end", async (_event, ctx) => {
+    if (handoverPrompted) return;
+    const percent = ctx.getContextUsage()?.percent;
+    if (percent === null || percent === undefined) return;
+    try {
+      const threshold = await contextHandoverThreshold(root);
+      if (percent < threshold) return;
+      handoverPrompted = true;
+      pi.sendMessage({
+        customType: "atdd-flow-context-handover-replacement",
+        content: `SYSTEM: Context ${percent}% reached the Flow handover threshold (${threshold}%). Finish or undo the atomic step, record a validated handover, then stop new work; do not compact or release a session.`,
+        display: true, details: { seat, threshold, percent, authority: "handover" },
+      }, { triggerTurn: true, deliverAs: "followUp" });
+    } catch { /* Desk policy is re-read on the next safe boundary. */ }
+  });
   pi.on("session_start", async (_event, ctx) => {
     runtime = createPiRuntime({ root, seat, deferActivation: true, deliver: async (mail, thread, path, sendIfOwned) => {
       if (!sendIfOwned) return false;
