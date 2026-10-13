@@ -1,0 +1,6 @@
+urn: acc:flow:E002-RED-001
+phase: RED
+description: >-
+  A task-aware driver spawn accepts an explicit full commit baseline only when it
+  exists locally and descends the responsible governed head; dry-run and every
+  refusal leave Desk, refs, worktrees, and runtime unchanged.
