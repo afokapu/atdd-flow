@@ -282,6 +282,18 @@ coordinator to move `review → in_progress`. `ESCALATE` leaves the task in revi
 may explicitly block it) while authoritative intent is resolved. Only the coordinator can transition
 `review → done`.
 
+## Optional Linear one-way mirror
+
+Flow can project an explicitly allowlisted task or message to Linear while keeping Flow authoritative. The default is a deterministic dry run; a live projection additionally requires an owner-accepted pilot reference in the config, the exact same `--authorization` argument, and `LINEAR_API_KEY` in the process environment. It has no inbound command or webhook path.
+
+```sh
+atdd-flow linear mirror task demo delivery --config /secure/local/linear-mirror.yaml
+atdd-flow linear mirror task demo delivery --config /secure/local/linear-mirror.yaml \
+  --apply --authorization owner-approved-pilot
+```
+
+Mappings and body-free immutable receipts are written below the Desk's `.atdd-flow/linear-mirror/`; retrying reuses a canonical Flow ID instead of creating another Linear object. See [the discovery report and owner-reviewable pilot plan](docs/linear-one-way-mirror-pilot.adoc) for the allowlist, redaction, routing, status-map, and rollback contract. Never commit a Linear token or config containing one.
+
 ## Optional Jev helper
 
 Jev is read-only; it cannot mutate state, approve proof, or override ATDD Bun.

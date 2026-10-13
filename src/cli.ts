@@ -12,6 +12,7 @@ import * as reviews from "./reviews";
 import { status } from "./overview";
 import { multiplexer } from "./multiplexer";
 import * as cleanup from "./ephemeral-resources";
+import { linearCommand } from "./linear-cli";
 import * as ownerAlerts from "./owner-escalations";
 import { recordHandover, showHandover } from "./handover";
 
@@ -57,6 +58,9 @@ Usage:
   atdd-flow task open <project> <task-id>
   atdd-flow cleanup status <project>
   atdd-flow cleanup checklist <project> <task-id>
+  atdd-flow linear mirror authorize --config <file> --id <LMA-id> --by operator@desk
+  atdd-flow linear mirror task <project> <task-id> --config <file> [--apply --authorization <LMA-id>]
+  atdd-flow linear mirror message <project> <task-id> <thread-id> <message-id> --config <file> [--apply --authorization <LMA-id>]
   atdd-flow owner-alert scan --by <coordinator-or-main> [--re-notify-after-ms <milliseconds>]
   atdd-flow owner-alert deliver|acknowledge|execute|resolve <alert-id> --by <address> [--note <text>|--option <id>|--reason <text>]
   atdd-flow thread start --with <address,...> --subject <text> [--task <project/task-id>]
@@ -154,6 +158,7 @@ async function main() {
       if (subcommand === "checklist") return console.log(await cleanup.checklist(root, { project: required(projectName, "project"), task: required(taskId, "task id") }));
       throw new Error("Use `atdd-flow cleanup status <project>` or `atdd-flow cleanup checklist <project> <task-id>`.");
     },
+    linear: () => linearCommand(root, rest),
     "owner-alert": async () => {
       const [subcommand, alertId, ...tail] = rest;
       if (subcommand === "scan") {
