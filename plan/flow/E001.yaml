@@ -1,0 +1,6 @@
+urn: acc:flow:E001-UNIT-001
+phase: UNIT
+description: >-
+  An existing project's generic coordinator policy migrates only through the explicit
+  named-coordinator command after exact remote-main baseline validation; malformed
+  baselines and resource collisions leave Desk policy and repository resources unchanged.
