@@ -19,6 +19,8 @@ export type Desk = {
   herdr_session?: string;
   /** Optional multiplexer housekeeping; inactive driver workspaces are closed only when enabled. */
   multiplexer?: { close_inactive?: boolean };
+  /** Context percentage at which Pi asks its seat to prepare a durable replacement handover. */
+  context_handover?: { threshold_percent?: number };
   /** Named commands that model portfolio entries may resolve through. */
   executables?: Record<string, string>;
   aliases?: Record<string, string>;
