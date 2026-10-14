@@ -14,7 +14,7 @@ import { misplacedSeats, projectHerdrSeat } from "./multiplexer";
 import { isRuntimeStateStale, readRuntimeState } from "./runtime-state";
 import { resolveExactSessionAdoptionAuthorization } from "./adoption-authorizations";
 import { projectCollaborationPolicy } from "./collaboration-policy";
-import { readHandoverReplacement } from "./handover";
+import { readHandoverReplacement, type HandoverReplacementRequest } from "./handover";
 
 const lifecycleConventionPath = "conventions/atdd-workflow.workflow/atdd-workflow.workflow.lifecycle.convention.yaml";
 
@@ -496,6 +496,12 @@ async function launchEligibleTasks(root: string, record: Seat, address: string) 
   return eligible.filter((entry): entry is NonNullable<typeof entry> => Boolean(entry));
 }
 
+function replacementMatchesRuntime(runtime: Runtime | undefined, request: HandoverReplacementRequest) {
+  const locator = runtime?.addresses.herdr;
+  return typeof locator !== "string" && locator?.session === request.source.herdr_session && locator.pane === request.source.pane
+    && runtime?.pi_session === request.source.pi_session && runtime.pi_session_path === request.source.pi_session_path;
+}
+
 async function chooseLaunchModel(root: string, config: Desk, record: Seat, portfolio: ModelPortfolio, select: (input: ModelSelectionInput) => Promise<ModelSelectionResponse> = selectModel) {
   const candidates = availableModelCandidates(config, portfolio);
   if (!candidates.length) throw new Error("No enabled model in models.yaml has an available executable.");
@@ -625,12 +631,7 @@ export async function launchPiRuntime(root: string, address: string, args: strin
   const replacement = main ? await readHandoverReplacement(root, resolved).catch(() => {
     throw new Error(`${resolved} requires one validated Path-A replacement request; refusing runtime launch.`);
   }) : undefined;
-  const recordedSource = record.runtime;
-  const recordedLocator = recordedSource?.addresses.herdr;
-  if (replacement && (!recordedSource || typeof recordedLocator === "string" || recordedSource.pi_session !== replacement.source.pi_session
-    || recordedSource.pi_session_path !== replacement.source.pi_session_path || recordedLocator?.session !== replacement.source.herdr_session || recordedLocator.pane !== replacement.source.pane)) {
-    throw new Error("Path-A replacement source tuple no longer matches the recorded runtime.");
-  }
+  if (replacement && !replacementMatchesRuntime(record.runtime, replacement)) throw new Error("Path-A replacement source tuple no longer matches the recorded runtime.");
   const selection = await chooseLaunchModel(root, config, record, required(await modelPortfolio(root), "models.yaml for Pi runtime launch"), dependencies.select);
   const model = resolveModelCommand(config, selection.candidate);
   if (basename(model.agent) !== "pi") throw new Error(`Pi runtime launch requires a Pi candidate, received ${selection.candidate.id}.`);
