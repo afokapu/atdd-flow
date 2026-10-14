@@ -14,7 +14,7 @@ import { misplacedSeats, projectHerdrSeat } from "./multiplexer";
 import { isRuntimeStateStale, readRuntimeState } from "./runtime-state";
 import { resolveExactSessionAdoptionAuthorization } from "./adoption-authorizations";
 import { projectCollaborationPolicy } from "./collaboration-policy";
-import { isExactMainSeat, readHandoverReplacement, replacementMatchesRuntime } from "./handover";
+import { mainLaunchEligible, replacementForMainLaunch } from "./handover";
 
 const lifecycleConventionPath = "conventions/atdd-workflow.workflow/atdd-workflow.workflow.lifecycle.convention.yaml";
 
@@ -472,14 +472,13 @@ async function isExactNamedCoordinator(root: string, record: Seat, address: stri
 }
 
 async function launchEligibleTasks(root: string, record: Seat, address: string) {
-  const [coordinator, main] = await Promise.all([isExactNamedCoordinator(root, record, address), isExactMainSeat(root, record, address)]);
+  const coordinator = await isExactNamedCoordinator(root, record, address);
   const tasks = await seatTasks(root, record.project, record.address);
   const eligible = await Promise.all(tasks.map(async (entry) => {
     const accountable = record.role === "driver" ? entry.task.assignee === record.address
-      : coordinator ? entry.task.coordinator === record.address
-      : main && entry.task.coordinator === record.address && entry.task.assignee === record.address;
-    if (!accountable || entry.task.blocker) return undefined;
-    if (entry.task.status === "in_progress" && !main) return entry;
+      : coordinator && entry.task.coordinator === record.address;
+    if (!accountable && !await mainLaunchEligible(root, record, address, entry.task)) return undefined;
+    if (entry.task.status === "in_progress") return entry;
     if (entry.task.status !== "todo") return undefined;
     const dependencies = await Promise.all((entry.task.depends_on ?? []).map(async (id) => {
       try { return terminal(await readYaml<{ status: Task["status"] }>(paths(root).taskFile(record.project, id))); }
@@ -614,12 +613,9 @@ export async function launchPiRuntime(root: string, address: string, args: strin
   if (resume && ((requestedPane && requestedPane !== existingPane) || herdrSession !== existingSession)) {
     throw new Error("Resume cannot relocate a Pi session across a Herdr session or pane; use explicit exact-session adoption.");
   }
-  const [active, main] = await Promise.all([launchEligibleTasks(root, record, resolved), isExactMainSeat(root, record, resolved)]);
+  const active = await launchEligibleTasks(root, record, resolved);
   if (!active.length) throw new Error(`${resolved} has no launch-eligible task; refusing runtime launch.`);
-  const replacement = main ? await readHandoverReplacement(root, resolved).catch(() => {
-    throw new Error(`${resolved} requires one validated Path-A replacement request; refusing runtime launch.`);
-  }) : undefined;
-  if (replacement && !replacementMatchesRuntime(record.runtime, replacement)) throw new Error("Path-A replacement source tuple no longer matches the recorded runtime.");
+  const replacement = await replacementForMainLaunch(root, record, resolved);
   const selection = await chooseLaunchModel(root, config, record, required(await modelPortfolio(root), "models.yaml for Pi runtime launch"), dependencies.select);
   const model = resolveModelCommand(config, selection.candidate);
   if (basename(model.agent) !== "pi") throw new Error(`Pi runtime launch requires a Pi candidate, received ${selection.candidate.id}.`);

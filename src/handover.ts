@@ -127,6 +127,20 @@ export function replacementMatchesRuntime(runtime: Runtime | undefined, request:
     && runtime?.pi_session === request.source.pi_session && runtime.pi_session_path === request.source.pi_session_path;
 }
 
+export async function mainLaunchEligible(root: string, record: Seat, address: string, task: Task) {
+  return task.status === "todo" && !task.blocker && task.coordinator === address && task.assignee === address
+    && await isExactMainSeat(root, record, address);
+}
+
+export async function replacementForMainLaunch(root: string, record: Seat, address: string) {
+  if (!await isExactMainSeat(root, record, address)) return undefined;
+  const request = await readHandoverReplacement(root, address).catch(() => {
+    throw new Error(`${address} requires one validated Path-A replacement request; refusing runtime launch.`);
+  });
+  if (!replacementMatchesRuntime(record.runtime, request)) throw new Error("Path-A replacement source tuple no longer matches the recorded runtime.");
+  return request;
+}
+
 async function exactMainTakeoverTask(root: string, address: string, id: string) {
   const record = await seat(root, address);
   if (!await isExactMainSeat(root, record, address)) {
