@@ -2,11 +2,11 @@
 // Acceptance: acc:flow:E003-UNIT-001
 // Phase: UNIT
 import { expect, test } from "bun:test";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { atomicYaml, paths, readYaml } from "../src/core";
-import { handoverReplacementPath, requestHandoverReplacement, type HandoverReplacementRequest } from "../src/handover";
+import { handoverReplacementPath, replacementForMainLaunch, requestHandoverReplacement, type HandoverReplacementRequest } from "../src/handover";
 import { launchPiRuntime } from "../src/seats";
 import { createExactSessionAdoptionAuthorization } from "../src/adoption-authorizations";
 
@@ -79,7 +79,11 @@ type LegacySourceReports = {
   cwd: string;
   piProcesses: number;
 };
-type LegacyRequestDependencies = { command: (command: string[]) => Promise<string> };
+type LegacyRequestDependencies = {
+  command: (command: string[]) => Promise<string>;
+  at?: () => string;
+  publish?: (file: string, content: string) => Promise<void>;
+};
 const requestWithDependencies = requestHandoverReplacement as unknown as
   (root: string, address: string, args: string[], dependencies: LegacyRequestDependencies) => Promise<void>;
 
@@ -89,7 +93,12 @@ async function legacySourceFixture(overrides: Partial<LegacySourceReports> = {})
   const piSession = "01a131ca-1111-4111-8111-111111111111";
   const sessionPath = join(root, `legacy_${piSession}.jsonl`);
   const handover = "HANDOVER main@demo | 2026-10-14T07:00:00Z | handover-id H-legacy | supersedes none\nRuntime: herdr forge:w2:p6 | pi session 01a131ca-1111-4111-8111-111111111111 | model test/pi | context 80%\n\n1. SEAT, AUTHORITY, TOOLKIT AND HAZARDS\n- exact\n\n2. OPEN WORK AND IN-FLIGHT OPERATIONS\n- exact\n\n3. DEPENDENCIES (both directions)\n- none\n\n4. RESUME PROCEDURE AND NEXT ACTIONS\n- exact\n";
-  await atomicYaml(paths(root).desk, { schema: "atdd-workflow/desk/v1", desk: "demo", application: "herdr" });
+  const bin = join(root, "bin"), pi = join(bin, "pi");
+  await mkdir(bin);
+  await writeFile(pi, "#!/bin/sh\nexit 0\n");
+  await chmod(pi, 0o755);
+  await atomicYaml(paths(root).desk, { schema: "atdd-workflow/desk/v1", desk: "demo", application: "herdr", executables: { pi } });
+  await atomicYaml(paths(root).models, { schema: "atdd-workflow/models/v1", models: [{ id: "economy", executable: "pi", args: ["--model", "economy"] }] });
   await atomicYaml(paths(root).projectFile("demo"), { schema: "atdd-workflow/project/v1", project: "demo", repository: "/work/demo", roles: {} });
   await atomicYaml(paths(root).seatFile(address), { schema: "atdd-workflow/seat/v2", address, role: "main", project: "demo", worktree: "/work/demo", branch: "main", runtime: { application: "herdr", addresses: { herdr: pane } } });
   await atomicYaml(paths(root).handoverFile(address), { schema: "atdd-workflow/handover/v1", seat: address, handover_id: "H-legacy", supersedes: "none", recorded_at: "2026-10-14T07:00:00Z", text: handover });
@@ -101,6 +110,9 @@ async function legacySourceFixture(overrides: Partial<LegacySourceReports> = {})
   const command = async (command: string[]) => {
     calls.push(command);
     const operation = command.slice(3);
+    if (operation[0] === "workspace" && operation[1] === "list") return JSON.stringify({ result: { workspaces: [{ workspace_id: "w2", label: "demo", worktree: { checkout_path: "/work/demo" } }] } });
+    if (operation[0] === "tab" && operation[1] === "list") return JSON.stringify({ result: { tabs: [{ tab_id: "w2:t1", workspace_id: "w2", label: address }] } });
+    if (operation[0] === "pane" && operation[1] === "list") return JSON.stringify({ result: { panes: [{ pane_id: pane, tab_id: "w2:t1", label: address, agent: reports.agent, agent_status: "idle" }] } });
     if (operation[0] === "pane" && operation[1] === "get") return JSON.stringify({ result: { pane: { pane_id: reports.pane, agent: reports.agent, agent_status: "idle", agent_session: { kind: "path", value: reports.sessionPath }, cwd: reports.cwd } } });
     if (operation[0] === "pane" && operation[1] === "process-info") return JSON.stringify({ result: { process_info: { shell_pid: 42, foreground_processes: Array.from({ length: reports.piProcesses }, () => ({ name: "pi", argv0: "pi", cmdline: "pi" })) } } });
     if (operation[0] === "agent" && operation[1] === "get") return JSON.stringify({ result: { agent: { name: reports.agent, pane_id: reports.agentPane, agent_status: "idle" } } });
@@ -110,15 +122,27 @@ async function legacySourceFixture(overrides: Partial<LegacySourceReports> = {})
   return { root, address, args, command, calls, request: handoverReplacementPath(root, address), seatFile: paths(root).seatFile(address) };
 }
 
-const mutatingHerdrCommand = (command: string[]) => command.some((part) => ["run", "start", "bind", "attach", "apply"].includes(part));
+const mutatingHerdrCommand = (command: string[]) => command.some((part) => ["run", "start", "bind", "attach", "apply", "create", "rename"].includes(part));
+const verifiedAt = "2026-10-14T07:30:00.000Z";
+
+async function replacementArtifacts(root: string) {
+  try { return await readdir(join(root, ".atdd-flow", "handover-replacements")); }
+  catch { return []; }
+}
 
 test("RED: an authorized scalar legacy source can create only a verified replacement snapshot", async () => {
   const fixture = await legacySourceFixture();
   try {
     const before = await readFile(fixture.seatFile, "utf8");
-    await requestWithDependencies(fixture.root, fixture.address, fixture.args, { command: fixture.command });
+    await requestWithDependencies(fixture.root, fixture.address, fixture.args, { command: fixture.command, at: () => verifiedAt });
     const request = await readYaml<HandoverReplacementRequest & { legacy_source?: Record<string, unknown> }>(fixture.request);
-    expect(request).toMatchObject({ seat: fixture.address, authorization: { id: "A-legacy" }, source: { herdr_session: "forge", pane: "w2:p6" }, target: { cwd: "/work/demo" }, legacy_source: { agent: "flow-main-demo", cwd: "/work/demo" } });
+    expect(request.authorization.hash).toMatch(/^[a-f0-9]{64}$/);
+    expect(request).toMatchObject({
+      seat: fixture.address, authorization: { id: "A-legacy" },
+      source: { pi_session: "01a131ca-1111-4111-8111-111111111111", pi_session_path: join(fixture.root, "legacy_01a131ca-1111-4111-8111-111111111111.jsonl"), herdr_session: "forge", pane: "w2:p6" },
+      target: { cwd: "/work/demo" },
+      legacy_source: { authorization_hash: request.authorization.hash, pi_session: "01a131ca-1111-4111-8111-111111111111", pi_session_path: join(fixture.root, "legacy_01a131ca-1111-4111-8111-111111111111.jsonl"), herdr_session: "forge", pane: "w2:p6", cwd: "/work/demo", agent: "flow-main-demo", verified_at: verifiedAt },
+    });
     expect(await readFile(fixture.seatFile, "utf8")).toBe(before);
     expect(fixture.calls.map((command) => command.slice(3, 5).join(" "))).toEqual(expect.arrayContaining(["pane get", "pane process-info", "agent get"]));
     expect(fixture.calls.some(mutatingHerdrCommand)).toBe(false);
@@ -149,14 +173,33 @@ test("RED: legacy source observation mismatches fail closed without Desk or runt
   }
 });
 
-test("RED: legacy bootstrap requires the immutable authorization and unchanged scalar placement", async () => {
-  const unauthorized = await legacySourceFixture();
-  try {
-    const args = unauthorized.args.map((value) => value === "A-legacy" ? "A-missing" : value);
-    await expect(requestWithDependencies(unauthorized.root, unauthorized.address, args, { command: unauthorized.command })).rejects.toThrow("immutable operator authorization");
-    expect(await Bun.file(unauthorized.request).exists()).toBe(false);
-  } finally { await rm(unauthorized.root, { recursive: true, force: true }); }
+test("RED: invalid authorization is rejected before any live Herdr observation", async () => {
+  const cases: Array<[string, (fixture: Awaited<ReturnType<typeof legacySourceFixture>>) => Promise<string[]>]> = [
+    ["invalid", async (fixture) => fixture.args.map((value) => value === "A-legacy" ? "not-an-authorization" : value)],
+    ["missing", async (fixture) => fixture.args.map((value) => value === "A-legacy" ? "A-missing" : value)],
+    ["tampered", async (fixture) => {
+      const file = join(fixture.root, ".atdd-flow", "exact-session-adoption-authorizations", "A-legacy.yaml");
+      await writeFile(file, `${await readFile(file, "utf8")}\n# tampered\n`);
+      return fixture.args;
+    }],
+    ["reused", async (fixture) => {
+      await atomicYaml(join(fixture.root, ".atdd-flow", "runtime-launch", "used.yaml"), { schema: "atdd-flow/pi-runtime-launch-receipt/v1", relocation: { authorization: { id: "A-legacy" } } });
+      return fixture.args;
+    }],
+  ];
+  for (const [label, arrange] of cases) {
+    const fixture = await legacySourceFixture();
+    try {
+      const before = await readFile(fixture.seatFile, "utf8"), args = await arrange(fixture);
+      await expect(requestWithDependencies(fixture.root, fixture.address, args, { command: fixture.command }), label).rejects.toThrow("authorization");
+      expect(fixture.calls, `${label} authorization must resolve before Herdr observation`).toHaveLength(0);
+      expect(await Bun.file(fixture.request).exists()).toBe(false);
+      expect(await readFile(fixture.seatFile, "utf8")).toBe(before);
+    } finally { await rm(fixture.root, { recursive: true, force: true }); }
+  }
+});
 
+test("RED: legacy bootstrap requires unchanged scalar placement", async () => {
   const moved = await legacySourceFixture();
   try {
     const record = await readYaml<Record<string, any>>(moved.seatFile);
@@ -167,4 +210,61 @@ test("RED: legacy bootstrap requires the immutable authorization and unchanged s
     expect(await readFile(moved.seatFile, "utf8")).toBe(before);
     expect(moved.calls.some(mutatingHerdrCommand)).toBe(false);
   } finally { await rm(moved.root, { recursive: true, force: true }); }
+});
+
+test("RED: duplicate and failed atomic publication leave no new request, temp, receipt, or runtime effect", async () => {
+  const duplicate = await legacySourceFixture();
+  try {
+    await mkdir(dirname(duplicate.request), { recursive: true });
+    await writeFile(duplicate.request, "existing immutable request\n", { flag: "wx" });
+    const before = await readFile(duplicate.seatFile, "utf8");
+    await expect(requestWithDependencies(duplicate.root, duplicate.address, duplicate.args, { command: duplicate.command })).rejects.toThrow();
+    expect(await readFile(duplicate.request, "utf8")).toBe("existing immutable request\n");
+    expect(duplicate.calls).toHaveLength(0);
+    expect((await replacementArtifacts(duplicate.root)).filter((name) => name.includes("tmp"))).toEqual([]);
+    expect(await readFile(duplicate.seatFile, "utf8")).toBe(before);
+    expect(await Bun.file(join(duplicate.root, ".atdd-flow", "runtime-launch")).exists()).toBe(false);
+  } finally { await rm(duplicate.root, { recursive: true, force: true }); }
+
+  const failed = await legacySourceFixture();
+  try {
+    const before = await readFile(failed.seatFile, "utf8");
+    await expect(requestWithDependencies(failed.root, failed.address, failed.args, {
+      command: failed.command,
+      publish: async () => { throw new Error("injected atomic publication failure"); },
+    })).rejects.toThrow("injected atomic publication failure");
+    expect(await Bun.file(failed.request).exists()).toBe(false);
+    expect(await replacementArtifacts(failed.root)).toEqual([]);
+    expect(await readFile(failed.seatFile, "utf8")).toBe(before);
+    expect(failed.calls.some(mutatingHerdrCommand)).toBe(false);
+    expect(await Bun.file(join(failed.root, ".atdd-flow", "runtime-launch")).exists()).toBe(false);
+  } finally { await rm(failed.root, { recursive: true, force: true }); }
+});
+
+test("RED: a legacy snapshot is valid only for unchanged scalar state and still requires source release", async () => {
+  for (const runtime of [
+    { application: "herdr", addresses: { herdr: "w2:p9" } },
+    { application: "herdr", addresses: { herdr: "w2:p6" }, pi_session: "partial" },
+    { application: "herdr", addresses: { herdr: { session: "forge", pane: "w2:p6" } }, pi_session: "01a131ca-1111-4111-8111-111111111111", pi_session_path: "unexpected" },
+  ]) {
+    const fixture = await legacySourceFixture();
+    try {
+      await requestWithDependencies(fixture.root, fixture.address, fixture.args, { command: fixture.command, at: () => verifiedAt });
+      const record = await readYaml<Record<string, unknown>>(fixture.seatFile);
+      await atomicYaml(fixture.seatFile, { ...record, runtime });
+      await expect(replacementForMainLaunch(fixture.root, await readYaml(fixture.seatFile), fixture.address)).rejects.toThrow("source tuple");
+    } finally { await rm(fixture.root, { recursive: true, force: true }); }
+  }
+
+  const occupied = await legacySourceFixture();
+  try {
+    await requestWithDependencies(occupied.root, occupied.address, occupied.args, { command: occupied.command, at: () => verifiedAt });
+    occupied.calls.length = 0;
+    await expect(launchPiRuntime(occupied.root, occupied.address, ["--herdr-session", "forge", "--dry-run"], {
+      select: async () => ({ available: true as const, model: "fake-jev", selected_model: "economy", confidence: 0.93 }),
+      command: occupied.command,
+    })).rejects.toThrow("available shell pane");
+    expect(occupied.calls.some(mutatingHerdrCommand)).toBe(false);
+    expect(await Bun.file(join(occupied.root, ".atdd-flow", "runtime-launch")).exists()).toBe(false);
+  } finally { await rm(occupied.root, { recursive: true, force: true }); }
 });
