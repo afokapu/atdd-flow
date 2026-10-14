@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { atomicYaml, canonicalAddress, desk, exists, has, now, paths, project, readYaml, required, seat, words, yaml } from "./core";
+import { type Runtime, type Seat, atomicYaml, canonicalAddress, desk, exists, has, now, paths, project, readYaml, required, seat, words, yaml } from "./core";
 import { type Task, terminal } from "./tasks";
 import { resolveExactSessionAdoptionAuthorization } from "./adoption-authorizations";
 import { readRuntimeState } from "./runtime-state";
@@ -115,10 +115,21 @@ export async function contextHandoverThreshold(root: string) {
   return value;
 }
 
+export async function isExactMainSeat(root: string, record: Seat, address: string) {
+  if (record.address !== address || record.role !== "main" || address !== `main@${record.project}` || record.branch !== "main") return false;
+  const config = await project(root, record.project);
+  return Boolean(config.repository && resolve(record.worktree) === resolve(config.repository));
+}
+
+export function replacementMatchesRuntime(runtime: Runtime | undefined, request: HandoverReplacementRequest) {
+  const locator = runtime?.addresses.herdr;
+  return typeof locator !== "string" && locator?.session === request.source.herdr_session && locator.pane === request.source.pane
+    && runtime?.pi_session === request.source.pi_session && runtime.pi_session_path === request.source.pi_session_path;
+}
+
 async function exactMainTakeoverTask(root: string, address: string, id: string) {
   const record = await seat(root, address);
-  const config = await project(root, record.project);
-  if (record.role !== "main" || address !== `main@${record.project}` || record.branch !== "main" || !config.repository || resolve(record.worktree) !== resolve(config.repository)) {
+  if (!await isExactMainSeat(root, record, address)) {
     throw new Error(`Path-A replacement requires exact main@${record.project} primary-main topology.`);
   }
   let files: string[];
@@ -135,7 +146,7 @@ async function exactMainTakeoverTask(root: string, address: string, id: string) 
     return dependencies.every(Boolean) ? taskId : undefined;
   }))).filter((entry): entry is string => Boolean(entry));
   if (ready.length !== 1 || ready[0] !== id) throw new Error(`Path-A replacement requires exactly one ready self-assigned main takeover task; found: ${ready.join(", ") || "none"}.`);
-  return { record, config };
+  return { record };
 }
 
 /**
