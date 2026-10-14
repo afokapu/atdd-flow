@@ -137,8 +137,17 @@ export async function replacementForMainLaunch(root: string, record: Seat, addre
   const request = await readHandoverReplacement(root, address).catch(() => {
     throw new Error(`${address} requires one validated Path-A replacement request; refusing runtime launch.`);
   });
-  if (!replacementMatchesRuntime(record.runtime, request)) throw new Error("Path-A replacement source tuple no longer matches the recorded runtime.");
-  return request;
+  const task = await readYaml<Task>(paths(root).taskFile(record.project, request.task));
+  if (!replacementMatchesRuntime(record.runtime, request) || !await mainLaunchEligible(root, record, address, task)) {
+    throw new Error("Path-A replacement source tuple no longer matches the recorded runtime or ready main takeover task.");
+  }
+  return { request, task };
+}
+
+export function assertReplacementTarget(request: HandoverReplacementRequest, herdrSession: string, pane: string, worktree: string) {
+  if (request.target.herdr_session !== herdrSession || request.target.pane !== pane || request.target.cwd !== resolve(worktree)) {
+    throw new Error("Path-A replacement request does not match the exact released target tuple.");
+  }
 }
 
 async function exactMainTakeoverTask(root: string, address: string, id: string) {
