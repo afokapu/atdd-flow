@@ -225,9 +225,12 @@ function assertLegacyPane(observed: LegacyPaneObservation, source: HandoverRepla
   }
 }
 
-function assertLegacyAgent(raw: string, expectedAgent: string, expectedPane: string) {
-  const value = JSON.parse(raw), agent = object(result(value)?.agent) ?? result(value);
-  if (text(agent?.name) !== expectedAgent || text(agent?.pane_id) !== expectedPane) throw new Error("Legacy source bootstrap agent does not match the authorized source pane.");
+function legacyAgentName(raw: string, source: HandoverReplacementRequest["source"], cwd: string) {
+  const value = JSON.parse(raw), agent = object(result(value)?.agent) ?? result(value), session = object(agent?.agent_session);
+  const name = text(agent?.name), sessionPath = session?.kind === "path" ? text(session.value) : undefined, agentCwd = text(agent?.cwd);
+  if (!name || text(agent?.pane_id) !== source.pane || text(agent?.agent) !== "pi" || !sessionPath || resolve(sessionPath) !== source.pi_session_path
+    || !agentCwd || resolve(agentCwd) !== cwd) throw new Error("Legacy source bootstrap Pi agent does not match the authorized source pane/session/path/cwd.");
+  return name;
 }
 
 function assertSinglePiWriter(raw: string) {
@@ -242,12 +245,12 @@ async function verifyLegacySource(source: HandoverReplacementRequest["source"], 
   const pane = legacyPaneObservation(await command(herdr(source.herdr_session, "pane", "get", source.pane)));
   assertLegacyPane(pane, source, target.cwd);
   const [agentRaw, processRaw] = await Promise.all([
-    command(herdr(source.herdr_session, "agent", "get", pane.agent)),
+    command(herdr(source.herdr_session, "agent", "get", source.pane)),
     command(herdr(source.herdr_session, "pane", "process-info", "--pane", source.pane)),
   ]);
-  assertLegacyAgent(agentRaw, pane.agent, source.pane);
+  const agent = legacyAgentName(agentRaw, source, target.cwd);
   assertSinglePiWriter(processRaw);
-  return { authorization_hash: authorizationHash, ...source, cwd: target.cwd, agent: pane.agent, verified_at: dependencies.at?.() ?? now() };
+  return { authorization_hash: authorizationHash, ...source, cwd: target.cwd, agent, verified_at: dependencies.at?.() ?? now() };
 }
 
 function assertLegacySeat(record: Seat, source: HandoverReplacementRequest["source"]) {
