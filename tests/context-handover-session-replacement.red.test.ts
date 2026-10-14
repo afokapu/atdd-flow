@@ -74,7 +74,9 @@ test("GREEN: Path-A writes one create-only request only for the exact ready proj
 type LegacySourceReports = {
   pane: string;
   agent?: string;
+  agentName: string;
   agentPane: string;
+  agentSessionPath?: string;
   sessionPath: string;
   cwd: string;
   piProcesses: number;
@@ -105,7 +107,10 @@ async function legacySourceFixture(overrides: Partial<LegacySourceReports> = {})
   await atomicYaml(paths(root).taskFile("demo", "takeover"), { schema: "atdd-workflow/task/v1", title: "Take over legacy source", status: "todo", coordinator: address, assignee: address, done_when: [{ text: "Take over safely." }] });
   await writeFile(sessionPath, "legacy source");
   await createExactSessionAdoptionAuthorization(root, "A-legacy", ["--by", "operator@desk", "--seat", address, "--pi-session", piSession, "--pi-session-path", sessionPath, "--source-herdr-session", herdrSession, "--source-pane", pane, "--target-herdr-session", herdrSession, "--target-pane", pane, "--target-cwd", "/work/demo"]);
-  const reports: LegacySourceReports = { pane, agent: "flow-main-demo", agentPane: pane, sessionPath, cwd: "/work/demo", piProcesses: 1, ...overrides };
+  // Fakes mirror live Herdr shapes: pane/agent `agent` is the KIND ("pi"), only `agent get <pane-id>` carries `name`,
+  // kind labels are not agent targets, and the Pi writer is reported as `name: "node"`, `argv0: "pi"` with no cmdline.
+  const reports: LegacySourceReports = { pane, agent: "pi", agentName: "flow-main-demo", agentPane: pane, sessionPath, cwd: "/work/demo", piProcesses: 1, ...overrides };
+  const agentSession = (value: string) => ({ agent: "pi", kind: "path", source: "herdr:pi", value });
   const calls: string[][] = [];
   const command = async (command: string[]) => {
     calls.push(command);
@@ -113,9 +118,12 @@ async function legacySourceFixture(overrides: Partial<LegacySourceReports> = {})
     if (operation[0] === "workspace" && operation[1] === "list") return JSON.stringify({ result: { workspaces: [{ workspace_id: "w2", label: "demo", worktree: { checkout_path: "/work/demo" } }] } });
     if (operation[0] === "tab" && operation[1] === "list") return JSON.stringify({ result: { tabs: [{ tab_id: "w2:t1", workspace_id: "w2", label: address }] } });
     if (operation[0] === "pane" && operation[1] === "list") return JSON.stringify({ result: { panes: [{ pane_id: pane, tab_id: "w2:t1", label: address, agent: reports.agent, agent_status: "idle" }] } });
-    if (operation[0] === "pane" && operation[1] === "get") return JSON.stringify({ result: { pane: { pane_id: reports.pane, agent: reports.agent, agent_status: "idle", agent_session: { kind: "path", value: reports.sessionPath }, cwd: reports.cwd } } });
-    if (operation[0] === "pane" && operation[1] === "process-info") return JSON.stringify({ result: { process_info: { shell_pid: 42, foreground_processes: Array.from({ length: reports.piProcesses }, () => ({ name: "pi", argv0: "pi", cmdline: "pi" })) } } });
-    if (operation[0] === "agent" && operation[1] === "get") return JSON.stringify({ result: { agent: { name: reports.agent, pane_id: reports.agentPane, agent_status: "idle" } } });
+    if (operation[0] === "pane" && operation[1] === "get") return JSON.stringify({ id: "cli:pane:get", result: { pane: { pane_id: reports.pane, agent: reports.agent, agent_status: "idle", agent_session: agentSession(reports.sessionPath), cwd: reports.cwd, label: address }, type: "pane_info" } });
+    if (operation[0] === "pane" && operation[1] === "process-info") return JSON.stringify({ id: "cli:pane:process_info", result: { process_info: { pane_id: pane, shell_pid: 42, foreground_processes: Array.from({ length: reports.piProcesses }, (_, index) => ({ argv0: "pi", cwd: reports.cwd, name: "node", pid: 100 + index })) }, type: "pane_process_info" } });
+    if (operation[0] === "agent" && operation[1] === "get") {
+      if (operation[2] !== pane) throw new Error(JSON.stringify({ error: { code: "agent_not_found", message: `agent target ${operation[2]} not found` }, id: "cli:agent:get" }));
+      return JSON.stringify({ id: "cli:agent:get", result: { agent: { agent: reports.agent, agent_session: agentSession(reports.agentSessionPath ?? reports.sessionPath), agent_status: "idle", cwd: reports.cwd, name: reports.agentName, pane_id: reports.agentPane }, type: "agent_info" } });
+    }
     throw new Error(`Unexpected Herdr command: ${command.join(" ")}`);
   };
   const args = ["--legacy-source-bootstrap", "--handover", "H-legacy", "--authorization", "A-legacy", "--takeover-task", "takeover", "--source-pi-session", piSession, "--source-pi-session-path", sessionPath, "--source-herdr-session", herdrSession, "--source-pane", pane, "--herdr-session", herdrSession, "--target-pane", pane, "--target-cwd", "/work/demo"];
@@ -145,6 +153,7 @@ test("RED: an authorized scalar legacy source can create only a verified replace
     });
     expect(await readFile(fixture.seatFile, "utf8")).toBe(before);
     expect(fixture.calls.map((command) => command.slice(3, 5).join(" "))).toEqual(expect.arrayContaining(["pane get", "pane process-info", "agent get"]));
+    expect(fixture.calls).toContainEqual(["herdr", "--session", "forge", "agent", "get", "w2:p6"]);
     expect(fixture.calls.some(mutatingHerdrCommand)).toBe(false);
     expect(await Bun.file(join(fixture.root, ".atdd-flow", "runtime-launch")).exists()).toBe(false);
   } finally { await rm(fixture.root, { recursive: true, force: true }); }
@@ -155,6 +164,8 @@ test("RED: legacy source observation mismatches fail closed without Desk or runt
     ["pane", { pane: "w2:p7" }],
     ["session path", { sessionPath: "/wrong/session.jsonl" }],
     ["agent pane", { agentPane: "w2:p7" }],
+    ["agent kind", { agent: "codex" }],
+    ["agent session path", { agentSessionPath: "/wrong/agent-session.jsonl" }],
     ["cwd", { cwd: "/wrong/worktree" }],
     ["missing writer", { piProcesses: 0 }],
     ["duplicate writer", { piProcesses: 2 }],
