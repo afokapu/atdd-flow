@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
-import { type Runtime, type Seat, atomicYaml, canonicalAddress, desk, exists, has, now, paths, project, readYaml, required, seat, words, yaml } from "./core";
+import { link, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { basename, dirname, join, resolve } from "node:path";
+import { type Runtime, type Seat, atomicYaml, canonicalAddress, desk, exists, has, now, paths, project, readYaml, required, runOutput, seat, words, yaml } from "./core";
 import { type Task, terminal } from "./tasks";
 import { resolveExactSessionAdoptionAuthorization } from "./adoption-authorizations";
 import { readRuntimeState } from "./runtime-state";
@@ -102,7 +102,23 @@ export type HandoverReplacementRequest = {
   authorization: { id: string; hash: string };
   source: { pi_session: string; pi_session_path: string; herdr_session: string; pane: string };
   target: { herdr_session: string; pane: string; cwd: string };
+  legacy_source?: {
+    authorization_hash: string;
+    pi_session: string;
+    pi_session_path: string;
+    herdr_session: string;
+    pane: string;
+    cwd: string;
+    agent: string;
+    verified_at: string;
+  };
   created_at: string;
+};
+
+export type HandoverReplacementDependencies = {
+  command?: (command: string[]) => Promise<string>;
+  at?: () => string;
+  publish?: (file: string, content: string) => Promise<void>;
 };
 
 export const handoverReplacementPath = (root: string, address: string) => join(root, ".atdd-flow", "handover-replacements", `${encodeURIComponent(address)}.yaml`);
@@ -121,10 +137,27 @@ export async function isExactMainSeat(root: string, record: Seat, address: strin
   return Boolean(config.repository && resolve(record.worktree) === resolve(config.repository));
 }
 
-export function replacementMatchesRuntime(runtime: Runtime | undefined, request: HandoverReplacementRequest) {
+function unboundLegacyRuntime(runtime: Runtime | undefined, pane: string) {
   const locator = runtime?.addresses.herdr;
-  return typeof locator !== "string" && locator?.session === request.source.herdr_session && locator.pane === request.source.pane
-    && runtime?.pi_session === request.source.pi_session && runtime.pi_session_path === request.source.pi_session_path;
+  return runtime?.application === "herdr" && typeof locator === "string" && locator === pane
+    && !runtime.pi_session && !runtime.pi_session_path && !runtime.launch_receipt;
+}
+
+function snapshotMatchesRequest(snapshot: NonNullable<HandoverReplacementRequest["legacy_source"]>, request: HandoverReplacementRequest) {
+  return snapshot.authorization_hash === request.authorization.hash && snapshot.pi_session === request.source.pi_session
+    && snapshot.pi_session_path === request.source.pi_session_path && snapshot.herdr_session === request.source.herdr_session
+    && snapshot.pane === request.source.pane && snapshot.cwd === request.target.cwd && Boolean(snapshot.agent) && Boolean(snapshot.verified_at);
+}
+
+function canonicalSourceMatchesRuntime(runtime: Runtime | undefined, source: HandoverReplacementRequest["source"]) {
+  const locator = runtime?.addresses.herdr;
+  return typeof locator !== "string" && locator?.session === source.herdr_session && locator.pane === source.pane
+    && runtime?.pi_session === source.pi_session && runtime.pi_session_path === source.pi_session_path;
+}
+
+export function replacementMatchesRuntime(runtime: Runtime | undefined, request: HandoverReplacementRequest) {
+  if (!request.legacy_source) return canonicalSourceMatchesRuntime(runtime, request.source);
+  return unboundLegacyRuntime(runtime, request.source.pane) && snapshotMatchesRequest(request.legacy_source, request);
 }
 
 export async function mainLaunchEligible(root: string, record: Seat, address: string, task: Task) {
@@ -172,48 +205,136 @@ async function exactMainTakeoverTask(root: string, address: string, id: string) 
   return { record };
 }
 
+type LegacyPaneObservation = { pane: string; agent: string; sessionPath: string; cwd: string };
+const object = (value: unknown): Record<string, unknown> | undefined => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+const text = (value: unknown) => typeof value === "string" ? value : undefined;
+function result(value: unknown) { const root = object(value); return object(root?.result) ?? root; }
+function herdr(session: string, ...args: string[]) { return ["herdr", "--session", session, ...args]; }
+
+function legacyPaneObservation(raw: string): LegacyPaneObservation {
+  const value = JSON.parse(raw), pane = object(result(value)?.pane) ?? result(value), session = object(pane?.agent_session);
+  const observation = { pane: text(pane?.pane_id), agent: text(pane?.agent), sessionPath: session?.kind === "path" ? text(session.value) : undefined, cwd: text(pane?.cwd) };
+  if (!observation.pane || !observation.agent || !observation.sessionPath || !observation.cwd) throw new Error("Legacy source bootstrap requires complete live Herdr pane/session/path/cwd evidence.");
+  return observation as LegacyPaneObservation;
+}
+
+function assertLegacyPane(observed: LegacyPaneObservation, source: HandoverReplacementRequest["source"], cwd: string) {
+  const match = basename(observed.sessionPath).match(/_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i);
+  if (observed.pane !== source.pane || resolve(observed.sessionPath) !== source.pi_session_path || match?.[1] !== source.pi_session || resolve(observed.cwd) !== cwd) {
+    throw new Error("Legacy source bootstrap live pane/session/path/cwd does not match the authorized source tuple.");
+  }
+}
+
+function legacyAgentName(raw: string, source: HandoverReplacementRequest["source"], cwd: string) {
+  const value = JSON.parse(raw), agent = object(result(value)?.agent) ?? result(value), session = object(agent?.agent_session);
+  const name = text(agent?.name), sessionPath = session?.kind === "path" ? text(session.value) : undefined, agentCwd = text(agent?.cwd);
+  if (!name || text(agent?.pane_id) !== source.pane || text(agent?.agent) !== "pi" || !sessionPath || resolve(sessionPath) !== source.pi_session_path
+    || !agentCwd || resolve(agentCwd) !== cwd) throw new Error("Legacy source bootstrap Pi agent does not match the authorized source pane/session/path/cwd.");
+  return name;
+}
+
+function assertSinglePiWriter(raw: string) {
+  const value = JSON.parse(raw), report = object(result(value)?.process_info) ?? result(value);
+  const processes = Array.isArray(report?.foreground_processes) ? report.foreground_processes.map(object).filter(Boolean) as Record<string, unknown>[] : [];
+  const pi = processes.filter((process) => text(process.name) === "pi" || text(process.argv0)?.endsWith("/pi") || text(process.argv0) === "pi" || /(^|\/)pi(?:\s|$)/.test(text(process.cmdline) ?? ""));
+  if (pi.length !== 1) throw new Error("Legacy source bootstrap requires exactly one live Pi writer on the authorized source pane.");
+}
+
+async function verifyLegacySource(source: HandoverReplacementRequest["source"], target: HandoverReplacementRequest["target"], authorizationHash: string, dependencies: HandoverReplacementDependencies) {
+  const command = dependencies.command ?? runOutput;
+  const pane = legacyPaneObservation(await command(herdr(source.herdr_session, "pane", "get", source.pane)));
+  assertLegacyPane(pane, source, target.cwd);
+  const [agentRaw, processRaw] = await Promise.all([
+    command(herdr(source.herdr_session, "agent", "get", source.pane)),
+    command(herdr(source.herdr_session, "pane", "process-info", "--pane", source.pane)),
+  ]);
+  const agent = legacyAgentName(agentRaw, source, target.cwd);
+  assertSinglePiWriter(processRaw);
+  return { authorization_hash: authorizationHash, ...source, cwd: target.cwd, agent, verified_at: dependencies.at?.() ?? now() };
+}
+
+function assertLegacySeat(record: Seat, source: HandoverReplacementRequest["source"]) {
+  const runtime = record.runtime, locator = runtime?.addresses.herdr;
+  if (!runtime || runtime.application !== "herdr" || typeof locator !== "string" || locator !== source.pane
+    || runtime.pi_session || runtime.pi_session_path || runtime.launch_receipt) {
+    throw new Error("Legacy source bootstrap requires the unchanged scalar Herdr placement without canonical runtime binding.");
+  }
+}
+
+async function publishCreateOnly(file: string, content: string) {
+  await mkdir(dirname(file), { recursive: true });
+  const temporary = `${file}.${crypto.randomUUID()}.tmp`;
+  try {
+    await writeFile(temporary, content, { encoding: "utf8", flag: "wx" });
+    await link(temporary, file);
+  } finally { await rm(temporary, { force: true }); }
+}
+
+const replacementFlags = ["--legacy-source-bootstrap", "--handover", "--authorization", "--takeover-task", "--source-pi-session", "--source-pi-session-path", "--source-herdr-session", "--source-pane", "--herdr-session", "--target-pane", "--target-cwd"];
+function validateReplacementArgs(args: string[]) {
+  if (args.some((arg) => arg.startsWith("--") && !replacementFlags.includes(arg))) throw new Error("Use `handover replace <main-seat> [--legacy-source-bootstrap] --handover <id> --authorization <operator-record> --takeover-task <id> --source-pi-session <id> --source-pi-session-path <jsonl> --source-herdr-session <session> --source-pane <pane> --herdr-session <session> --target-pane <pane> --target-cwd <canonical-main-worktree>`.");
+}
+
+async function currentReplacementHandover(root: string, resolved: string, args: string[]) {
+  const handover = await recorded(root, resolved), handoverId = nonEmpty(words(args, "--handover"), "--handover");
+  if (!handover || handover.handover_id !== handoverId) throw new Error(`Path-A replacement requires the current validated handover ${handoverId} for ${resolved}.`);
+  return handover;
+}
+
+function replacementSource(args: string[]) {
+  return {
+    pi_session: nonEmpty(words(args, "--source-pi-session"), "--source-pi-session"), pi_session_path: resolve(nonEmpty(words(args, "--source-pi-session-path"), "--source-pi-session-path")),
+    herdr_session: nonEmpty(words(args, "--source-herdr-session"), "--source-herdr-session"), pane: nonEmpty(words(args, "--source-pane"), "--source-pane"),
+  };
+}
+
+function replacementTarget(args: string[], record: Seat, source: HandoverReplacementRequest["source"]) {
+  const cwd = resolve(nonEmpty(words(args, "--target-cwd"), "--target-cwd"));
+  if (cwd !== resolve(record.worktree)) throw new Error("Path-A replacement target CWD must be the exact canonical main worktree.");
+  const target = { herdr_session: nonEmpty(words(args, "--herdr-session"), "--herdr-session"), pane: nonEmpty(words(args, "--target-pane"), "--target-pane"), cwd };
+  if (target.herdr_session !== source.herdr_session || target.pane !== source.pane) throw new Error("Path-A replacement target must be the exact released source pane.");
+  return target;
+}
+
+function assertReplacementSource(record: Seat, source: HandoverReplacementRequest["source"], legacy: boolean) {
+  if (legacy) return assertLegacySeat(record, source);
+  if (!canonicalSourceMatchesRuntime(record.runtime, source)) throw new Error("Path-A replacement source tuple must exactly match the recorded live runtime.");
+}
+
+async function prepareReplacement(root: string, resolved: string, args: string[]) {
+  validateReplacementArgs(args);
+  const legacy = args.includes("--legacy-source-bootstrap"), handover = await currentReplacementHandover(root, resolved, args);
+  const task = nonEmpty(words(args, "--takeover-task"), "--takeover-task");
+  const { record } = await exactMainTakeoverTask(root, resolved, task);
+  const source = replacementSource(args), target = replacementTarget(args, record, source);
+  assertReplacementSource(record, source, legacy);
+  return { legacy, handover, task, source, target };
+}
+
+function replacementRequest(resolved: string, intent: Awaited<ReturnType<typeof prepareReplacement>>, authorization: { id: string; hash: string }, legacySource: HandoverReplacementRequest["legacy_source"], dependencies: HandoverReplacementDependencies): HandoverReplacementRequest {
+  return {
+    schema: "atdd-flow/context-handover-replacement-request/v1", seat: resolved, task: intent.task,
+    handover: { id: intent.handover.handover_id, sha256: createHash("sha256").update(intent.handover.text).digest("hex") },
+    authorization, source: intent.source, target: intent.target,
+    ...(legacySource ? { legacy_source: legacySource } : {}), created_at: dependencies.at?.() ?? now(),
+  };
+}
+
 /**
  * Creates the single immutable intent that an old Pi may observe before it voluntarily exits.
  * It deliberately does not stop, bind, attach, project, or launch any process.
  */
-export async function requestHandoverReplacement(root: string, address: string, args: string[]) {
-  const resolved = await canonicalAddress(root, address);
-  const allowed = ["--handover", "--authorization", "--takeover-task", "--source-pi-session", "--source-pi-session-path", "--source-herdr-session", "--source-pane", "--herdr-session", "--target-pane", "--target-cwd"];
-  if (args.some((arg) => arg.startsWith("--") && !allowed.includes(arg))) throw new Error("Use `handover replace <main-seat> --handover <id> --authorization <operator-record> --takeover-task <id> --source-pi-session <id> --source-pi-session-path <jsonl> --source-herdr-session <session> --source-pane <pane> --herdr-session <session> --target-pane <pane> --target-cwd <canonical-main-worktree>`.");
-  const handover = await recorded(root, resolved);
-  const handoverId = nonEmpty(words(args, "--handover"), "--handover");
-  if (!handover || handover.handover_id !== handoverId) throw new Error(`Path-A replacement requires the current validated handover ${handoverId} for ${resolved}.`);
-  const { record } = await exactMainTakeoverTask(root, resolved, nonEmpty(words(args, "--takeover-task"), "--takeover-task"));
-  const targetCwd = resolve(nonEmpty(words(args, "--target-cwd"), "--target-cwd"));
-  if (targetCwd !== resolve(record.worktree)) throw new Error("Path-A replacement target CWD must be the exact canonical main worktree.");
-  const source = {
-    pi_session: nonEmpty(words(args, "--source-pi-session"), "--source-pi-session"), pi_session_path: resolve(nonEmpty(words(args, "--source-pi-session-path"), "--source-pi-session-path")),
-    herdr_session: nonEmpty(words(args, "--source-herdr-session"), "--source-herdr-session"), pane: nonEmpty(words(args, "--source-pane"), "--source-pane"),
-  };
-  const locator = record.runtime?.addresses.herdr;
-  if (!record.runtime || typeof locator === "string" || locator?.session !== source.herdr_session || locator.pane !== source.pane
-    || record.runtime.pi_session !== source.pi_session || record.runtime.pi_session_path !== source.pi_session_path) {
-    throw new Error("Path-A replacement source tuple must exactly match the recorded live runtime.");
-  }
-  const target = { herdr_session: nonEmpty(words(args, "--herdr-session"), "--herdr-session"), pane: nonEmpty(words(args, "--target-pane"), "--target-pane"), cwd: targetCwd };
-  if (target.herdr_session !== source.herdr_session || target.pane !== source.pane) throw new Error("Path-A replacement target must be the exact released source pane.");
-  const authorization = await resolveExactSessionAdoptionAuthorization(root, nonEmpty(words(args, "--authorization"), "--authorization"), {
-    seat: resolved, pi_session: source.pi_session, pi_session_path: source.pi_session_path,
-    source: { herdr_session: source.herdr_session, pane: source.pane }, target,
-  });
-  const request: HandoverReplacementRequest = {
-    schema: "atdd-flow/context-handover-replacement-request/v1",
-    seat: resolved,
-    task: nonEmpty(words(args, "--takeover-task"), "--takeover-task"),
-    handover: { id: handover.handover_id, sha256: createHash("sha256").update(handover.text).digest("hex") },
-    authorization,
-    source,
-    target,
-    created_at: now(),
-  };
+export async function requestHandoverReplacement(root: string, address: string, args: string[], dependencies: HandoverReplacementDependencies = {}) {
+  const resolved = await canonicalAddress(root, address), intent = await prepareReplacement(root, resolved, args);
   const file = handoverReplacementPath(root, resolved);
-  await mkdir(dirname(file), { recursive: true });
-  await writeFile(file, yaml.print(request), { encoding: "utf8", flag: "wx" });
+  if (intent.legacy && await exists(file)) throw new Error(`Path-A replacement request already exists for ${resolved}.`);
+  const authorization = await resolveExactSessionAdoptionAuthorization(root, nonEmpty(words(args, "--authorization"), "--authorization"), {
+    seat: resolved, pi_session: intent.source.pi_session, pi_session_path: intent.source.pi_session_path,
+    source: { herdr_session: intent.source.herdr_session, pane: intent.source.pane }, target: intent.target,
+  });
+  const legacySource = intent.legacy ? await verifyLegacySource(intent.source, intent.target, authorization.hash, dependencies) : undefined;
+  const request = replacementRequest(resolved, intent, authorization, legacySource, dependencies);
+  await (dependencies.publish ?? publishCreateOnly)(file, yaml.print(request));
   console.log(`Recorded Path-A replacement request for ${resolved}.`);
 }
 
