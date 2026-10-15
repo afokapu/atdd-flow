@@ -1,6 +1,7 @@
 // URN: component:flow:e004:seat-recovery-fixtures:backend:integration
 // Tested-By:
 // - test:atdd-flow:seat-recovery-bundle
+// - test:atdd-flow:seat-recovery-injection
 // Runtime: bun
 // Purpose: Build throwaway Desk, git and Pi-session fixtures for recovery tests.
 
