@@ -1,0 +1,7 @@
+urn: acc:flow:E004-RED-001
+phase: RED
+description: >-
+  A read-only recovery bundle computed from git, Desk and the previous Pi
+  session is capped, ordered by actionability, and injected into the startup,
+  80% handover and Path-A successor prompts and a CLI read command; missing
+  sources render as unavailable and nothing is written.
