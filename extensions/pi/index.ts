@@ -318,6 +318,28 @@ export async function awaitLaunchActivation({ root, seat, piSession, herdrSessio
   throw new Error("Timed out waiting for verified Flow launch receipt and binding.");
 }
 
+/**
+ * Host-attached Pi has no launcher variables; it may activate only when Herdr's injected pane identity exactly
+ * matches the Desk seat's native scoped binding. This reads the seat and never writes or creates a binding.
+ */
+export async function hostAttachedActivation({ root, seat, herdrSession, pane, piSession, piSessionPath }: { root: string; seat: string; herdrSession?: string; pane?: string; piSession?: string; piSessionPath?: string }) {
+  if (!herdrSession || !pane) return false;
+  try {
+    const runtime = (await readYaml<Seat>(paths(root).seatFile(seat))).runtime;
+    return nativeScopedTo(runtime, herdrSession, pane) && sessionUnsetOrEqual(runtime, piSession, piSessionPath);
+  } catch { return false; }
+}
+
+function nativeScopedTo(runtime: Seat["runtime"], herdrSession: string, pane: string) {
+  const locator = runtime?.addresses.herdr;
+  return runtime?.application === "herdr" && runtime.wake === "native" && !runtime.launch_receipt
+    && typeof locator === "object" && locator.session === herdrSession && locator.pane === pane;
+}
+
+const unsetOrEqual = (recorded: string | undefined, live: string | undefined) => !recorded || recorded === live;
+const sessionUnsetOrEqual = (runtime: Seat["runtime"], piSession?: string, piSessionPath?: string) =>
+  unsetOrEqual(runtime?.pi_session, piSession) && unsetOrEqual(runtime?.pi_session_path, piSessionPath);
+
 /** Injects the current task-derived action; failure to derive never blocks mail or startup. */
 async function sendTaskDirective(pi: ExtensionAPI, root: string, seat: string) {
   try {
@@ -337,6 +359,8 @@ export default function (pi: ExtensionAPI) {
   if (!root || !seat) return;
   let runtime: ReturnType<typeof createPiRuntime> | undefined;
   let handoverPrompted = false;
+  // Host-attach only: mail older than this activation is consumed without a prompt, so a long backlog cannot trigger one turn per message.
+  let hostActivatedAt: number | undefined;
   pi.on("turn_end", async (_event, ctx) => {
     if (handoverPrompted) return;
     const percent = ctx.getContextUsage()?.percent;
@@ -369,6 +393,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     runtime = createPiRuntime({ root, seat, deferActivation: true, deliver: async (mail, thread, path, sendIfOwned) => {
       if (!sendIfOwned) return false;
+      if (hostActivatedAt !== undefined && Date.parse(typeof mail.created_at === "string" ? mail.created_at : "") < hostActivatedAt) return sendIfOwned(async () => undefined);
       return sendIfOwned(async () => {
         // Task state is re-read at every wake, so queued mail cannot carry a stale action.
         await sendTaskDirective(pi, root, seat);
@@ -383,6 +408,14 @@ export default function (pi: ExtensionAPI) {
     const piSession = process.env.ATDD_FLOW_PI_SESSION;
     const herdrSession = process.env.ATDD_FLOW_HERDR_SESSION;
     const pane = process.env.ATDD_FLOW_HERDR_PANE;
+    if (!piSession && !herdrSession && !pane) {
+      const sessionManager = (ctx as { sessionManager?: { getSessionId?: () => string; getSessionFile?: () => string | undefined } }).sessionManager;
+      if (await hostAttachedActivation({ root, seat, herdrSession: process.env.HERDR_SESSION, pane: process.env.HERDR_PANE_ID, piSession: sessionManager?.getSessionId?.(), piSessionPath: sessionManager?.getSessionFile?.() })) {
+        hostActivatedAt = Date.now();
+        if (await runtime.activate()) pi.sendMessage({ customType: "atdd-flow-start", content: `Native mail active for ${seat} (host-attached). Notices created before this session were not replayed; run atdd-flow status seat ${seat} for unanswered mail.`, display: true, details: { seat, root } }, { triggerTurn: true, deliverAs: "followUp" });
+      }
+      return;
+    }
     if (!piSession || !herdrSession || !pane) return;
     const current = runtime;
     void awaitLaunchActivation({
