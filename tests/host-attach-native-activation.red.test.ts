@@ -78,7 +78,9 @@ test("RED: host-attach consumes pre-activation backlog without prompts and sends
   const { delivered, sent } = await hostAttach(exact(), { mail: "before" });
   expect(delivered).toBe(0);
   expect(notice(sent)).toHaveLength(1);
-  expect(notice(sent)[0].content).toBe(`Native mail active for ${seat} (host-attached). Notices created before this session were not replayed; run atdd-flow status seat ${seat} for unanswered mail.`);
+  expect(notice(sent)[0].content).toContain(`SYSTEM: you are ${seat}.`);
+  expect(notice(sent)[0].content).toContain(`RECOVERY BUNDLE ${seat}`);
+  expect(notice(sent)[0].content).toContain(`Notices created before this session were not replayed; run atdd-flow status seat ${seat} for unanswered mail.`);
 });
 
 test("RED: host-attach prompts once for mail created after activation while the backlog is consumed", async () => {

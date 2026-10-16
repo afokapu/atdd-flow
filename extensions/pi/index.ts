@@ -417,7 +417,11 @@ export default function (pi: ExtensionAPI) {
       const sessionManager = (ctx as { sessionManager?: { getSessionId?: () => string; getSessionFile?: () => string | undefined } }).sessionManager;
       if (await hostAttachedActivation({ root, seat, herdrSession: process.env.HERDR_SESSION, pane: process.env.HERDR_PANE_ID, piSession: sessionManager?.getSessionId?.(), piSessionPath: sessionManager?.getSessionFile?.() })) {
         hostActivatedAt = Date.now();
-        if (await runtime.activate()) pi.sendMessage({ customType: "atdd-flow-start", content: `Native mail active for ${seat} (host-attached). Notices created before this session were not replayed; run atdd-flow status seat ${seat} for unanswered mail.`, display: true, details: { seat, root } }, { triggerTurn: true, deliverAs: "followUp" });
+        if (await runtime.activate()) {
+          const bundle = await recovery(root, seat, "start", sessionManager?.getSessionId?.());
+          const notice = "Notices created before this session were not replayed; run atdd-flow status seat " + seat + " for unanswered mail.";
+          pi.sendMessage({ customType: "atdd-flow-start", content: `${runtimeStartupInstruction(seat, bundle)} ${notice}`, display: true, details: { seat, root } }, { triggerTurn: true, deliverAs: "followUp" });
+        }
       }
       return;
     }

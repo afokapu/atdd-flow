@@ -96,7 +96,10 @@ test("RED: a main seat coordinating 40 tasks and 30 threads lists actionable ite
   for (let index = 26; index <= 30; index += 1) {
     const threadId = `T-${index}-in`;
     await thread(root, threadId, `Inbound ${index}`);
-    await message(root, threadId, `M-in-${index}`, { from: seat, to: ["main@demo"], expects_result: true });
+    await message(root, threadId, `M-in-${index}`, {
+      from: seat, to: ["main@demo"], expects_result: true,
+      created_at: index === 26 ? "2026-10-01T00:00:00.000Z" : `2026-10-15T00:00:0${index - 26}.000Z`,
+    });
   }
   const bundle = await recoveryBundle(root, "main@demo", { now });
   expect(lines(bundle.trimEnd()).length).toBeLessThanOrEqual(50);
@@ -109,7 +112,8 @@ test("RED: a main seat coordinating 40 tasks and 30 threads lists actionable ite
   expect(bundle).not.toContain("task t37");
   expect(field(bundle, "tasks:")).toMatch(/40 open.*3 need you.*20 in progress.*17 todo/);
   expect(field(bundle, "unanswered:")).toMatch(/5 inbound.*25 outbound/);
-  expect(bundle.indexOf("inbound M-in-26")).toBeGreaterThan(-1);
-  expect(bundle.indexOf("inbound M-in-26")).toBeLessThan(bundle.indexOf("outbound M-out-1"));
+  expect(bundle.indexOf("inbound M-in-30")).toBeGreaterThan(-1);
+  expect(bundle).not.toContain("inbound M-in-26");
+  expect(bundle.indexOf("inbound M-in-30")).toBeLessThan(bundle.indexOf("outbound M-out-9"));
   expect(bundle).toMatch(/\+\d+ more, run atdd-flow status seat main@demo/);
 });

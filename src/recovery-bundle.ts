@@ -25,7 +25,7 @@ type Entry = { id: string; from: string; to: string; at: string; subject: string
 const maxLines = 50;
 const maxBytes = 5120;
 const maxTasks = 12;
-const maxPending = 6;
+const maxPending = 4;
 const maxRecent = 5;
 const maxChanged = 8;
 const tailBytes = 256 * 1024;
@@ -153,7 +153,8 @@ async function conversation(root: string, address: string) {
       if (message.from === address && waiting.length) outbound.push({ ...entry, to: waiting.join(",") });
     }
   }
-  return { inbound: inbound.sort(byAge), outbound: outbound.sort(byAge), own: own.sort(byAge).reverse() };
+  // Recent unanswered evidence wins the cap; totals still preserve the full count.
+  return { inbound: inbound.sort(byAge).reverse(), outbound: outbound.sort(byAge).reverse(), own: own.sort(byAge).reverse() };
 }
 
 async function conversationLines(root: string, address: string, now: Date) {
