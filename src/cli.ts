@@ -13,6 +13,7 @@ import { status } from "./overview";
 import { multiplexer } from "./multiplexer";
 import * as cleanup from "./ephemeral-resources";
 import * as ownerAlerts from "./owner-escalations";
+import { recoveryFor } from "./recovery-bundle";
 import { recordHandover, requestHandoverReplacement, resumedHandoverReplacement, showHandover } from "./handover";
 
 const usage = `atdd-flow — filesystem-first agent seats and tasks
@@ -75,6 +76,7 @@ Usage:
   atdd-flow behavioral-review record <project> <task-id> --by <reviewer-address> --file <result-yaml>
   atdd-flow behavioral-review open <project> <task-id>
   atdd-flow open <address>
+  atdd-flow recover <address>
   atdd-flow address-book
 
 Global:
@@ -207,6 +209,7 @@ async function main() {
       throw new Error("Use `atdd-flow behavioral-review launch|record|open <project> <task-id>`.");
     },
     open: () => openSeat(root, required(rest[0], "address")),
+    recover: async () => console.log(await recoveryFor(root, required(rest[0], "address"), "start", process.env.ATDD_FLOW_PI_SESSION)),
     "address-book": () => addressBook(root),
   };
   const action = commands[command];

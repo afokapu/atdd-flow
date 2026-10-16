@@ -70,7 +70,19 @@ export async function projectCollaborationPolicy(root: string) {
   }));
 }
 
+const withBundle = (text: string, bundle?: string) => bundle ? `${text}\n${bundle}` : text;
+
 /** The one startup handoff for supported Flow-managed runtimes, resolved from the canonical convention. */
-export function runtimeStartupInstruction(seat: string) {
-  return `SYSTEM: you are ${seat}. Collaboration policy: ${canonicalCollaborationPolicy()} Canonical convention: ${collaborationConventionPath}. Read your durable seat and assigned work with: atdd-flow open ${seat}. Continue assigned in_progress work until it is review-ready or explicitly blocked.`;
+export function runtimeStartupInstruction(seat: string, bundle?: string) {
+  return withBundle(`SYSTEM: you are ${seat}. Collaboration policy: ${canonicalCollaborationPolicy()} Canonical convention: ${collaborationConventionPath}. Read your durable seat and assigned work with: atdd-flow open ${seat}. Continue assigned in_progress work until it is review-ready or explicitly blocked.`, bundle);
+}
+
+/** The 80% handover prompt; the computed bundle gives the handover record exact current state. */
+export function handoverThresholdInstruction(percent: number, threshold: number, bundle?: string) {
+  return withBundle(`SYSTEM: Context ${percent}% reached the Flow handover threshold (${threshold}%). Finish or undo the atomic step, record a validated handover, then stop new work; do not compact or release a session.`, bundle);
+}
+
+/** The Path-A successor prompt; the bundle points at the predecessor session file. */
+export function successorInstruction(seat: string, handoverId: string, bundle?: string) {
+  return withBundle(`SYSTEM: Path-A handover ${handoverId} is injected for ${seat}. Read atdd-flow handover show ${seat}, reconcile the live Desk, then report RESUMED with verified/total counts and discrepancies.`, bundle);
 }

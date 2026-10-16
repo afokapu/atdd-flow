@@ -33,6 +33,7 @@ content:
     receipts inbound communication from any seat, but sends substantive direction, results, and
     wakes only to main@project. Only main@project executes that project repository merge; the
     operator may authorize, relay, or inspect but never merges.
+    Post decisions and open questions as messages when they happen.
   projection: >-
     Keep this full policy only in this convention. Managed AGENTS.md and CLAUDE.md blocks
     contain only its canonical pointer and preserve all user-authored content outside the
