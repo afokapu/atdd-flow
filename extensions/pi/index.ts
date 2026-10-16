@@ -6,7 +6,8 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { clearStaleRuntimeState, clearRuntimeState, heartbeatRuntimeState, ownsRuntimeState, registerRuntimeState, runtimeOwnerToken, withOwnedRuntimeState } from "../../src/runtime-state";
 import { paths, readYaml, type Seat } from "../../src/core";
 import { directiveNotice, nextDirective } from "../../src/tasks";
-import { runtimeStartupInstruction } from "../../src/collaboration-policy";
+import { handoverThresholdInstruction, runtimeStartupInstruction, successorInstruction } from "../../src/collaboration-policy";
+import { type RecoveryMode, recoveryFor } from "../../src/recovery-bundle";
 import { contextHandoverThreshold, readHandoverReplacement } from "../../src/handover";
 
 type Thread = { id?: unknown; participants?: unknown; subject?: unknown };
@@ -352,6 +353,9 @@ async function sendTaskDirective(pi: ExtensionAPI, root: string, seat: string) {
   } catch { /* The durable task remains authoritative and is re-derived at the next startup or wake. */ }
 }
 
+/** The recovery bundle is advisory; any failure falls back to the plain prompt. */
+const recovery = (root: string, seat: string, mode: RecoveryMode, session?: string) => recoveryFor(root, seat, mode, session).catch(() => undefined);
+
 /** Desk mail is authoritative; the queue is a bounded delivery index and fs.watch only shortens latency. */
 export default function (pi: ExtensionAPI) {
   const root = process.env.ATDD_WORKFLOW_ROOT;
@@ -369,9 +373,10 @@ export default function (pi: ExtensionAPI) {
       const threshold = await contextHandoverThreshold(root);
       if (percent < threshold) return;
       handoverPrompted = true;
+      const bundle = await recovery(root, seat, "threshold", process.env.ATDD_FLOW_PI_SESSION);
       pi.sendMessage({
         customType: "atdd-flow-context-handover-replacement",
-        content: `SYSTEM: Context ${percent}% reached the Flow handover threshold (${threshold}%). Finish or undo the atomic step, record a validated handover, then stop new work; do not compact or release a session.`,
+        content: handoverThresholdInstruction(percent, threshold, bundle),
         display: true, details: { seat, threshold, percent, authority: "handover" },
       }, { triggerTurn: true, deliverAs: "followUp" });
     } catch { /* Desk policy is re-read on the next safe boundary. */ }
@@ -422,17 +427,17 @@ export default function (pi: ExtensionAPI) {
       root, seat, piSession, herdrSession, pane,
       activate: async () => {
         if (!await current.activate()) return;
-        pi.sendMessage({ customType: "atdd-flow-start", content: runtimeStartupInstruction(seat), display: true, details: { seat, root } }, { triggerTurn: true, deliverAs: "followUp" });
-        try {
-          const request = await readHandoverReplacement(root, seat);
-          if (request.source.pi_session !== piSession) {
-            pi.sendMessage({
-              customType: "atdd-flow-context-handover-replacement",
-              content: `SYSTEM: Path-A handover ${request.handover.id} is injected for ${seat}. Read atdd-flow handover show ${seat}, reconcile the live Desk, then report RESUMED with verified/total counts and discrepancies.`,
-              display: true, details: { seat, handover: request.handover.id, authority: "handover-replacement" },
-            }, { triggerTurn: true, deliverAs: "followUp" });
-          }
-        } catch { /* This is an ordinary launch, not a Path-A successor. */ }
+        const request = await readHandoverReplacement(root, seat).catch(() => undefined);
+        const successor = request && request.source.pi_session !== piSession ? request : undefined;
+        const bundle = await recovery(root, seat, successor ? "successor" : "start", piSession);
+        pi.sendMessage({ customType: "atdd-flow-start", content: runtimeStartupInstruction(seat, successor ? undefined : bundle), display: true, details: { seat, root } }, { triggerTurn: true, deliverAs: "followUp" });
+        if (successor) {
+          pi.sendMessage({
+            customType: "atdd-flow-context-handover-replacement",
+            content: successorInstruction(seat, successor.handover.id, bundle),
+            display: true, details: { seat, handover: successor.handover.id, authority: "handover-replacement" },
+          }, { triggerTurn: true, deliverAs: "followUp" });
+        }
         await sendTaskDirective(pi, root, seat);
         if (ctx.hasUI) ctx.ui.notify(`ATDD Flow native mail active for ${seat}`, "info");
       },

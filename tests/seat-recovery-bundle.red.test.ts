@@ -1,6 +1,6 @@
 // URN: test:atdd-flow:seat-recovery-bundle
-// Acceptance: acc:flow:E004-RED-001
-// Phase: RED
+// Acceptance: acc:flow:E004-UNIT-001
+// Phase: UNIT
 import { expect, test } from "bun:test";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -20,7 +20,6 @@ test("RED: today's startup, 80% handover and Path-A successor prompts carry no c
   expect(handoverThresholdInstruction(85, 80, bundle)).toContain("85%");
   expect(successorInstruction(seat, "H-1", bundle)).toContain(bundle);
   expect(successorInstruction(seat, "H-1", bundle)).toContain("H-1");
-  expect.fail("Not implemented: src/recovery-bundle.ts"); // RED marker; removed when GREEN carries the proof
 });
 
 test("RED: the bundle renders every field from git, Desk and the previous Pi session, with pointers and no bodies", async () => {

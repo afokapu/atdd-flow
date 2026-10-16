@@ -165,7 +165,7 @@ export async function populated() {
     phase: "red", handoff: { state: "awaiting_coordinator", evidence: "M-red-ev", updated_at: "2026-10-15T09:00:00.000Z" },
     blocker: "waiting on owner", depends_on: ["dep-task"], done_when: [{ text: "A", proof: "p" }, { text: "B" }],
   });
-  await task(root, "dep-task", { status: "todo" });
+  await task(root, "dep-task", { status: "todo", assignee: "main@demo" });
   await task(root, "finished-task", { status: "done", done_when: [{ text: "A", proof: "p" }] });
   await thread(root, "T-1", "Subject One");
   await message(root, "T-1", "M-in1", { from: "main@demo", to: [seat], expects_result: true, created_at: "2026-10-12T12:00:00.000Z" });

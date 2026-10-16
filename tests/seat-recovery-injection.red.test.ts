@@ -1,6 +1,6 @@
 // URN: test:atdd-flow:seat-recovery-injection
-// Acceptance: acc:flow:E004-RED-001
-// Phase: RED
+// Acceptance: acc:flow:E004-UNIT-001
+// Phase: UNIT
 import { expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -48,7 +48,6 @@ test("RED: the Flow extension injects the bundle at session start and at the 80%
   expect(start.content).toContain(git(worktree, "rev-parse", "--short", "HEAD"));
   const threshold = sent.find((entry) => entry.customType === "atdd-flow-context-handover-replacement" && entry.content?.includes("85%"))!;
   expect(threshold.content).toContain("RECOVERY BUNDLE driver.pi@demo");
-  expect.fail("Not implemented: recovery bundle injection"); // RED marker; removed when GREEN carries the proof
 });
 
 test("RED: the Flow extension injects the bundle into the Path-A successor prompt", async () => {

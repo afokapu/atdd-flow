@@ -36,7 +36,7 @@ async function thread(root: string, threadId: string) {
   return readYaml<Thread>(paths(root).threadFile(threadId));
 }
 
-async function messages(root: string, threadId: string) {
+export async function messages(root: string, threadId: string) {
   const folder = paths(root).thread(threadId);
   const files = (await readdir(folder)).filter((file) => file.startsWith("M-") && file.endsWith(".yaml")).sort();
   return Promise.all(files.map((file) => readYaml<Message>(`${folder}/${file}`)));
@@ -366,16 +366,19 @@ export async function result(root: string, threadId: string, messageId: string, 
   return post(root, threadId, args, { from, to: [target.from], kind: "result", in_reply_to: messageId, body: required(words(args, "--body"), "--body") });
 }
 
+/** Recipients that have not yet answered an expects_result message with a result. */
+export function pendingResponders(participants: string[], all: Message[], message: Message) {
+  const responders = message.to === "all" ? participants.filter((address) => address !== message.from) : message.to;
+  return responders.filter((address) => !all.some((reply) => reply.kind === "result" && reply.in_reply_to === message.id && reply.from === address));
+}
+
 export async function status(root: string) {
   const threadIds = (await readdir(paths(root).threads)).sort();
   for (const threadId of threadIds) {
     const record = await thread(root, threadId);
     const all = await messages(root, threadId);
-    const pending = all.flatMap((message) => {
-      if (!message.expects_result) return [];
-      const responders = message.to === "all" ? record.participants.filter((address) => address !== message.from) : message.to;
-      return responders.filter((address) => !all.some((reply) => reply.kind === "result" && reply.in_reply_to === message.id && reply.from === address)).map((address) => `${message.id}@${address}`);
-    });
+    const pending = all.flatMap((message) => message.expects_result
+      ? pendingResponders(record.participants, all, message).map((address) => `${message.id}@${address}`) : []);
     console.log(`${threadId}  ${record.state}  ${record.subject}${pending.length ? `  waiting:${pending.join(",")}` : ""}`);
   }
 }
