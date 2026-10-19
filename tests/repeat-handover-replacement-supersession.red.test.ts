@@ -8,7 +8,7 @@ import { dirname, join } from "node:path";
 import { expect, test } from "bun:test";
 import { createExactSessionAdoptionAuthorization } from "../src/adoption-authorizations";
 import { atomicYaml, paths, readYaml, yaml } from "../src/core";
-import { handoverReplacementPath, replacementForMainLaunch, requestHandoverReplacement, type HandoverReplacementDependencies, type HandoverReplacementRequest } from "../src/handover";
+import { handoverReplacementPath, recordHandover, replacementForMainLaunch, requestHandoverReplacement, type HandoverReplacementDependencies, type HandoverReplacementRequest } from "../src/handover";
 import { launchPiRuntime } from "../src/seats";
 
 const cli = join(import.meta.dir, "..", "src", "cli.ts"), address = "main@demo";
@@ -36,11 +36,20 @@ async function invoke(...args: string[]) {
   return { exitCode, output: `${stdout}${stderr}` };
 }
 
-function handoverText() {
-  return `HANDOVER ${address} | 2026-10-19T14:31:37Z | handover-id H-current | supersedes H-prior\nRuntime: herdr forge:${pane} | pi session ${liveSession} | model test/pi | context 80%\n\n1. SEAT, AUTHORITY, TOOLKIT AND HAZARDS\n- exact\n\n2. OPEN WORK AND IN-FLIGHT OPERATIONS\n- exact\n\n3. DEPENDENCIES (both directions)\n- none\n\n4. RESUME PROCEDURE AND NEXT ACTIONS\n- exact\n`;
+function handoverText(id = "H-current", supersedes = "H-prior", at = "2026-10-19T14:31:37Z", sourceSession = liveSession) {
+  return `HANDOVER ${address} | ${at} | handover-id ${id} | supersedes ${supersedes}\nRuntime: herdr forge:${pane} | pi session ${sourceSession} | model test/pi | context 80%\n\n1. SEAT, AUTHORITY, TOOLKIT AND HAZARDS\n- exact\n\n2. OPEN WORK AND IN-FLIGHT OPERATIONS\n- exact\n\n3. DEPENDENCIES (both directions)\n- none\n\n4. RESUME PROCEDURE AND NEXT ACTIONS\n- exact\n`;
 }
 
-async function fixture(overrides: Partial<Reports> = {}) {
+const frgLineage = [
+  ["H-20261019T073912Z", "none", "2026-10-19T07:39:12Z"],
+  ["H-20261019T120000Z", "H-20261019T073912Z", "2026-10-19T12:00:00Z"],
+  ["H-20261019T143137Z", "H-20261019T120000Z", "2026-10-19T14:31:37Z"],
+  ["H-20261019T143641Z", "H-20261019T143137Z", "2026-10-19T14:36:41Z"],
+] as const;
+
+type FixtureShape = "direct" | "frg" | "frg-unproven-source";
+
+async function fixture(overrides: Partial<Reports> = {}, shape: FixtureShape = "direct") {
   const root = await mkdtemp(join(tmpdir(), "atdd-flow-repeat-handover-"));
   const bin = join(root, "bin"), pi = join(bin, "pi");
   await mkdir(bin);
@@ -57,15 +66,21 @@ async function fixture(overrides: Partial<Reports> = {}) {
   });
 
   const canonicalPath = join(root, `canonical_${canonicalSession}.jsonl`);
-  const livePath = join(root, `live_${liveSession}.jsonl`);
+  const distinctLivePath = join(root, `live_${liveSession}.jsonl`);
+  const exactFrgShape = shape !== "direct";
+  const sourceSession = shape === "frg" ? canonicalSession : liveSession;
+  const livePath = shape === "frg" ? canonicalPath : distinctLivePath;
+  const consumedHandover = exactFrgShape ? frgLineage[0][0] : "H-prior";
+  const currentHandover = exactFrgShape ? frgLineage.at(-1)![0] : "H-current";
+  const consumedText = exactFrgShape ? handoverText(...frgLineage[0], canonicalSession) : handoverText("H-prior", "none", "2026-10-19T07:39:12Z", canonicalSession);
   await writeFile(canonicalPath, "canonical predecessor session");
-  await writeFile(livePath, "exact live source session");
+  await writeFile(distinctLivePath, "exact live source session");
 
   const prior: HandoverReplacementRequest = {
     schema: "atdd-flow/context-handover-replacement-request/v1",
     seat: address,
     task: "prior-takeover",
-    handover: { id: "H-prior", sha256: "a".repeat(64) },
+    handover: { id: consumedHandover, sha256: exactFrgShape ? createHash("sha256").update(consumedText).digest("hex") : "a".repeat(64) },
     authorization: { id: "A-prior", hash: "b".repeat(64) },
     source: {
       pi_session: "00000000-0000-4000-8000-000000000000",
@@ -101,10 +116,18 @@ async function fixture(overrides: Partial<Reports> = {}) {
       pi_session: canonicalSession, pi_session_path: canonicalPath, launch_receipt: receipt,
     },
   });
-  await atomicYaml(paths(root).handoverFile(address), {
-    schema: "atdd-workflow/handover/v1", seat: address, handover_id: "H-current", supersedes: "H-prior",
-    recorded_at: "2026-10-19T14:31:37.000Z", text: handoverText(),
-  });
+  if (exactFrgShape) {
+    for (const lineage of frgLineage) {
+      const file = join(root, `${lineage[0]}.md`);
+      await writeFile(file, handoverText(...lineage, sourceSession));
+      await recordHandover(root, address, ["--file", file]);
+    }
+  } else {
+    await atomicYaml(paths(root).handoverFile(address), {
+      schema: "atdd-workflow/handover/v1", seat: address, handover_id: currentHandover, supersedes: consumedHandover,
+      recorded_at: "2026-10-19T14:31:37.000Z", text: handoverText(),
+    });
+  }
   await atomicYaml(paths(root).taskFile("demo", "prior-takeover"), {
     schema: "atdd-workflow/task/v1", title: "Prior takeover", status: "done", coordinator: address,
     assignee: address, done_when: [{ text: "Prior successor resumed.", proof: "receipt" }],
@@ -115,7 +138,7 @@ async function fixture(overrides: Partial<Reports> = {}) {
   });
   await createExactSessionAdoptionAuthorization(root, "A-next", [
     "--by", "operator@desk", "--seat", address,
-    "--pi-session", liveSession, "--pi-session-path", livePath,
+    "--pi-session", sourceSession, "--pi-session-path", livePath,
     "--source-herdr-session", "forge", "--source-pane", pane,
     "--target-herdr-session", "forge", "--target-pane", pane, "--target-cwd", cwd,
   ]);
@@ -147,13 +170,13 @@ async function fixture(overrides: Partial<Reports> = {}) {
     throw new Error(`Unexpected Herdr command: ${command.join(" ")}`);
   };
   const args = [
-    "--supersede-consumed", "--handover", "H-current", "--authorization", "A-next",
-    "--takeover-task", "next-takeover", "--source-pi-session", liveSession,
+    "--supersede-consumed", "--handover", currentHandover, "--authorization", "A-next",
+    "--takeover-task", "next-takeover", "--source-pi-session", sourceSession,
     "--source-pi-session-path", livePath, "--source-herdr-session", "forge", "--source-pane", pane,
     "--herdr-session", "forge", "--target-pane", pane, "--target-cwd", cwd,
   ];
   const archive = join(root, ".atdd-flow", "handover-replacement-archive", encodeURIComponent(address), priorSha);
-  return { root, active, archive, receipt, prior, priorBytes, priorSha, canonicalPath, livePath, args, command, calls };
+  return { root, active, archive, receipt, prior, priorBytes, priorSha, canonicalPath, livePath, args, command, calls, sourceSession, currentHandover };
 }
 
 async function snapshot(value: Awaited<ReturnType<typeof fixture>>) {
@@ -202,6 +225,54 @@ async function cleanup(value: Awaited<ReturnType<typeof fixture>>) {
 test("RED: CLI exposes explicit consumed-request supersession without weakening default create-only replacement", async () => {
   const { output } = await invoke("--help");
   expect(output).toContain("handover replace <address> [--supersede-consumed]");
+});
+
+test("RED: exact FRG current handover supersedes a consumed request after multiple valid intervening handovers", async () => {
+  const value = await fixture({}, "frg");
+  try {
+    const before = await snapshot(value);
+    await requestWithDependencies(value.root, address, value.args, {
+      command: value.command, at: () => "2026-10-19T16:51:08.546Z",
+    });
+    const successor = await readYaml<HandoverReplacementRequest & { supersession?: Record<string, any> }>(value.active);
+    expect(successor).toMatchObject({
+      handover: { id: "H-20261019T143641Z" },
+      source: { pi_session: canonicalSession, pi_session_path: value.canonicalPath, herdr_session: "forge", pane },
+      target: { herdr_session: "forge", pane, cwd },
+      supersession: {
+        prior_request: { task: "prior-takeover", handover: "H-20261019T073912Z" },
+        canonical_source: { pi_session: canonicalSession, pi_session_path: value.canonicalPath, herdr_session: "forge", pane, cwd },
+        live_source: { pi_session: canonicalSession, pi_session_path: value.canonicalPath, herdr_session: "forge", pane, cwd },
+      },
+    });
+    expect(await readFile(join(value.archive, "request.yaml"), "utf8")).toBe(value.priorBytes);
+    expect(await readFile(paths(value.root).seatFile(address), "utf8")).toBe(before.seat);
+    expect(await readFile(value.receipt, "utf8")).toBe(before.receipt);
+    expect(value.calls.some(mutatingHerdrCommand)).toBe(false);
+  } finally { await cleanup(value); }
+});
+
+test("RED: stale current handover and mismatched canonical-successor lineage remain fail-closed", async () => {
+  const stale = await fixture({}, "frg");
+  try {
+    const before = await snapshot(stale);
+    const staleArgs = stale.args.map((entry) => entry === "H-20261019T143641Z" ? "H-20261019T143137Z" : entry);
+    await expect(requestWithDependencies(stale.root, address, staleArgs, { command: stale.command })).rejects.toThrow(
+      "Path-A replacement requires the current validated handover H-20261019T143137Z",
+    );
+    expect(stale.calls).toHaveLength(0);
+    await assertUnchanged(stale, before);
+  } finally { await cleanup(stale); }
+
+  const unproven = await fixture({}, "frg-unproven-source");
+  try {
+    const before = await snapshot(unproven);
+    await expect(requestWithDependencies(unproven.root, address, unproven.args, { command: unproven.command })).rejects.toThrow(
+      "Consumed Path-A replacement does not match the current handover lineage.",
+    );
+    expect(unproven.calls).toHaveLength(0);
+    await assertUnchanged(unproven, before);
+  } finally { await cleanup(unproven); }
 });
 
 test("RED: a consumed request and receipt are archived byte-identically before one stale-canonical successor becomes active", async () => {
