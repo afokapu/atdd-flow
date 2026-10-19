@@ -1,0 +1,4 @@
+urn: acc:flow:E005-UNIT-001
+phase: UNIT
+description: >-
+  A consumed main handover request is archived with its receipt before exactly one authorized successor request atomically replaces it.
