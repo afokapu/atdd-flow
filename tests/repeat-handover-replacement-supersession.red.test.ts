@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { expect, test } from "bun:test";
 import { createExactSessionAdoptionAuthorization } from "../src/adoption-authorizations";
-import { atomicYaml, paths, readYaml } from "../src/core";
+import { atomicYaml, paths, readYaml, yaml } from "../src/core";
 import { handoverReplacementPath, replacementForMainLaunch, requestHandoverReplacement, type HandoverReplacementDependencies, type HandoverReplacementRequest } from "../src/handover";
 import { launchPiRuntime } from "../src/seats";
 
@@ -164,6 +164,30 @@ async function snapshot(value: Awaited<ReturnType<typeof fixture>>) {
   };
 }
 
+const stalePid = 2_147_483_647;
+const supersessionLock = (value: Awaited<ReturnType<typeof fixture>>) => `${value.active}.lock`;
+async function writeSupersessionLock(value: Awaited<ReturnType<typeof fixture>>, overrides: Record<string, unknown> = {}) {
+  await writeFile(supersessionLock(value), yaml.print({
+    schema: "atdd-flow/handover-replacement-supersession-lock/v1", seat: address,
+    active_request_sha256: value.priorSha, pid: stalePid, token: "stale-owner", ...overrides,
+  }), { flag: "wx" });
+}
+
+async function stageExactArchive(value: Awaited<ReturnType<typeof fixture>>) {
+  const receiptBytes = await readFile(value.receipt, "utf8");
+  const receiptSha = createHash("sha256").update(receiptBytes).digest("hex");
+  await mkdir(value.archive, { recursive: true });
+  await Promise.all([
+    writeFile(join(value.archive, "request.yaml"), value.priorBytes),
+    writeFile(join(value.archive, "launch-receipt.yaml"), receiptBytes),
+    writeFile(join(value.archive, "supersession.yaml"), yaml.print({
+      schema: "atdd-flow/context-handover-replacement-supersession/v1", seat: address,
+      prior_request: { path: value.active, sha256: value.priorSha, task: "prior-takeover", handover: "H-prior", handover_sha256: "a".repeat(64) },
+      prior_receipt: { path: value.receipt, sha256: receiptSha, successor_session: canonicalSession },
+    })),
+  ]);
+}
+
 async function assertUnchanged(value: Awaited<ReturnType<typeof fixture>>, before: Awaited<ReturnType<typeof snapshot>>) {
   expect(await snapshot(value)).toEqual(before);
   expect(await Bun.file(join(value.archive, "request.yaml")).exists()).toBe(false);
@@ -311,9 +335,41 @@ test("RED: archive and active-swap publication failures roll back to the byte-id
   }
 });
 
-test("RED: concurrent supersession attempts publish one successor and cannot overwrite its immutable archive", async () => {
+test("GREEN: a dead-owner lock recovers and reuses an exact crash-published archive", async () => {
   const value = await fixture();
   try {
+    await stageExactArchive(value);
+    await writeSupersessionLock(value);
+    await requestWithDependencies(value.root, address, value.args, { command: value.command });
+    expect((await readYaml<HandoverReplacementRequest>(value.active)).task).toBe("next-takeover");
+    expect(await readFile(join(value.archive, "request.yaml"), "utf8")).toBe(value.priorBytes);
+    expect(await Bun.file(supersessionLock(value)).exists()).toBe(false);
+  } finally { await cleanup(value); }
+});
+
+test("GREEN: live, malformed, and changed lock owners refuse without state or Herdr effects", async () => {
+  const cases: Array<[string, (value: Awaited<ReturnType<typeof fixture>>) => Promise<void>]> = [
+    ["live", async (value) => writeSupersessionLock(value, { pid: process.pid, token: "live-owner" })],
+    ["malformed", async (value) => { await writeFile(supersessionLock(value), "{not-valid-yaml", { flag: "wx" }); }],
+    ["changed", async (value) => writeSupersessionLock(value, { active_request_sha256: "f".repeat(64) })],
+  ];
+  for (const [label, arrange] of cases) {
+    const value = await fixture();
+    try {
+      await arrange(value);
+      const before = await snapshot(value), lockBefore = await readFile(supersessionLock(value), "utf8");
+      await expect(requestWithDependencies(value.root, address, value.args, { command: value.command }), label).rejects.toThrow();
+      await assertUnchanged(value, before);
+      expect(value.calls, `${label} refuses before Herdr`).toHaveLength(0);
+      expect(await readFile(supersessionLock(value), "utf8")).toBe(lockBefore);
+    } finally { await cleanup(value); }
+  }
+});
+
+test("RED: concurrent supersession attempts after stale cleanup publish one successor and cannot overwrite its immutable archive", async () => {
+  const value = await fixture();
+  try {
+    await writeSupersessionLock(value);
     const settled = await Promise.allSettled([
       requestWithDependencies(value.root, address, value.args, { command: value.command }),
       requestWithDependencies(value.root, address, value.args, { command: value.command }),
@@ -322,6 +378,7 @@ test("RED: concurrent supersession attempts publish one successor and cannot ove
     expect(settled.filter((entry) => entry.status === "rejected")).toHaveLength(1);
     expect((await readYaml<HandoverReplacementRequest>(value.active)).task).toBe("next-takeover");
     expect(await readFile(join(value.archive, "request.yaml"), "utf8")).toBe(value.priorBytes);
+    expect(await Bun.file(supersessionLock(value)).exists()).toBe(false);
   } finally { await cleanup(value); }
 });
 

@@ -571,20 +571,94 @@ async function rollbackSupersession(file: string, transaction: SupersessionTrans
   if (!transaction.archiveExisted) await rm(transaction.consumed.archive, { recursive: true, force: true });
 }
 
-async function cleanupSupersession(transaction: SupersessionTransaction | undefined, lock: string) {
-  if (transaction) {
-    await rm(transaction.archiveStage, { recursive: true, force: true });
-    await rm(transaction.successorStage, { force: true });
+async function cleanupSupersession(transaction: SupersessionTransaction | undefined) {
+  if (!transaction) return;
+  await rm(transaction.archiveStage, { recursive: true, force: true });
+  await rm(transaction.successorStage, { force: true });
+}
+
+const supersessionLockSchema = "atdd-flow/handover-replacement-supersession-lock/v1" as const;
+type SupersessionLock = { schema: typeof supersessionLockSchema; seat: string; active_request_sha256: string; pid: number; token: string };
+const errorCode = (error: unknown) => typeof error === "object" && error !== null && "code" in error ? String((error as { code: unknown }).code) : undefined;
+
+function validSupersessionLock(value: unknown, resolved: string, activeHash: string): value is SupersessionLock {
+  const record = object(value);
+  return record?.schema === supersessionLockSchema && record.seat === resolved && record.active_request_sha256 === activeHash
+    && Number.isInteger(record.pid) && Number(record.pid) > 0 && typeof record.token === "string" && Boolean(record.token);
+}
+
+function liveProcess(pid: number) {
+  try { process.kill(pid, 0); return true; }
+  catch (error) {
+    if (errorCode(error) === "ESRCH") return false;
+    if (errorCode(error) === "EPERM") return true;
+    throw error;
   }
-  await rm(lock, { force: true });
+}
+
+/**
+ * Recovery keeps the lock fail-closed without requiring a manual Desk edit.
+ * The active-request hash binds a dead owner to the immutable request it saw.
+ * A live PID, EPERM result, malformed record, or changed identity always refuses.
+ * A hard-link recovery marker is create-only, so one contender owns cleanup.
+ * New contenders observe that marker before attempting ordinary acquisition.
+ * A contender already between its marker check and `wx` may win the lock, but
+ * the recovery owner then loses its own `wx`; in either ordering only one wins.
+ * The marker also closes the remove/reacquire gap for later contenders.
+ */
+async function createSupersessionLock(lock: string, content: string) {
+  try { await writeFile(lock, content, { encoding: "utf8", flag: "wx" }); return true; }
+  catch (error) {
+    if (errorCode(error) === "EEXIST") return false;
+    throw error;
+  }
+}
+
+async function staleSupersessionLock(lock: string, resolved: string, activeHash: string) {
+  const observed = await readFile(lock, "utf8");
+  let prior: unknown;
+  try { prior = yaml.parse<unknown>(observed); }
+  catch { throw new Error(`Path-A replacement supersession lock is malformed for ${resolved}.`); }
+  if (!validSupersessionLock(prior, resolved, activeHash)) throw new Error(`Path-A replacement supersession lock identity changed for ${resolved}.`);
+  if (liveProcess(prior.pid)) throw new Error(`A Path-A replacement supersession is already in progress for ${resolved}.`);
+  return observed;
+}
+
+async function recoverSupersessionLock(file: string, lock: string, recovery: string, resolved: string, activeHash: string, observed: string, content: string) {
+  try { await link(lock, recovery); }
+  catch { throw new Error(`Path-A replacement lock recovery is already in progress for ${resolved}.`); }
+  try {
+    const [currentLock, currentActive] = await Promise.all([readFile(lock, "utf8"), readFile(file, "utf8")]);
+    if (currentLock !== observed || createHash("sha256").update(currentActive).digest("hex") !== activeHash) {
+      throw new Error(`Path-A replacement supersession lock changed during recovery for ${resolved}.`);
+    }
+    await rm(lock);
+    if (!await createSupersessionLock(lock, content)) throw new Error(`A Path-A replacement supersession is already in progress for ${resolved}.`);
+  } finally { await rm(recovery, { force: true }); }
+}
+
+async function acquireSupersessionLock(file: string, resolved: string) {
+  const lock = `${file}.lock`, recovery = `${lock}.recovery`;
+  const activeHash = createHash("sha256").update(await readFile(file, "utf8")).digest("hex");
+  const record: SupersessionLock = { schema: supersessionLockSchema, seat: resolved, active_request_sha256: activeHash, pid: process.pid, token: crypto.randomUUID() };
+  const content = yaml.print(record);
+  if (await exists(recovery)) throw new Error(`Path-A replacement lock recovery is already in progress for ${resolved}.`);
+  if (await createSupersessionLock(lock, content)) return { lock, content };
+  if (await exists(recovery)) throw new Error(`Path-A replacement lock recovery is already in progress for ${resolved}.`);
+  const observed = await staleSupersessionLock(lock, resolved, activeHash);
+  await recoverSupersessionLock(file, lock, recovery, resolved, activeHash, observed, content);
+  return { lock, content };
+}
+
+async function releaseSupersessionLock(lock: string, content: string) {
+  let current: string;
+  try { current = await readFile(lock, "utf8"); } catch { return; }
+  if (current === content) await rm(lock);
 }
 
 async function supersedeConsumedReplacement(root: string, resolved: string, file: string, intent: Awaited<ReturnType<typeof prepareReplacement>>, args: string[], dependencies: HandoverReplacementDependencies) {
   await mkdir(dirname(file), { recursive: true });
-  const lock = `${file}.lock`;
-  try { await writeFile(lock, `${process.pid}\n`, { encoding: "utf8", flag: "wx" }); }
-  catch { throw new Error(`A Path-A replacement supersession is already in progress for ${resolved}.`); }
-
+  const ownedLock = await acquireSupersessionLock(file, resolved);
   let transaction: SupersessionTransaction | undefined;
   try {
     const consumed = await consumedReplacement(root, resolved, file, intent);
@@ -604,7 +678,10 @@ async function supersedeConsumedReplacement(root: string, resolved: string, file
   } catch (error) {
     if (transaction) await rollbackSupersession(file, transaction);
     throw error;
-  } finally { await cleanupSupersession(transaction, lock); }
+  } finally {
+    await cleanupSupersession(transaction);
+    await releaseSupersessionLock(ownedLock.lock, ownedLock.content);
+  }
 }
 
 /**
