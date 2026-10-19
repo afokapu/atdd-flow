@@ -1,5 +1,11 @@
+// URN: component:flow:e005:handover:backend:integration
+// Tested-By:
+// - test:atdd-flow:repeat-handover-replacement-supersession
+// Runtime: bun
+// Purpose: Validate, preserve, publish, and reconcile governed context handover evidence.
+
 import { createHash } from "node:crypto";
-import { link, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { link, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { type Runtime, type Seat, atomicYaml, canonicalAddress, desk, exists, has, now, paths, project, readYaml, required, runOutput, seat, words, yaml } from "./core";
 import { type Task, terminal } from "./tasks";
@@ -102,23 +108,33 @@ export type HandoverReplacementRequest = {
   authorization: { id: string; hash: string };
   source: { pi_session: string; pi_session_path: string; herdr_session: string; pane: string };
   target: { herdr_session: string; pane: string; cwd: string };
-  legacy_source?: {
-    authorization_hash: string;
-    pi_session: string;
-    pi_session_path: string;
-    herdr_session: string;
-    pane: string;
-    cwd: string;
-    agent: string;
-    verified_at: string;
+  legacy_source?: LiveSourceProof;
+  supersession?: {
+    prior_request: { path: string; sha256: string; task: string; handover: string; handover_sha256: string; archive: string };
+    prior_receipt: { path: string; sha256: string; successor_session: string };
+    canonical_source: { pi_session: string; pi_session_path: string; herdr_session: string; pane: string; cwd: string; launch_receipt: string };
+    live_source: LiveSourceProof;
   };
   created_at: string;
+};
+
+type LiveSourceProof = {
+  authorization_hash: string;
+  pi_session: string;
+  pi_session_path: string;
+  herdr_session: string;
+  pane: string;
+  cwd: string;
+  agent: string;
+  verified_at: string;
 };
 
 export type HandoverReplacementDependencies = {
   command?: (command: string[]) => Promise<string>;
   at?: () => string;
   publish?: (file: string, content: string) => Promise<void>;
+  publishArchive?: (staging: string, destination: string) => Promise<void>;
+  replaceActive?: (staged: string, active: string) => Promise<void>;
 };
 
 export const handoverReplacementPath = (root: string, address: string) => join(root, ".atdd-flow", "handover-replacements", `${encodeURIComponent(address)}.yaml`);
@@ -155,7 +171,37 @@ function canonicalSourceMatchesRuntime(runtime: Runtime | undefined, source: Han
     && runtime?.pi_session === source.pi_session && runtime.pi_session_path === source.pi_session_path;
 }
 
+type SupersessionProof = NonNullable<HandoverReplacementRequest["supersession"]>;
+
+function supersessionPlacementMatches(runtime: Runtime | undefined, proof: SupersessionProof) {
+  const locator = runtime?.addresses.herdr;
+  return runtime?.application === "herdr" && typeof locator !== "string"
+    && locator?.session === proof.canonical_source.herdr_session && locator.pane === proof.canonical_source.pane;
+}
+
+function supersessionSessionMatches(runtime: Runtime | undefined, proof: SupersessionProof) {
+  return runtime?.pi_session === proof.canonical_source.pi_session
+    && runtime.pi_session_path === proof.canonical_source.pi_session_path
+    && runtime.launch_receipt === proof.canonical_source.launch_receipt
+    && proof.prior_receipt.path === runtime.launch_receipt
+    && proof.prior_receipt.successor_session === runtime.pi_session;
+}
+
+function supersessionEvidenceMatches(request: HandoverReplacementRequest, proof: SupersessionProof) {
+  return proof.canonical_source.cwd === request.target.cwd
+    && proof.canonical_source.herdr_session === request.target.herdr_session
+    && proof.canonical_source.pane === request.target.pane
+    && snapshotMatchesRequest(proof.live_source, request)
+    && /^[a-f0-9]{64}$/i.test(proof.prior_request.sha256)
+    && /^[a-f0-9]{64}$/i.test(proof.prior_request.handover_sha256)
+    && /^[a-f0-9]{64}$/i.test(proof.prior_receipt.sha256)
+    && basename(proof.prior_request.archive) === proof.prior_request.sha256
+    && Boolean(proof.prior_request.task && proof.prior_request.handover);
+}
+
 export function replacementMatchesRuntime(runtime: Runtime | undefined, request: HandoverReplacementRequest) {
+  const proof = request.supersession;
+  if (proof) return supersessionPlacementMatches(runtime, proof) && supersessionSessionMatches(runtime, proof) && supersessionEvidenceMatches(request, proof);
   if (!request.legacy_source) return canonicalSourceMatchesRuntime(runtime, request.source);
   return unboundLegacyRuntime(runtime, request.source.pane) && snapshotMatchesRequest(request.legacy_source, request);
 }
@@ -270,9 +316,10 @@ async function publishCreateOnly(file: string, content: string) {
   } finally { await rm(temporary, { force: true }); }
 }
 
-const replacementFlags = ["--legacy-source-bootstrap", "--handover", "--authorization", "--takeover-task", "--source-pi-session", "--source-pi-session-path", "--source-herdr-session", "--source-pane", "--herdr-session", "--target-pane", "--target-cwd"];
+const replacementFlags = ["--supersede-consumed", "--legacy-source-bootstrap", "--handover", "--authorization", "--takeover-task", "--source-pi-session", "--source-pi-session-path", "--source-herdr-session", "--source-pane", "--herdr-session", "--target-pane", "--target-cwd"];
 function validateReplacementArgs(args: string[]) {
-  if (args.some((arg) => arg.startsWith("--") && !replacementFlags.includes(arg))) throw new Error("Use `handover replace <main-seat> [--legacy-source-bootstrap] --handover <id> --authorization <operator-record> --takeover-task <id> --source-pi-session <id> --source-pi-session-path <jsonl> --source-herdr-session <session> --source-pane <pane> --herdr-session <session> --target-pane <pane> --target-cwd <canonical-main-worktree>`.");
+  if (args.some((arg) => arg.startsWith("--") && !replacementFlags.includes(arg))) throw new Error("Use `handover replace <main-seat> [--supersede-consumed] [--legacy-source-bootstrap] --handover <id> --authorization <operator-record> --takeover-task <id> --source-pi-session <id> --source-pi-session-path <jsonl> --source-herdr-session <session> --source-pane <pane> --herdr-session <session> --target-pane <pane> --target-cwd <canonical-main-worktree>`.");
+  if (has(args, "--supersede-consumed") && has(args, "--legacy-source-bootstrap")) throw new Error("Consumed replacement supersession cannot use legacy source bootstrap.");
 }
 
 async function currentReplacementHandover(root: string, resolved: string, args: string[]) {
@@ -303,12 +350,13 @@ function assertReplacementSource(record: Seat, source: HandoverReplacementReques
 
 async function prepareReplacement(root: string, resolved: string, args: string[]) {
   validateReplacementArgs(args);
-  const legacy = args.includes("--legacy-source-bootstrap"), handover = await currentReplacementHandover(root, resolved, args);
+  const legacy = has(args, "--legacy-source-bootstrap"), supersede = has(args, "--supersede-consumed");
+  const handover = await currentReplacementHandover(root, resolved, args);
   const task = nonEmpty(words(args, "--takeover-task"), "--takeover-task");
   const { record } = await exactMainTakeoverTask(root, resolved, task);
   const source = replacementSource(args), target = replacementTarget(args, record, source);
-  assertReplacementSource(record, source, legacy);
-  return { legacy, handover, task, source, target };
+  if (!supersede) assertReplacementSource(record, source, legacy);
+  return { legacy, supersede, handover, task, record, source, target };
 }
 
 function replacementRequest(resolved: string, intent: Awaited<ReturnType<typeof prepareReplacement>>, authorization: { id: string; hash: string }, legacySource: HandoverReplacementRequest["legacy_source"], dependencies: HandoverReplacementDependencies): HandoverReplacementRequest {
@@ -320,6 +368,245 @@ function replacementRequest(resolved: string, intent: Awaited<ReturnType<typeof 
   };
 }
 
+type ReplacementLaunchReceipt = {
+  schema?: string;
+  seat?: string;
+  tasks?: string[];
+  pi_session?: string;
+  pi_session_path?: string;
+  herdr_session?: string;
+  pane?: string;
+  handover_replacement?: { request?: HandoverReplacementRequest; successor_session?: string };
+};
+
+type ConsumedReplacement = {
+  request: HandoverReplacementRequest;
+  requestBytes: string;
+  requestHash: string;
+  receiptBytes: string;
+  receiptHash: string;
+  receiptPath: string;
+  canonical: NonNullable<NonNullable<HandoverReplacementRequest["supersession"]>["canonical_source"]>;
+  archive: string;
+};
+
+function validConsumedRequest(request: HandoverReplacementRequest, resolved: string) {
+  return request.schema === "atdd-flow/context-handover-replacement-request/v1" && request.seat === resolved
+    && Boolean(request.task && request.handover?.id && request.handover.sha256);
+}
+
+async function readConsumedRequest(file: string, resolved: string) {
+  let bytes: string;
+  try { bytes = await readFile(file, "utf8"); }
+  catch { throw new Error(`Consumed Path-A replacement request does not exist for ${resolved}.`); }
+  let request: HandoverReplacementRequest;
+  try { request = yaml.parse<HandoverReplacementRequest>(bytes); }
+  catch { throw new Error(`Consumed Path-A replacement request is malformed for ${resolved}.`); }
+  if (!validConsumedRequest(request, resolved)) throw new Error(`Consumed Path-A replacement request is invalid for ${resolved}.`);
+  return { bytes, request };
+}
+
+function completeCanonicalRuntime(intent: Awaited<ReturnType<typeof prepareReplacement>>) {
+  const runtime = intent.record.runtime, locator = runtime?.addresses.herdr;
+  if (runtime?.application !== "herdr" || typeof locator === "string" || !locator
+    || !runtime.pi_session || !runtime.pi_session_path || !runtime.launch_receipt) {
+    throw new Error("Consumed Path-A replacement requires a complete canonical main runtime receipt.");
+  }
+  return { runtime, locator };
+}
+
+function assertCanonicalPlacement(intent: Awaited<ReturnType<typeof prepareReplacement>>, request: HandoverReplacementRequest, locator: { session: string; pane: string }) {
+  if (locator.session !== intent.target.herdr_session || locator.pane !== intent.target.pane
+    || request.target?.herdr_session !== locator.session || request.target.pane !== locator.pane
+    || resolve(request.target.cwd) !== resolve(intent.record.worktree)) {
+    throw new Error("Consumed Path-A replacement does not match the unchanged canonical main runtime and placement.");
+  }
+  if (intent.handover.supersedes !== request.handover.id) throw new Error("Consumed Path-A replacement does not match the current handover lineage.");
+}
+
+function canonicalRuntimeForSupersession(intent: Awaited<ReturnType<typeof prepareReplacement>>, request: HandoverReplacementRequest) {
+  const { runtime, locator } = completeCanonicalRuntime(intent);
+  assertCanonicalPlacement(intent, request, locator);
+  return {
+    pi_session: runtime.pi_session!, pi_session_path: runtime.pi_session_path!,
+    herdr_session: locator.session, pane: locator.pane, cwd: resolve(intent.record.worktree), launch_receipt: runtime.launch_receipt!,
+  };
+}
+
+async function assertTerminalPriorTask(root: string, projectName: string, taskId: string) {
+  const priorTask = await readYaml<Task>(paths(root).taskFile(projectName, taskId));
+  if (priorTask.schema !== "atdd-workflow/task/v1" || !terminal(priorTask)) {
+    throw new Error("Consumed Path-A replacement requires its prior takeover task to be terminal.");
+  }
+}
+
+async function readReplacementReceipt(path: string) {
+  try {
+    const bytes = await readFile(path, "utf8");
+    return { bytes, receipt: yaml.parse<ReplacementLaunchReceipt>(bytes) };
+  } catch { throw new Error("Consumed Path-A replacement requires its immutable prior launch receipt."); }
+}
+
+function receiptMatchesCanonical(receipt: ReplacementLaunchReceipt, resolved: string, canonical: ConsumedReplacement["canonical"]) {
+  return receipt.schema === "atdd-flow/pi-runtime-launch-receipt/v1" && receipt.seat === resolved
+    && receipt.pi_session === canonical.pi_session && receipt.pi_session_path === canonical.pi_session_path
+    && receipt.herdr_session === canonical.herdr_session && receipt.pane === canonical.pane;
+}
+
+function receiptProvesRequest(receipt: ReplacementLaunchReceipt, request: HandoverReplacementRequest, canonical: ConsumedReplacement["canonical"]) {
+  return Array.isArray(receipt.tasks) && receipt.tasks.includes(request.task)
+    && receipt.handover_replacement?.successor_session === canonical.pi_session
+    && JSON.stringify(receipt.handover_replacement.request) === JSON.stringify(request);
+}
+
+async function consumedReplacement(root: string, resolved: string, file: string, intent: Awaited<ReturnType<typeof prepareReplacement>>) {
+  const { bytes: requestBytes, request } = await readConsumedRequest(file, resolved);
+  const canonical = canonicalRuntimeForSupersession(intent, request);
+  await assertTerminalPriorTask(root, intent.record.project, request.task);
+  const { bytes: receiptBytes, receipt } = await readReplacementReceipt(canonical.launch_receipt);
+  if (!receiptMatchesCanonical(receipt, resolved, canonical) || !receiptProvesRequest(receipt, request, canonical)) {
+    throw new Error("Consumed Path-A replacement prior receipt does not prove the exact request, task, and canonical successor.");
+  }
+  const requestHash = createHash("sha256").update(requestBytes).digest("hex");
+  const receiptHash = createHash("sha256").update(receiptBytes).digest("hex");
+  return {
+    request, requestBytes, requestHash, receiptBytes, receiptHash, canonical,
+    receiptPath: canonical.launch_receipt,
+    archive: join(root, ".atdd-flow", "handover-replacement-archive", encodeURIComponent(resolved), requestHash),
+  } satisfies ConsumedReplacement;
+}
+
+function supersessionManifest(resolved: string, file: string, consumed: ConsumedReplacement) {
+  return yaml.print({
+    schema: "atdd-flow/context-handover-replacement-supersession/v1", seat: resolved,
+    prior_request: { path: file, sha256: consumed.requestHash, task: consumed.request.task, handover: consumed.request.handover.id, handover_sha256: consumed.request.handover.sha256 },
+    prior_receipt: { path: consumed.receiptPath, sha256: consumed.receiptHash, successor_session: consumed.canonical.pi_session },
+  });
+}
+
+async function archiveMatches(destination: string, requestBytes: string, receiptBytes: string, manifest: string) {
+  try {
+    const [files, request, receipt, proof] = await Promise.all([
+      readdir(destination), readFile(join(destination, "request.yaml"), "utf8"),
+      readFile(join(destination, "launch-receipt.yaml"), "utf8"), readFile(join(destination, "supersession.yaml"), "utf8"),
+    ]);
+    return files.sort().join("\n") === ["launch-receipt.yaml", "request.yaml", "supersession.yaml"].join("\n")
+      && request === requestBytes && receipt === receiptBytes && proof === manifest;
+  } catch { return false; }
+}
+
+async function restoreActive(file: string, priorBytes: string) {
+  let current: string | undefined;
+  try { current = await readFile(file, "utf8"); } catch { /* Restore an absent active request below. */ }
+  if (current === priorBytes) return;
+  const rollback = join(dirname(file), `.${basename(file)}.${crypto.randomUUID()}.rollback.tmp`);
+  try {
+    await writeFile(rollback, priorBytes, { encoding: "utf8", flag: "wx" });
+    await rename(rollback, file);
+  } finally { await rm(rollback, { force: true }); }
+}
+
+function supersedingRequest(resolved: string, file: string, intent: Awaited<ReturnType<typeof prepareReplacement>>, authorization: { id: string; hash: string }, consumed: ConsumedReplacement, liveSource: LiveSourceProof, dependencies: HandoverReplacementDependencies): HandoverReplacementRequest {
+  return {
+    ...replacementRequest(resolved, intent, authorization, undefined, dependencies),
+    supersession: {
+      prior_request: {
+        path: file, sha256: consumed.requestHash, task: consumed.request.task,
+        handover: consumed.request.handover.id, handover_sha256: consumed.request.handover.sha256, archive: consumed.archive,
+      },
+      prior_receipt: { path: consumed.receiptPath, sha256: consumed.receiptHash, successor_session: consumed.canonical.pi_session },
+      canonical_source: consumed.canonical, live_source: liveSource,
+    },
+  };
+}
+
+type SupersessionTransaction = {
+  consumed: ConsumedReplacement;
+  archiveStage: string;
+  successorStage: string;
+  archiveExisted: boolean;
+  activeSwapAttempted: boolean;
+};
+
+async function stageSupersession(file: string, request: HandoverReplacementRequest, consumed: ConsumedReplacement, manifest: string, dependencies: HandoverReplacementDependencies) {
+  const archiveParent = dirname(consumed.archive);
+  const archiveStage = join(archiveParent, `.${basename(consumed.archive)}.${crypto.randomUUID()}.tmp`);
+  const successorStage = join(dirname(file), `.${basename(file)}.${crypto.randomUUID()}.tmp`);
+  await mkdir(archiveParent, { recursive: true });
+  try {
+    await mkdir(archiveStage);
+    const successorWrite = dependencies.publish
+      ? dependencies.publish(successorStage, yaml.print(request))
+      : writeFile(successorStage, yaml.print(request), { encoding: "utf8", flag: "wx" });
+    await Promise.all([
+      writeFile(join(archiveStage, "request.yaml"), consumed.requestBytes, { encoding: "utf8", flag: "wx" }),
+      writeFile(join(archiveStage, "launch-receipt.yaml"), consumed.receiptBytes, { encoding: "utf8", flag: "wx" }),
+      writeFile(join(archiveStage, "supersession.yaml"), manifest, { encoding: "utf8", flag: "wx" }),
+      successorWrite,
+    ]);
+    return { archiveStage, successorStage };
+  } catch (error) {
+    await rm(archiveStage, { recursive: true, force: true });
+    await rm(successorStage, { force: true });
+    throw error;
+  }
+}
+
+async function publishArchiveEvidence(transaction: SupersessionTransaction, manifest: string, dependencies: HandoverReplacementDependencies) {
+  const { consumed, archiveStage, archiveExisted } = transaction;
+  if (archiveExisted) {
+    if (!await archiveMatches(consumed.archive, consumed.requestBytes, consumed.receiptBytes, manifest)) {
+      throw new Error("Consumed Path-A replacement archive collides with different immutable evidence.");
+    }
+    return;
+  }
+  await (dependencies.publishArchive ?? rename)(archiveStage, consumed.archive);
+  if (!await archiveMatches(consumed.archive, consumed.requestBytes, consumed.receiptBytes, manifest)) {
+    throw new Error("Consumed Path-A replacement archive publication was incomplete.");
+  }
+}
+
+async function rollbackSupersession(file: string, transaction: SupersessionTransaction) {
+  if (transaction.activeSwapAttempted) await restoreActive(file, transaction.consumed.requestBytes);
+  if (!transaction.archiveExisted) await rm(transaction.consumed.archive, { recursive: true, force: true });
+}
+
+async function cleanupSupersession(transaction: SupersessionTransaction | undefined, lock: string) {
+  if (transaction) {
+    await rm(transaction.archiveStage, { recursive: true, force: true });
+    await rm(transaction.successorStage, { force: true });
+  }
+  await rm(lock, { force: true });
+}
+
+async function supersedeConsumedReplacement(root: string, resolved: string, file: string, intent: Awaited<ReturnType<typeof prepareReplacement>>, args: string[], dependencies: HandoverReplacementDependencies) {
+  await mkdir(dirname(file), { recursive: true });
+  const lock = `${file}.lock`;
+  try { await writeFile(lock, `${process.pid}\n`, { encoding: "utf8", flag: "wx" }); }
+  catch { throw new Error(`A Path-A replacement supersession is already in progress for ${resolved}.`); }
+
+  let transaction: SupersessionTransaction | undefined;
+  try {
+    const consumed = await consumedReplacement(root, resolved, file, intent);
+    const authorization = await resolveExactSessionAdoptionAuthorization(root, nonEmpty(words(args, "--authorization"), "--authorization"), {
+      seat: resolved, pi_session: intent.source.pi_session, pi_session_path: intent.source.pi_session_path,
+      source: { herdr_session: intent.source.herdr_session, pane: intent.source.pane }, target: intent.target,
+    });
+    const liveSource = await verifyLegacySource(intent.source, intent.target, authorization.hash, dependencies);
+    const request = supersedingRequest(resolved, file, intent, authorization, consumed, liveSource, dependencies);
+    const manifest = supersessionManifest(resolved, file, consumed);
+    const staging = await stageSupersession(file, request, consumed, manifest, dependencies);
+    transaction = { consumed, ...staging, archiveExisted: await exists(consumed.archive), activeSwapAttempted: false };
+    await publishArchiveEvidence(transaction, manifest, dependencies);
+    transaction.activeSwapAttempted = true;
+    await (dependencies.replaceActive ?? rename)(transaction.successorStage, file);
+    console.log(`Recorded superseding Path-A replacement request for ${resolved}.`);
+  } catch (error) {
+    if (transaction) await rollbackSupersession(file, transaction);
+    throw error;
+  } finally { await cleanupSupersession(transaction, lock); }
+}
+
 /**
  * Creates the single immutable intent that an old Pi may observe before it voluntarily exits.
  * It deliberately does not stop, bind, attach, project, or launch any process.
@@ -327,7 +614,8 @@ function replacementRequest(resolved: string, intent: Awaited<ReturnType<typeof 
 export async function requestHandoverReplacement(root: string, address: string, args: string[], dependencies: HandoverReplacementDependencies = {}) {
   const resolved = await canonicalAddress(root, address), intent = await prepareReplacement(root, resolved, args);
   const file = handoverReplacementPath(root, resolved);
-  if (intent.legacy && await exists(file)) throw new Error(`Path-A replacement request already exists for ${resolved}.`);
+  if (intent.supersede) return supersedeConsumedReplacement(root, resolved, file, intent, args, dependencies);
+  if (await exists(file)) throw new Error(`Path-A replacement request already exists for ${resolved}.`);
   const authorization = await resolveExactSessionAdoptionAuthorization(root, nonEmpty(words(args, "--authorization"), "--authorization"), {
     seat: resolved, pi_session: intent.source.pi_session, pi_session_path: intent.source.pi_session_path,
     source: { herdr_session: intent.source.herdr_session, pane: intent.source.pane }, target: intent.target,
