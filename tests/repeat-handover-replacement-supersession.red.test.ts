@@ -46,6 +46,15 @@ async function invoke(...args: string[]) {
   return { exitCode, output: `${stdout}${stderr}` };
 }
 
+async function invokeAtRoot(root: string, ...args: string[]) {
+  const child = Bun.spawn([process.execPath, cli, ...args], {
+    stdout: "pipe", stderr: "pipe",
+    env: { ...process.env, ATDD_WORKFLOW_ROOT: root, PATH: `${join(root, "bin")}:${process.env.PATH ?? ""}` },
+  });
+  const [stdout, stderr, exitCode] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+  return { exitCode, output: `${stdout}${stderr}` };
+}
+
 function handoverText(id: string, supersedes: string, sourceSession: string) {
   return `HANDOVER ${address} | 2026-10-19T14:36:41Z | handover-id ${id} | supersedes ${supersedes}\nRuntime: herdr forge:${pane} | pi session ${sourceSession} | model test/pi | context 80%\n\n1. SEAT, AUTHORITY, TOOLKIT AND HAZARDS\n- exact\n\n2. OPEN WORK AND IN-FLIGHT OPERATIONS\n- exact\n\n3. DEPENDENCIES (both directions)\n- none\n\n4. RESUME PROCEDURE AND NEXT ACTIONS\n- exact\n`;
 }
@@ -54,10 +63,18 @@ type FixtureShape = "direct" | "frg-canonical-source" | "frg-stale-canonical-sou
 
 async function fixture(overrides: Partial<Reports> = {}, shape: FixtureShape = "direct") {
   const root = await mkdtemp(join(tmpdir(), "atdd-flow-repeat-handover-"));
-  const bin = join(root, "bin"), pi = join(bin, "pi");
+  const bin = join(root, "bin"), pi = join(bin, "pi"), fakeHerdr = join(bin, "herdr");
   await mkdir(bin);
   await writeFile(pi, "#!/bin/sh\nexit 0\n");
-  await chmod(pi, 0o755);
+  await writeFile(fakeHerdr, `#!/bin/sh
+case "$*" in
+  *"pane get"*) printf '%s\\n' '${JSON.stringify({ result: { pane: { pane_id: pane, agent: "pi", agent_status: "idle", agent_session: { kind: "path", source: "herdr:pi", value: livePath }, cwd, label: address } } })}' ;;
+  *"agent get"*) printf '%s\\n' '${JSON.stringify({ result: { agent: { name: "flow-main-frg-workstation", agent: "pi", pane_id: pane, agent_status: "idle", agent_session: { kind: "path", source: "herdr:pi", value: livePath }, cwd } } })}' ;;
+  *"pane process-info"*) printf '%s\\n' '${JSON.stringify({ result: { process_info: { pane_id: pane, shell_pid: 42, foreground_processes: [{ name: "node", argv0: "pi", pid: 100, cwd }] } } })}' ;;
+  *) exit 2 ;;
+esac
+`);
+  await Promise.all([chmod(pi, 0o755), chmod(fakeHerdr, 0o755)]);
   await atomicYaml(paths(root).desk, {
     schema: "atdd-workflow/desk/v1", desk: "demo", application: "herdr", executables: { pi },
   });
@@ -232,13 +249,13 @@ test("RED: CLI exposes explicit consumed-request supersession without weakening 
   expect(output).toContain("handover replace <address> [--supersede-consumed]");
 });
 
-test("RED: exact FRG stale canonical runtime accepts the authorized sole live source for the current handover", async () => {
+test("RED: public handover replace command accepts the exact FRG authorized source while canonical runtime is stale", async () => {
   const value = await fixture({}, "frg-stale-canonical-source");
   try {
     const before = await snapshot(value);
-    await requestWithDependencies(value.root, address, value.args, {
-      command: value.command, at: () => "2026-10-19T19:20:20.000Z",
-    });
+    const result = await invokeAtRoot(value.root, "handover", "replace", address, ...value.args);
+    expect(result).toMatchObject({ exitCode: 0 });
+    expect(result.output).toContain(`Recorded superseding Path-A replacement request for ${address}.`);
     const successor = await readYaml<HandoverReplacementRequest & { supersession?: Record<string, any> }>(value.active);
     expect(value.priorSha).toBe(consumedRequestHash);
     expect(successor).toMatchObject({
@@ -256,8 +273,7 @@ test("RED: exact FRG stale canonical runtime accepts the authorized sole live so
     expect(await readFile(join(value.archive, "request.yaml"), "utf8")).toBe(value.priorBytes);
     expect(await readFile(paths(value.root).seatFile(address), "utf8")).toBe(before.seat);
     expect(await readFile(value.receipt, "utf8")).toBe(before.receipt);
-    expect(value.calls.length).toBeGreaterThan(0);
-    expect(value.calls.some(mutatingHerdrCommand)).toBe(false);
+    expect(value.calls).toHaveLength(0);
   } finally { await cleanup(value); }
 });
 
