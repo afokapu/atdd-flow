@@ -8,12 +8,22 @@ import { dirname, join } from "node:path";
 import { expect, test } from "bun:test";
 import { createExactSessionAdoptionAuthorization } from "../src/adoption-authorizations";
 import { atomicYaml, paths, readYaml, yaml } from "../src/core";
-import { handoverReplacementPath, recordHandover, replacementForMainLaunch, requestHandoverReplacement, type HandoverReplacementDependencies, type HandoverReplacementRequest } from "../src/handover";
+import { handoverReplacementPath, replacementForMainLaunch, requestHandoverReplacement, type HandoverReplacementDependencies, type HandoverReplacementRequest } from "../src/handover";
 import { launchPiRuntime } from "../src/seats";
 
-const cli = join(import.meta.dir, "..", "src", "cli.ts"), address = "main@demo";
-const canonicalSession = "11111111-1111-4111-8111-111111111111", liveSession = "22222222-2222-4222-8222-222222222222";
-const pane = "w6:p6", cwd = "/work/demo";
+const cli = join(import.meta.dir, "..", "src", "cli.ts");
+const projectName = "frg-workstation", address = `main@${projectName}`;
+const canonicalSession = "ed0280b7-ab1e-4f93-918a-ab9f6794413c";
+const canonicalPath = "/Users/alecfokapu/.pi/agent/sessions/--Users-alecfokapu-Github-frg-workstation--/2026-10-19T08-22-48-930Z_ed0280b7-ab1e-4f93-918a-ab9f6794413c.jsonl";
+const liveSession = "01a15391-2a48-7467-aedd-a13f993202d6";
+const livePath = "/Users/alecfokapu/.pi/agent/sessions/--Users-alecfokapu-Github-frg-workstation--/2026-10-19T09-49-44-906Z_01a15391-2a48-7467-aedd-a13f993202d6.jsonl";
+const pane = "w6:p6", cwd = "/Users/alecfokapu/Github/frg-workstation";
+const consumedHandover = "H-20261019T073912Z-main-frg-workstation-successor";
+const currentHandover = "H-20261019T143641Z-main-frg-workstation-successor";
+const currentSupersedes = "H-20261019T143137Z-main-frg-workstation-successor";
+const priorTask = "main-successor-20261019", takeoverTask = "main-sso-successor-20261019";
+const authorizationId = "A-frg-main-sso-repeat-20261019";
+const consumedRequestHash = "88574bdab0db6c9c3d6cb46204e90b568868e37b17d30a77b5ed53b071b1596c";
 
 type Reports = {
   pane: string;
@@ -36,18 +46,11 @@ async function invoke(...args: string[]) {
   return { exitCode, output: `${stdout}${stderr}` };
 }
 
-function handoverText(id = "H-current", supersedes = "H-prior", at = "2026-10-19T14:31:37Z", sourceSession = liveSession) {
-  return `HANDOVER ${address} | ${at} | handover-id ${id} | supersedes ${supersedes}\nRuntime: herdr forge:${pane} | pi session ${sourceSession} | model test/pi | context 80%\n\n1. SEAT, AUTHORITY, TOOLKIT AND HAZARDS\n- exact\n\n2. OPEN WORK AND IN-FLIGHT OPERATIONS\n- exact\n\n3. DEPENDENCIES (both directions)\n- none\n\n4. RESUME PROCEDURE AND NEXT ACTIONS\n- exact\n`;
+function handoverText(id: string, supersedes: string, sourceSession: string) {
+  return `HANDOVER ${address} | 2026-10-19T14:36:41Z | handover-id ${id} | supersedes ${supersedes}\nRuntime: herdr forge:${pane} | pi session ${sourceSession} | model test/pi | context 80%\n\n1. SEAT, AUTHORITY, TOOLKIT AND HAZARDS\n- exact\n\n2. OPEN WORK AND IN-FLIGHT OPERATIONS\n- exact\n\n3. DEPENDENCIES (both directions)\n- none\n\n4. RESUME PROCEDURE AND NEXT ACTIONS\n- exact\n`;
 }
 
-const frgLineage = [
-  ["H-20261019T073912Z", "none", "2026-10-19T07:39:12Z"],
-  ["H-20261019T120000Z", "H-20261019T073912Z", "2026-10-19T12:00:00Z"],
-  ["H-20261019T143137Z", "H-20261019T120000Z", "2026-10-19T14:31:37Z"],
-  ["H-20261019T143641Z", "H-20261019T143137Z", "2026-10-19T14:36:41Z"],
-] as const;
-
-type FixtureShape = "direct" | "frg" | "frg-unproven-source";
+type FixtureShape = "direct" | "frg-canonical-source" | "frg-stale-canonical-source";
 
 async function fixture(overrides: Partial<Reports> = {}, shape: FixtureShape = "direct") {
   const root = await mkdtemp(join(tmpdir(), "atdd-flow-repeat-handover-"));
@@ -61,90 +64,92 @@ async function fixture(overrides: Partial<Reports> = {}, shape: FixtureShape = "
   await atomicYaml(paths(root).models, {
     schema: "atdd-workflow/models/v1", models: [{ id: "economy", executable: "pi" }],
   });
-  await atomicYaml(paths(root).projectFile("demo"), {
-    schema: "atdd-workflow/project/v1", project: "demo", repository: cwd, roles: {},
+  await atomicYaml(paths(root).projectFile(projectName), {
+    schema: "atdd-workflow/project/v1", project: projectName, repository: cwd, roles: {},
   });
 
-  const canonicalPath = join(root, `canonical_${canonicalSession}.jsonl`);
-  const distinctLivePath = join(root, `live_${liveSession}.jsonl`);
-  const exactFrgShape = shape !== "direct";
-  const sourceSession = shape === "frg" ? canonicalSession : liveSession;
-  const livePath = shape === "frg" ? canonicalPath : distinctLivePath;
-  const consumedHandover = exactFrgShape ? frgLineage[0][0] : "H-prior";
-  const currentHandover = exactFrgShape ? frgLineage.at(-1)![0] : "H-current";
-  const consumedText = exactFrgShape ? handoverText(...frgLineage[0], canonicalSession) : handoverText("H-prior", "none", "2026-10-19T07:39:12Z", canonicalSession);
-  await writeFile(canonicalPath, "canonical predecessor session");
-  await writeFile(distinctLivePath, "exact live source session");
-
+  const sourceSession = shape === "frg-canonical-source" ? canonicalSession : liveSession;
+  const sourcePath = shape === "frg-canonical-source" ? canonicalPath : livePath;
+  const requestedHandover = shape === "direct" ? "H-direct-main-frg-workstation-successor" : currentHandover;
+  const supersedes = shape === "direct" ? consumedHandover : currentSupersedes;
   const prior: HandoverReplacementRequest = {
     schema: "atdd-flow/context-handover-replacement-request/v1",
     seat: address,
-    task: "prior-takeover",
-    handover: { id: consumedHandover, sha256: exactFrgShape ? createHash("sha256").update(consumedText).digest("hex") : "a".repeat(64) },
-    authorization: { id: "A-prior", hash: "b".repeat(64) },
+    task: priorTask,
+    handover: {
+      id: consumedHandover,
+      sha256: "18bc3ac546de35157fc722b6a703363381fc49c6b3fe4fbcbaa7a3896e5a39b8",
+    },
+    authorization: {
+      id: "A-frg-main-path-a-20261019T0820Z",
+      hash: "0942cfed6ba44dbc130c249fe67de65dd873128a5a6a8a322bc854ee0a738838",
+    },
     source: {
-      pi_session: "00000000-0000-4000-8000-000000000000",
-      pi_session_path: join(root, "prior_00000000-0000-4000-8000-000000000000.jsonl"),
+      pi_session: "01a1531e-966a-744e-b902-dea5900e53a8",
+      pi_session_path: "/Users/alecfokapu/.pi/agent/sessions/--Users-alecfokapu-Github-frg-workstation--/2026-10-19T07-44-35-947Z_01a1531e-966a-744e-b902-dea5900e53a8.jsonl",
       herdr_session: "forge",
       pane,
     },
     target: { herdr_session: "forge", pane, cwd },
-    created_at: "2026-10-19T07:39:12.000Z",
+    legacy_source: {
+      authorization_hash: "0942cfed6ba44dbc130c249fe67de65dd873128a5a6a8a322bc854ee0a738838",
+      pi_session: "01a1531e-966a-744e-b902-dea5900e53a8",
+      pi_session_path: "/Users/alecfokapu/.pi/agent/sessions/--Users-alecfokapu-Github-frg-workstation--/2026-10-19T07-44-35-947Z_01a1531e-966a-744e-b902-dea5900e53a8.jsonl",
+      herdr_session: "forge",
+      pane,
+      cwd,
+      agent: "main-frg-workstation",
+      verified_at: "2026-10-19T08:22:10.722Z",
+    },
+    created_at: "2026-10-19T08:22:10.722Z",
   };
   const active = handoverReplacementPath(root, address);
   await atomicYaml(active, prior);
   const priorBytes = await readFile(active, "utf8");
   const priorSha = createHash("sha256").update(priorBytes).digest("hex");
+  expect(priorSha).toBe(consumedRequestHash);
 
-  const receipt = join(root, ".atdd-flow", "runtime-launch", "prior-successor.yaml");
+  const receipt = join(root, ".atdd-flow", "runtime-launch", `${canonicalSession}-receipt.yaml`);
   await atomicYaml(receipt, {
     schema: "atdd-flow/pi-runtime-launch-receipt/v1",
     seat: address,
-    tasks: ["prior-takeover"],
+    tasks: [priorTask],
     candidate: "economy",
     pi_session: canonicalSession,
     pi_session_path: canonicalPath,
     herdr_session: "forge",
     pane,
     handover_replacement: { request: prior, successor_session: canonicalSession },
-    created_at: "2026-10-19T07:45:00.000Z",
+    created_at: "2026-10-19T08:22:51.906Z",
   });
   await atomicYaml(paths(root).seatFile(address), {
-    schema: "atdd-workflow/seat/v2", address, role: "main", project: "demo", worktree: cwd, branch: "main",
+    schema: "atdd-workflow/seat/v2", address, role: "main", project: projectName, worktree: cwd, branch: "main",
     runtime: {
       application: "herdr", addresses: { herdr: { session: "forge", pane } },
       pi_session: canonicalSession, pi_session_path: canonicalPath, launch_receipt: receipt,
     },
   });
-  if (exactFrgShape) {
-    for (const lineage of frgLineage) {
-      const file = join(root, `${lineage[0]}.md`);
-      await writeFile(file, handoverText(...lineage, sourceSession));
-      await recordHandover(root, address, ["--file", file]);
-    }
-  } else {
-    await atomicYaml(paths(root).handoverFile(address), {
-      schema: "atdd-workflow/handover/v1", seat: address, handover_id: currentHandover, supersedes: consumedHandover,
-      recorded_at: "2026-10-19T14:31:37.000Z", text: handoverText(),
-    });
-  }
-  await atomicYaml(paths(root).taskFile("demo", "prior-takeover"), {
+  await atomicYaml(paths(root).handoverFile(address), {
+    schema: "atdd-workflow/handover/v1", seat: address, handover_id: requestedHandover, supersedes,
+    recorded_at: "2026-10-19T14:37:16.062Z", text: handoverText(requestedHandover, supersedes, sourceSession),
+  });
+  await atomicYaml(paths(root).taskFile(projectName, priorTask), {
     schema: "atdd-workflow/task/v1", title: "Prior takeover", status: "done", coordinator: address,
     assignee: address, done_when: [{ text: "Prior successor resumed.", proof: "receipt" }],
   });
-  await atomicYaml(paths(root).taskFile("demo", "next-takeover"), {
+  await atomicYaml(paths(root).taskFile(projectName, takeoverTask), {
     schema: "atdd-workflow/task/v1", title: "Next takeover", status: "todo", coordinator: address,
     assignee: address, done_when: [{ text: "Next successor resumes." }],
   });
-  await createExactSessionAdoptionAuthorization(root, "A-next", [
+  await createExactSessionAdoptionAuthorization(root, authorizationId, [
     "--by", "operator@desk", "--seat", address,
-    "--pi-session", sourceSession, "--pi-session-path", livePath,
+    "--pi-session", sourceSession, "--pi-session-path", sourcePath,
     "--source-herdr-session", "forge", "--source-pane", pane,
     "--target-herdr-session", "forge", "--target-pane", pane, "--target-cwd", cwd,
   ]);
 
   const reports: Reports = {
-    pane, agent: "pi", agentPane: pane, sessionPath: livePath, agentSessionPath: livePath,
+    pane, agent: "pi", agentPane: pane, sessionPath: sourcePath, agentSessionPath: sourcePath,
     cwd, writers: 1, ...overrides,
   };
   const calls: string[][] = [];
@@ -152,7 +157,7 @@ async function fixture(overrides: Partial<Reports> = {}, shape: FixtureShape = "
   const command = async (command: string[]) => {
     calls.push(command);
     const operation = command.slice(3);
-    if (operation[0] === "workspace" && operation[1] === "list") return JSON.stringify({ result: { workspaces: [{ workspace_id: "w6", label: "demo", worktree: { checkout_path: cwd } }] } });
+    if (operation[0] === "workspace" && operation[1] === "list") return JSON.stringify({ result: { workspaces: [{ workspace_id: "w6", label: projectName, worktree: { checkout_path: cwd } }] } });
     if (operation[0] === "tab" && operation[1] === "list") return JSON.stringify({ result: { tabs: [{ tab_id: "w6:t1", workspace_id: "w6", label: address }] } });
     if (operation[0] === "pane" && operation[1] === "list") return JSON.stringify({ result: { panes: [{ pane_id: pane, tab_id: "w6:t1", label: address, agent: "pi", agent_status: "idle" }] } });
     if (operation[0] === "pane" && operation[1] === "get") return JSON.stringify({ result: { pane: {
@@ -160,7 +165,7 @@ async function fixture(overrides: Partial<Reports> = {}, shape: FixtureShape = "
       cwd: reports.cwd, label: address,
     } } });
     if (operation[0] === "agent" && operation[1] === "get") return JSON.stringify({ result: { agent: {
-      name: "flow-main-demo", agent: reports.agent, pane_id: reports.agentPane, agent_status: "idle",
+      name: "flow-main-frg-workstation", agent: reports.agent, pane_id: reports.agentPane, agent_status: "idle",
       agent_session: session(reports.agentSessionPath), cwd: reports.cwd,
     } } });
     if (operation[0] === "pane" && operation[1] === "process-info") return JSON.stringify({ result: { process_info: {
@@ -170,13 +175,13 @@ async function fixture(overrides: Partial<Reports> = {}, shape: FixtureShape = "
     throw new Error(`Unexpected Herdr command: ${command.join(" ")}`);
   };
   const args = [
-    "--supersede-consumed", "--handover", currentHandover, "--authorization", "A-next",
-    "--takeover-task", "next-takeover", "--source-pi-session", sourceSession,
-    "--source-pi-session-path", livePath, "--source-herdr-session", "forge", "--source-pane", pane,
+    "--supersede-consumed", "--handover", requestedHandover, "--authorization", authorizationId,
+    "--takeover-task", takeoverTask, "--source-pi-session", sourceSession,
+    "--source-pi-session-path", sourcePath, "--source-herdr-session", "forge", "--source-pane", pane,
     "--herdr-session", "forge", "--target-pane", pane, "--target-cwd", cwd,
   ];
   const archive = join(root, ".atdd-flow", "handover-replacement-archive", encodeURIComponent(address), priorSha);
-  return { root, active, archive, receipt, prior, priorBytes, priorSha, canonicalPath, livePath, args, command, calls, sourceSession, currentHandover };
+  return { root, active, archive, receipt, prior, priorBytes, priorSha, canonicalPath, livePath: sourcePath, args, command, calls, sourceSession, currentHandover: requestedHandover };
 }
 
 async function snapshot(value: Awaited<ReturnType<typeof fixture>>) {
@@ -205,7 +210,7 @@ async function stageExactArchive(value: Awaited<ReturnType<typeof fixture>>) {
     writeFile(join(value.archive, "launch-receipt.yaml"), receiptBytes),
     writeFile(join(value.archive, "supersession.yaml"), yaml.print({
       schema: "atdd-flow/context-handover-replacement-supersession/v1", seat: address,
-      prior_request: { path: value.active, sha256: value.priorSha, task: "prior-takeover", handover: "H-prior", handover_sha256: "a".repeat(64) },
+      prior_request: { path: value.active, sha256: value.priorSha, task: priorTask, handover: consumedHandover, handover_sha256: value.prior.handover.sha256 },
       prior_receipt: { path: value.receipt, sha256: receiptSha, successor_session: canonicalSession },
     })),
   ]);
@@ -227,52 +232,77 @@ test("RED: CLI exposes explicit consumed-request supersession without weakening 
   expect(output).toContain("handover replace <address> [--supersede-consumed]");
 });
 
-test("RED: exact FRG current handover supersedes a consumed request after multiple valid intervening handovers", async () => {
-  const value = await fixture({}, "frg");
+test("RED: exact FRG stale canonical runtime accepts the authorized sole live source for the current handover", async () => {
+  const value = await fixture({}, "frg-stale-canonical-source");
   try {
     const before = await snapshot(value);
     await requestWithDependencies(value.root, address, value.args, {
-      command: value.command, at: () => "2026-10-19T16:51:08.546Z",
+      command: value.command, at: () => "2026-10-19T19:20:20.000Z",
     });
     const successor = await readYaml<HandoverReplacementRequest & { supersession?: Record<string, any> }>(value.active);
+    expect(value.priorSha).toBe(consumedRequestHash);
     expect(successor).toMatchObject({
-      handover: { id: "H-20261019T143641Z" },
-      source: { pi_session: canonicalSession, pi_session_path: value.canonicalPath, herdr_session: "forge", pane },
+      task: takeoverTask,
+      handover: { id: currentHandover },
+      authorization: { id: authorizationId },
+      source: { pi_session: liveSession, pi_session_path: livePath, herdr_session: "forge", pane },
       target: { herdr_session: "forge", pane, cwd },
       supersession: {
-        prior_request: { task: "prior-takeover", handover: "H-20261019T073912Z" },
-        canonical_source: { pi_session: canonicalSession, pi_session_path: value.canonicalPath, herdr_session: "forge", pane, cwd },
-        live_source: { pi_session: canonicalSession, pi_session_path: value.canonicalPath, herdr_session: "forge", pane, cwd },
+        prior_request: { sha256: consumedRequestHash, task: priorTask, handover: consumedHandover },
+        canonical_source: { pi_session: canonicalSession, pi_session_path: canonicalPath, herdr_session: "forge", pane, cwd },
+        live_source: { pi_session: liveSession, pi_session_path: livePath, herdr_session: "forge", pane, cwd },
       },
     });
     expect(await readFile(join(value.archive, "request.yaml"), "utf8")).toBe(value.priorBytes);
     expect(await readFile(paths(value.root).seatFile(address), "utf8")).toBe(before.seat);
     expect(await readFile(value.receipt, "utf8")).toBe(before.receipt);
+    expect(value.calls.length).toBeGreaterThan(0);
     expect(value.calls.some(mutatingHerdrCommand)).toBe(false);
   } finally { await cleanup(value); }
 });
 
-test("RED: stale current handover and mismatched canonical-successor lineage remain fail-closed", async () => {
-  const stale = await fixture({}, "frg");
+test("RED: the existing canonical-source fast path remains accepted for the exact current handover", async () => {
+  const value = await fixture({}, "frg-canonical-source");
   try {
-    const before = await snapshot(stale);
-    const staleArgs = stale.args.map((entry) => entry === "H-20261019T143641Z" ? "H-20261019T143137Z" : entry);
-    await expect(requestWithDependencies(stale.root, address, staleArgs, { command: stale.command })).rejects.toThrow(
-      "Path-A replacement requires the current validated handover H-20261019T143137Z",
-    );
-    expect(stale.calls).toHaveLength(0);
-    await assertUnchanged(stale, before);
-  } finally { await cleanup(stale); }
+    await requestWithDependencies(value.root, address, value.args, { command: value.command });
+    const successor = await readYaml<HandoverReplacementRequest & { supersession?: Record<string, any> }>(value.active);
+    expect(successor).toMatchObject({
+      handover: { id: currentHandover },
+      source: { pi_session: canonicalSession, pi_session_path: canonicalPath },
+      supersession: {
+        prior_request: { sha256: consumedRequestHash },
+        canonical_source: { pi_session: canonicalSession, pi_session_path: canonicalPath },
+        live_source: { pi_session: canonicalSession, pi_session_path: canonicalPath },
+      },
+    });
+    expect(value.calls.some(mutatingHerdrCommand)).toBe(false);
+  } finally { await cleanup(value); }
+});
 
-  const unproven = await fixture({}, "frg-unproven-source");
+test("RED: the prior canonical source occupying the authorized pane is a live competitor and refuses publication", async () => {
+  const value = await fixture({ sessionPath: canonicalPath, agentSessionPath: canonicalPath }, "frg-stale-canonical-source");
   try {
-    const before = await snapshot(unproven);
-    await expect(requestWithDependencies(unproven.root, address, unproven.args, { command: unproven.command })).rejects.toThrow(
-      "Consumed Path-A replacement does not match the current handover lineage.",
+    const before = await snapshot(value);
+    await expect(requestWithDependencies(value.root, address, value.args, { command: value.command })).rejects.toThrow(
+      "live pane/session/path/cwd does not match the authorized source tuple",
     );
-    expect(unproven.calls).toHaveLength(0);
-    await assertUnchanged(unproven, before);
-  } finally { await cleanup(unproven); }
+    expect(value.calls.length).toBeGreaterThan(0);
+    expect(value.calls.some(mutatingHerdrCommand)).toBe(false);
+    await assertUnchanged(value, before);
+  } finally { await cleanup(value); }
+});
+
+test("RED: duplicate Pi writers on the authorized stale-canonical source tuple refuse publication", async () => {
+  const value = await fixture({ writers: 2 }, "frg-stale-canonical-source");
+  try {
+    const before = await snapshot(value);
+    await expect(requestWithDependencies(value.root, address, value.args, { command: value.command })).rejects.toThrow(
+      "exactly one live Pi writer",
+    );
+    expect(value.calls.length).toBeGreaterThan(0);
+    expect(value.calls.some(mutatingHerdrCommand)).toBe(false);
+    await assertUnchanged(value, before);
+  } finally { await cleanup(value); }
 });
 
 test("RED: a consumed request and receipt are archived byte-identically before one stale-canonical successor becomes active", async () => {
@@ -282,10 +312,10 @@ test("RED: a consumed request and receipt are archived byte-identically before o
     await requestWithDependencies(value.root, address, value.args, { command: value.command, at: () => "2026-10-19T16:00:00.000Z" });
     const successor = await readYaml<HandoverReplacementRequest & { supersession?: Record<string, any> }>(value.active);
     expect(successor).toMatchObject({
-      seat: address, task: "next-takeover", handover: { id: "H-current" }, authorization: { id: "A-next" },
+      seat: address, task: takeoverTask, handover: { id: value.currentHandover }, authorization: { id: authorizationId },
       source: { pi_session: liveSession, pi_session_path: value.livePath, herdr_session: "forge", pane },
       supersession: {
-        prior_request: { sha256: value.priorSha, task: "prior-takeover", handover: "H-prior" },
+        prior_request: { sha256: consumedRequestHash, task: priorTask, handover: consumedHandover },
         prior_receipt: { path: value.receipt, successor_session: canonicalSession },
         canonical_source: { pi_session: canonicalSession, pi_session_path: value.canonicalPath },
         live_source: { pi_session: liveSession, pi_session_path: value.livePath, pane, cwd },
@@ -296,16 +326,16 @@ test("RED: a consumed request and receipt are archived byte-identically before o
     expect(await Bun.file(join(value.archive, "supersession.yaml")).exists()).toBe(true);
     expect(await readFile(paths(value.root).seatFile(address), "utf8")).toBe(before.seat);
     expect(await readFile(value.receipt, "utf8")).toBe(before.receipt);
-    await expect(replacementForMainLaunch(value.root, await readYaml(paths(value.root).seatFile(address)), address)).resolves.toMatchObject({ request: { task: "next-takeover" } });
+    await expect(replacementForMainLaunch(value.root, await readYaml(paths(value.root).seatFile(address)), address)).resolves.toMatchObject({ request: { task: takeoverTask } });
     expect(value.calls.some(mutatingHerdrCommand)).toBe(false);
   } finally { await cleanup(value); }
 });
 
 test("RED: nonterminal prior takeover and missing or substituted prior receipt refuse before live observation", async () => {
   const cases: Array<[string, (value: Awaited<ReturnType<typeof fixture>>) => Promise<void>]> = [
-    ["prior todo", async (value) => { const task = await readYaml<any>(paths(value.root).taskFile("demo", "prior-takeover")); await atomicYaml(paths(value.root).taskFile("demo", "prior-takeover"), { ...task, status: "todo" }); }],
-    ["prior in progress", async (value) => { const task = await readYaml<any>(paths(value.root).taskFile("demo", "prior-takeover")); await atomicYaml(paths(value.root).taskFile("demo", "prior-takeover"), { ...task, status: "in_progress" }); }],
-    ["prior review", async (value) => { const task = await readYaml<any>(paths(value.root).taskFile("demo", "prior-takeover")); await atomicYaml(paths(value.root).taskFile("demo", "prior-takeover"), { ...task, status: "review" }); }],
+    ["prior todo", async (value) => { const task = await readYaml<any>(paths(value.root).taskFile(projectName, priorTask)); await atomicYaml(paths(value.root).taskFile(projectName, priorTask), { ...task, status: "todo" }); }],
+    ["prior in progress", async (value) => { const task = await readYaml<any>(paths(value.root).taskFile(projectName, priorTask)); await atomicYaml(paths(value.root).taskFile(projectName, priorTask), { ...task, status: "in_progress" }); }],
+    ["prior review", async (value) => { const task = await readYaml<any>(paths(value.root).taskFile(projectName, priorTask)); await atomicYaml(paths(value.root).taskFile(projectName, priorTask), { ...task, status: "review" }); }],
     ["missing receipt", async (value) => { await rm(value.receipt); }],
     ["substituted receipt", async (value) => { await atomicYaml(value.receipt, { schema: "atdd-flow/pi-runtime-launch-receipt/v1", seat: address, pi_session: canonicalSession, handover_replacement: { request: { ...value.prior, task: "other" }, successor_session: canonicalSession } }); }],
   ];
@@ -325,18 +355,19 @@ test("RED: nonterminal prior takeover and missing or substituted prior receipt r
 
 test("RED: handover, authorization, topology, and sole-ready-task mismatches fail before Herdr and publication", async () => {
   const cases: Array<[string, (value: Awaited<ReturnType<typeof fixture>>) => Promise<string[]>]> = [
-    ["handover", async (value) => value.args.map((entry) => entry === "H-current" ? "H-wrong" : entry)],
+    ["handover", async (value) => value.args.map((entry) => entry === value.currentHandover ? currentSupersedes : entry)],
     ["authorization tuple", async (value) => value.args.map((entry) => entry === value.livePath ? `${value.livePath}.wrong` : entry)],
+    ["source session", async (value) => value.args.map((entry) => entry === value.sourceSession ? canonicalSession : entry)],
     ["canonical pane", async (value) => { const seat = await readYaml<any>(paths(value.root).seatFile(address)); await atomicYaml(paths(value.root).seatFile(address), { ...seat, runtime: { ...seat.runtime, addresses: { herdr: { session: "forge", pane: "w6:p9" } } } }); return value.args; }],
-    ["wrong named task", async (value) => value.args.map((entry) => entry === "next-takeover" ? "prior-takeover" : entry)],
-    ["blocked task", async (value) => { const task = await readYaml<any>(paths(value.root).taskFile("demo", "next-takeover")); await atomicYaml(paths(value.root).taskFile("demo", "next-takeover"), { ...task, blocker: "hold" }); return value.args; }],
+    ["wrong named task", async (value) => value.args.map((entry) => entry === takeoverTask ? priorTask : entry)],
+    ["blocked task", async (value) => { const task = await readYaml<any>(paths(value.root).taskFile(projectName, takeoverTask)); await atomicYaml(paths(value.root).taskFile(projectName, takeoverTask), { ...task, blocker: "hold" }); return value.args; }],
     ["dependency waiting task", async (value) => {
-      await atomicYaml(paths(value.root).taskFile("demo", "dependency"), { schema: "atdd-workflow/task/v1", title: "Dependency", status: "in_progress", coordinator: address, done_when: [{ text: "Dependency" }] });
-      const task = await readYaml<any>(paths(value.root).taskFile("demo", "next-takeover"));
-      await atomicYaml(paths(value.root).taskFile("demo", "next-takeover"), { ...task, depends_on: ["dependency"] });
+      await atomicYaml(paths(value.root).taskFile(projectName, "dependency"), { schema: "atdd-workflow/task/v1", title: "Dependency", status: "in_progress", coordinator: address, done_when: [{ text: "Dependency" }] });
+      const task = await readYaml<any>(paths(value.root).taskFile(projectName, takeoverTask));
+      await atomicYaml(paths(value.root).taskFile(projectName, takeoverTask), { ...task, depends_on: ["dependency"] });
       return value.args;
     }],
-    ["multiple ready tasks", async (value) => { await atomicYaml(paths(value.root).taskFile("demo", "other-ready"), { schema: "atdd-workflow/task/v1", title: "Other", status: "todo", coordinator: address, assignee: address, done_when: [{ text: "Other" }] }); return value.args; }],
+    ["multiple ready tasks", async (value) => { await atomicYaml(paths(value.root).taskFile(projectName, "other-ready"), { schema: "atdd-workflow/task/v1", title: "Other", status: "todo", coordinator: address, assignee: address, done_when: [{ text: "Other" }] }); return value.args; }],
   ];
   for (const [label, arrange] of cases) {
     const value = await fixture();
@@ -351,9 +382,9 @@ test("RED: handover, authorization, topology, and sole-ready-task mismatches fai
 
 test("RED: missing, tampered, and reused authorization refuse before live Herdr observation", async () => {
   const cases: Array<[string, (value: Awaited<ReturnType<typeof fixture>>) => Promise<string[]>]> = [
-    ["missing", async (value) => value.args.map((entry) => entry === "A-next" ? "A-missing" : entry)],
-    ["tampered", async (value) => { const file = join(value.root, ".atdd-flow", "exact-session-adoption-authorizations", "A-next.yaml"); await writeFile(file, `${await readFile(file, "utf8")}\n# tampered\n`); return value.args; }],
-    ["reused", async (value) => { await atomicYaml(join(value.root, ".atdd-flow", "runtime-launch", "used.yaml"), { schema: "atdd-flow/pi-runtime-launch-receipt/v1", relocation: { authorization: { id: "A-next" } } }); return value.args; }],
+    ["missing", async (value) => value.args.map((entry) => entry === authorizationId ? "A-missing" : entry)],
+    ["tampered", async (value) => { const file = join(value.root, ".atdd-flow", "exact-session-adoption-authorizations", `${authorizationId}.yaml`); await writeFile(file, `${await readFile(file, "utf8")}\n# tampered\n`); return value.args; }],
+    ["reused", async (value) => { await atomicYaml(join(value.root, ".atdd-flow", "runtime-launch", "used.yaml"), { schema: "atdd-flow/pi-runtime-launch-receipt/v1", relocation: { authorization: { id: authorizationId } } }); return value.args; }],
   ];
   for (const [label, arrange] of cases) {
     const value = await fixture();
@@ -412,7 +443,7 @@ test("GREEN: a dead-owner lock recovers and reuses an exact crash-published arch
     await stageExactArchive(value);
     await writeSupersessionLock(value);
     await requestWithDependencies(value.root, address, value.args, { command: value.command });
-    expect((await readYaml<HandoverReplacementRequest>(value.active)).task).toBe("next-takeover");
+    expect((await readYaml<HandoverReplacementRequest>(value.active)).task).toBe(takeoverTask);
     expect(await readFile(join(value.archive, "request.yaml"), "utf8")).toBe(value.priorBytes);
     expect(await Bun.file(supersessionLock(value)).exists()).toBe(false);
   } finally { await cleanup(value); }
@@ -447,7 +478,7 @@ test("RED: concurrent supersession attempts after stale cleanup publish one succ
     ]);
     expect(settled.filter((entry) => entry.status === "fulfilled")).toHaveLength(1);
     expect(settled.filter((entry) => entry.status === "rejected")).toHaveLength(1);
-    expect((await readYaml<HandoverReplacementRequest>(value.active)).task).toBe("next-takeover");
+    expect((await readYaml<HandoverReplacementRequest>(value.active)).task).toBe(takeoverTask);
     expect(await readFile(join(value.archive, "request.yaml"), "utf8")).toBe(value.priorBytes);
     expect(await Bun.file(supersessionLock(value)).exists()).toBe(false);
   } finally { await cleanup(value); }
@@ -460,12 +491,12 @@ test("RED: the normal launcher still refuses the occupied exact source before ru
     value.calls.length = 0;
     await expect(launchPiRuntime(value.root, address, [
       "--pane", pane, "--herdr-session", "forge", "--adopt-session", value.livePath,
-      "--source-herdr-session", "forge", "--source-pane", pane, "--authorization", "A-next",
+      "--source-herdr-session", "forge", "--source-pane", pane, "--authorization", authorizationId,
     ], {
       command: value.command,
       select: async () => ({ available: true as const, model: "test", selected_model: "economy", confidence: 0.99 }),
     })).rejects.toThrow("available shell pane");
     expect(value.calls.some(mutatingHerdrCommand)).toBe(false);
-    expect((await readdir(join(value.root, ".atdd-flow", "runtime-launch"))).sort()).toEqual(["prior-successor.yaml"]);
+    expect((await readdir(join(value.root, ".atdd-flow", "runtime-launch"))).sort()).toEqual([`${canonicalSession}-receipt.yaml`]);
   } finally { await cleanup(value); }
 });
