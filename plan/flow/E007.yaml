@@ -1,0 +1,8 @@
+urn: acc:flow:E007-RED-001
+phase: RED
+description: >-
+  One authorized delegated command rotates an exact healthy seat through its validated
+  handover request, source release, Herdr vacancy, fresh Pi launch, unique receipt,
+  native wake and RESUMED reconciliation; unauthorized, stale, duplicate, ineligible
+  and partial-failure attempts remain fail-closed, while concurrent or repeated
+  EXECUTING calls for the same tuple attach to one request and one successor.
