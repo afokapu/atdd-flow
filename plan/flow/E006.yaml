@@ -1,0 +1,8 @@
+urn: acc:flow:E006-RED-001
+phase: RED
+description: >-
+  Exact-session Path-A adoption reconciles from its immutable relocation receipt
+  without requiring a changed Pi identity, while an exited adopted runtime may
+  use that same exact proof once for a normal fresh launch; ordinary launches,
+  mismatched or duplicate evidence, damaged archives, and ineligible tasks remain
+  fail-closed.
