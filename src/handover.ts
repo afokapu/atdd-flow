@@ -1,6 +1,7 @@
 // URN: component:flow:e005:handover:backend:integration
 // Tested-By:
 // - test:atdd-flow:repeat-handover-replacement-supersession
+// - test:flow:dos-supersession-launch-eligibility
 // Runtime: bun
 // Purpose: Validate, preserve, publish, and reconcile governed context handover evidence.
 
@@ -232,7 +233,9 @@ export async function replacementForMainLaunch(root: string, record: Seat, addre
   const failedAdoption = await exactFailedAdoptionProof(root, record, address, request,
     (task) => failedAdoptionTaskEligible(root, record, address, task));
   const canonicalLaunch = replacementMatchesRuntime(record.runtime, request)
-    && await mainLaunchEligible(root, record, address, task);
+    && await (request.supersession
+      ? failedAdoptionTaskEligible(root, record, address, task)
+      : mainLaunchEligible(root, record, address, task));
   const failedAdoptionRecovery = Boolean(failedAdoption && !failedAdoption.runtimeState);
   if (!canonicalLaunch && !failedAdoptionRecovery) {
     throw new Error("Path-A replacement source tuple no longer matches the recorded runtime or ready main takeover task.");
