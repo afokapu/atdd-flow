@@ -1,6 +1,6 @@
 // URN: test:flow:exact-adoption-resumed-proof-and-relaunch
 // Acceptance: acc:flow:E006-RED-001
-// Phase: RED
+// Phase: E2E
 import { afterEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { chmod, copyFile, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
@@ -208,6 +208,12 @@ async function launchNormally(value: Awaited<ReturnType<typeof publishedFixture>
   ], { command: value.runtime.command, select: selectEconomy, sessionId: () => freshSession, at: () => "2026-10-20T03:36:00.000Z" });
 }
 
+async function updateTakeoverTask(root: string, change: Record<string, unknown>) {
+  const file = paths(root).taskFile(project, takeoverTask);
+  const task = await readYaml<Record<string, unknown>>(file);
+  await atomicYaml(file, { ...task, ...change });
+}
+
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
@@ -244,8 +250,6 @@ test("exact adoption publishes, releases the source, preserves its identity, and
   expect(resumed.output).toContain("RESUMED; verified 6/6; discrepancies: none.");
   expect((await readYaml<Record<string, unknown>>(paths(value.root).taskFile(project, takeoverTask))).status).toBe("todo");
 
-  // Structural RED marker: the behavioral assertions above must fail first on 0.3.54.
-  expect.fail("Remove in GREEN after exact adopted-receipt reconciliation passes.");
 });
 
 test("the exact exited 5-of-6 adoption state permits one normal fresh launch, receipt, RESUMED 6/6, and unchanged TODO eligibility", async () => {
@@ -284,6 +288,30 @@ test("the exact exited 5-of-6 adoption state permits one normal fresh launch, re
   expect((await readYaml<Record<string, unknown>>(paths(value.root).taskFile(project, takeoverTask))).status).toBe("todo");
 });
 
+test("the exact exited adoption state permits normal relaunch and RESUMED 6/6 for only the evidence-empty IN_PROGRESS takeover", async () => {
+  const value = await publishedFixture();
+  const activeBefore = await readFile(value.active, "utf8");
+  const failedReceipt = await adopt(value);
+  value.runtime.release();
+  await clearRuntimeState(value.root, address, `owner-${adoptedSession}`);
+  await updateTakeoverTask(value.root, { status: "in_progress" });
+
+  const launched = await launchNormally(value);
+  await heartbeat(value.root, freshSession);
+  const resumed = await invokeAtRoot(value.root, "handover", "resumed", address);
+
+  expect(launched).toMatchObject({ piSession: freshSession, pane, herdrSession });
+  expect(await readYaml<Record<string, unknown>>(launched.receipt)).toMatchObject({
+    seat: address, tasks: [takeoverTask], pi_session: freshSession,
+    handover_replacement: { request: value.request, successor_session: freshSession },
+  });
+  expect(basename(failedReceipt)).toBe(`${adoptedSession}-${exactFailedReceiptSuffix}.yaml`);
+  expect(await readFile(value.active, "utf8")).toBe(activeBefore);
+  expect(resumed).toMatchObject({ exitCode: 0 });
+  expect(resumed.output).toContain("RESUMED; verified 6/6; discrepancies: none.");
+  expect((await readYaml<Record<string, unknown>>(paths(value.root).taskFile(project, takeoverTask))).status).toBe("in_progress");
+});
+
 test("ordinary non-adoption reconciliation keeps fresh-session inequality and cannot borrow adoption status", async () => {
   const value = await publishedFixture();
   const failedReceipt = await adopt(value);
@@ -297,7 +325,7 @@ test("ordinary non-adoption reconciliation keeps fresh-session inequality and ca
   expect(resumed.output).toContain("RESUMED; verified 5/6; discrepancies: fresh Pi session/JSONL path.");
 });
 
-test("failed-adoption relaunch refuses request mismatch, duplicate receipt, damaged archive, or non-TODO takeover without Herdr effects", async () => {
+test("failed-adoption relaunch refuses mismatched evidence and any non-empty or unrelated IN_PROGRESS lifecycle", async () => {
   const cases: Array<[string, (value: Awaited<ReturnType<typeof publishedFixture>>, receipt: string) => Promise<void>]> = [
     ["request mismatch", async (_value, receipt) => {
       const record = await readYaml<Record<string, any>>(receipt);
@@ -310,9 +338,28 @@ test("failed-adoption relaunch refuses request mismatch, duplicate receipt, dama
     ["damaged immutable archive", async (value) => {
       await rm(join(value.archive, "request.yaml"));
     }],
-    ["non-TODO takeover", async (value) => {
-      const task = await readYaml<Record<string, unknown>>(paths(value.root).taskFile(project, takeoverTask));
-      await atomicYaml(paths(value.root).taskFile(project, takeoverTask), { ...task, status: "in_progress" });
+    ["unrelated in-progress task", async (value) => {
+      await updateTakeoverTask(value.root, { status: "done" });
+      await atomicYaml(paths(value.root).taskFile(project, "unrelated-takeover"), {
+        schema: "atdd-workflow/task/v1", title: "Unrelated takeover", status: "in_progress",
+        coordinator: address, assignee: address, done_when: [{ text: "Unrelated successor resumes." }],
+      });
+    }],
+    ["proven in-progress takeover", async (value) => {
+      await updateTakeoverTask(value.root, {
+        status: "in_progress", done_when: [{ text: "Next successor resumes.", proof: "SSO result" }],
+      });
+    }],
+    ["blocked in-progress takeover", async (value) => {
+      await updateTakeoverTask(value.root, { status: "in_progress", blocker: "awaiting authority" });
+    }],
+    ["handoff-bearing in-progress takeover", async (value) => {
+      await updateTakeoverTask(value.root, {
+        status: "in_progress", handoff: { state: "executing", evidence: "M-handoff", updated_at: "2026-10-20T03:35:00.000Z" },
+      });
+    }],
+    ["review takeover", async (value) => {
+      await updateTakeoverTask(value.root, { status: "review" });
     }],
   ];
 

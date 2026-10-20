@@ -10,6 +10,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { type Runtime, type Seat, atomicYaml, canonicalAddress, desk, exists, has, now, paths, project, readYaml, required, runOutput, seat, words, yaml } from "./core";
 import { type Task, terminal } from "./tasks";
 import { resolveExactSessionAdoptionAuthorization } from "./adoption-authorizations";
+import { exactFailedAdoptionProof } from "./exact-adoption-recovery";
 import { readRuntimeState } from "./runtime-state";
 
 export type Handover = {
@@ -211,13 +212,29 @@ export async function mainLaunchEligible(root: string, record: Seat, address: st
     && await isExactMainSeat(root, record, address);
 }
 
+function evidenceEmptyRecoveryTask(task: Task) {
+  return task.status === "in_progress" && !task.blocker && !task.handoff
+    && task.done_when.every((criterion) => !criterion.proof);
+}
+
+async function failedAdoptionTaskEligible(root: string, record: Seat, address: string, task: Task) {
+  return (task.status === "todo" || evidenceEmptyRecoveryTask(task))
+    && task.coordinator === address && task.assignee === address
+    && await isExactMainSeat(root, record, address);
+}
+
 export async function replacementForMainLaunch(root: string, record: Seat, address: string) {
   if (!await isExactMainSeat(root, record, address)) return undefined;
   const request = await readHandoverReplacement(root, address).catch(() => {
     throw new Error(`${address} requires one validated Path-A replacement request; refusing runtime launch.`);
   });
   const task = await readYaml<Task>(paths(root).taskFile(record.project, request.task));
-  if (!replacementMatchesRuntime(record.runtime, request) || !await mainLaunchEligible(root, record, address, task)) {
+  const failedAdoption = await exactFailedAdoptionProof(root, record, address, request,
+    (task) => failedAdoptionTaskEligible(root, record, address, task));
+  const canonicalLaunch = replacementMatchesRuntime(record.runtime, request)
+    && await mainLaunchEligible(root, record, address, task);
+  const failedAdoptionRecovery = Boolean(failedAdoption && !failedAdoption.runtimeState);
+  if (!canonicalLaunch && !failedAdoptionRecovery) {
     throw new Error("Path-A replacement source tuple no longer matches the recorded runtime or ready main takeover task.");
   }
   return { request, task };
@@ -739,10 +756,12 @@ export async function resumedHandoverReplacement(root: string, address: string) 
   const receipt = runtime?.launch_receipt && await exists(runtime.launch_receipt) ? await readYaml<Record<string, unknown>>(runtime.launch_receipt) : undefined;
   const replacement = receipt?.handover_replacement as Record<string, unknown> | undefined;
   const runtimeState = await readRuntimeState(root, resolved);
+  const failedAdoption = await exactFailedAdoptionProof(root, record, resolved, request,
+    (task) => failedAdoptionTaskEligible(root, record, resolved, task));
   const verified = [
     request.schema === "atdd-flow/context-handover-replacement-request/v1" && request.seat === resolved,
     runtime?.application === "herdr" && runtime.wake === "native",
-    runtime?.pi_session !== request.source.pi_session && Boolean(runtime?.pi_session_path),
+    runtime?.pi_session !== request.source.pi_session && Boolean(runtime?.pi_session_path) || Boolean(failedAdoption?.heartbeat),
     typeof locator !== "string" && locator?.session === request.target.herdr_session && locator?.pane === request.target.pane,
     replacement?.successor_session === runtime?.pi_session && replacement?.request && JSON.stringify(replacement.request) === JSON.stringify(request),
     Boolean(runtimeState && runtimeState.seat === resolved),
