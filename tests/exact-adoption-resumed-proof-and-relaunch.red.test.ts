@@ -218,15 +218,18 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
-test("exact adoption publishes, releases the source, preserves its identity, and reconciles RESUMED 6/6 from exact relocation proof", async () => {
+test("exact adoption reconciles RESUMED 6/6 after the adopted JSONL grows", async () => {
   const value = await publishedFixture();
   const activeBefore = await readFile(value.active, "utf8");
   const failedReceipt = await adopt(value);
+  const receipt = await readYaml<Record<string, any>>(failedReceipt);
+  const backup = receipt.relocation.backup as string;
+  const backupBytes = await readFile(backup);
+  const appendedRecord = '{"type":"message","role":"assistant"}\n';
+  await writeFile(value.livePath, appendedRecord, { flag: "a" });
   await heartbeat(value.root, adoptedSession);
 
   const seat = await readYaml<Record<string, any>>(paths(value.root).seatFile(address));
-  const receipt = await readYaml<Record<string, any>>(failedReceipt);
-  const backup = receipt.relocation.backup as string;
   expect(seat.runtime).toMatchObject({
     pi_session: adoptedSession, pi_session_path: value.livePath, launch_receipt: failedReceipt,
   });
@@ -236,10 +239,10 @@ test("exact adoption publishes, releases the source, preserves its identity, and
     relocation: {
       source_herdr_session: herdrSession, source_pane: pane,
       authorization: { id: authorizationId },
-      backup_sha256: createHash("sha256").update(await readFile(value.livePath)).digest("hex"),
+      backup_sha256: createHash("sha256").update(backupBytes).digest("hex"),
     },
   });
-  expect(await readFile(backup, "utf8")).toBe(await readFile(value.livePath, "utf8"));
+  expect(await readFile(value.livePath, "utf8")).toBe(`${backupBytes.toString()}${appendedRecord}`);
   expect(await readFile(value.active, "utf8")).toBe(activeBefore);
 
   const resumed = await invokeAtRoot(value.root, "handover", "resumed", address);
@@ -252,10 +255,11 @@ test("exact adoption publishes, releases the source, preserves its identity, and
 
 });
 
-test("the exact exited 5-of-6 adoption state permits one normal fresh launch, receipt, RESUMED 6/6, and unchanged TODO eligibility", async () => {
+test("the exact exited adoption state permits normal fresh relaunch after the adopted JSONL grows", async () => {
   const value = await publishedFixture();
   const activeBefore = await readFile(value.active, "utf8");
   const failedReceipt = await adopt(value);
+  await writeFile(value.livePath, '{"type":"message","role":"assistant"}\n', { flag: "a" });
   value.runtime.release();
   await clearRuntimeState(value.root, address, `owner-${adoptedSession}`);
 

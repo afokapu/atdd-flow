@@ -183,11 +183,13 @@ function exactAdoptionReceiptMatches(receipt: ReplacementLaunchReceipt, activeBy
   ].every(Boolean);
 }
 
-/** Prove the recovery copy still equals the adopted source JSONL. */
+/** Prove the immutable recovery copy is the prefix of the adopted source JSONL. */
 async function exactBackupMatches(receipt: ReplacementLaunchReceipt, request: HandoverReplacementRequest) {
   const relocation = receipt.relocation!;
   const [backup, source] = await Promise.all([readFile(relocation.backup!), readFile(request.source.pi_session_path)]);
-  return digest(backup) === relocation.backup_sha256 && backup.equals(source);
+  return digest(backup) === relocation.backup_sha256
+    && source.length >= backup.length
+    && source.subarray(0, backup.length).equals(backup);
 }
 
 /** A live same-identity adoption is fresh only after its receipt and start. */
