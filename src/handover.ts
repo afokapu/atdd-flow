@@ -286,7 +286,26 @@ function assertSinglePiWriter(raw: string) {
   if (pi.length !== 1) throw new Error("Legacy source bootstrap requires exactly one live Pi writer on the authorized source pane.");
 }
 
-async function verifyLegacySource(source: HandoverReplacementRequest["source"], target: HandoverReplacementRequest["target"], authorizationHash: string, dependencies: HandoverReplacementDependencies) {
+type PiSource = Pick<HandoverReplacementRequest["source"], "pi_session" | "pi_session_path">;
+
+function assertCanonicalSourceNotLive(raw: string, canonical: PiSource) {
+  const value = JSON.parse(raw), agents = result(value)?.agents;
+  if (!Array.isArray(agents)) throw new Error("Consumed Path-A replacement requires complete global Herdr agent-list evidence.");
+  for (const entry of agents) {
+    const agent = object(entry);
+    if (!agent) throw new Error("Consumed Path-A replacement requires complete global Herdr agent-list evidence.");
+    if (text(agent.agent) !== "pi") continue;
+    const session = object(agent.agent_session);
+    const sessionPath = session?.kind === "path" ? text(session.value) : undefined;
+    if (!sessionPath) throw new Error("Consumed Path-A replacement requires complete global Herdr agent-list evidence.");
+    const sessionId = basename(sessionPath).match(/_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i)?.[1];
+    if (resolve(sessionPath) === resolve(canonical.pi_session_path) || sessionId === canonical.pi_session) {
+      throw new Error("Consumed Path-A replacement prior canonical source is still a live Pi agent.");
+    }
+  }
+}
+
+async function verifyLegacySource(source: HandoverReplacementRequest["source"], target: HandoverReplacementRequest["target"], authorizationHash: string, dependencies: HandoverReplacementDependencies, canonical?: PiSource) {
   const command = dependencies.command ?? runOutput;
   const pane = legacyPaneObservation(await command(herdr(source.herdr_session, "pane", "get", source.pane)));
   assertLegacyPane(pane, source, target.cwd);
@@ -296,6 +315,9 @@ async function verifyLegacySource(source: HandoverReplacementRequest["source"], 
   ]);
   const agent = legacyAgentName(agentRaw, source, target.cwd);
   assertSinglePiWriter(processRaw);
+  if (canonical && (canonical.pi_session !== source.pi_session || resolve(canonical.pi_session_path) !== resolve(source.pi_session_path))) {
+    assertCanonicalSourceNotLive(await command(herdr(source.herdr_session, "agent", "list")), canonical);
+  }
   return { authorization_hash: authorizationHash, ...source, cwd: target.cwd, agent, verified_at: dependencies.at?.() ?? now() };
 }
 
@@ -665,7 +687,7 @@ async function supersedeConsumedReplacement(root: string, resolved: string, file
       seat: resolved, pi_session: intent.source.pi_session, pi_session_path: intent.source.pi_session_path,
       source: { herdr_session: intent.source.herdr_session, pane: intent.source.pane }, target: intent.target,
     });
-    const liveSource = await verifyLegacySource(intent.source, intent.target, authorization.hash, dependencies);
+    const liveSource = await verifyLegacySource(intent.source, intent.target, authorization.hash, dependencies, consumed.canonical);
     const request = supersedingRequest(resolved, file, intent, authorization, consumed, liveSource, dependencies);
     const manifest = supersessionManifest(resolved, file, consumed);
     const staging = await stageSupersession(file, request, consumed, manifest, dependencies);

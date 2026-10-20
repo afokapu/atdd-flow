@@ -33,6 +33,7 @@ type Reports = {
   agentSessionPath: string;
   cwd: string;
   writers: number;
+  canonicalAgentPane?: string;
 };
 
 type RepeatDependencies = HandoverReplacementDependencies & { publishArchive?: (staging: string, destination: string) => Promise<void>; replaceActive?: (staged: string, active: string) => Promise<void> };
@@ -70,6 +71,7 @@ async function fixture(overrides: Partial<Reports> = {}, shape: FixtureShape = "
 case "$*" in
   *"pane get"*) printf '%s\\n' '${JSON.stringify({ result: { pane: { pane_id: pane, agent: "pi", agent_status: "idle", agent_session: { kind: "path", source: "herdr:pi", value: livePath }, cwd, label: address } } })}' ;;
   *"agent get"*) printf '%s\\n' '${JSON.stringify({ result: { agent: { name: "flow-main-frg-workstation", agent: "pi", pane_id: pane, agent_status: "idle", agent_session: { kind: "path", source: "herdr:pi", value: livePath }, cwd } } })}' ;;
+  *"agent list"*) printf '%s\\n' '${JSON.stringify({ result: { agents: [{ name: "flow-main-frg-workstation", agent: "pi", pane_id: pane, agent_status: "idle", agent_session: { kind: "path", source: "herdr:pi", value: livePath }, cwd }] } })}' ;;
   *"pane process-info"*) printf '%s\\n' '${JSON.stringify({ result: { process_info: { pane_id: pane, shell_pid: 42, foreground_processes: [{ name: "node", argv0: "pi", pid: 100, cwd }] } } })}' ;;
   *) exit 2 ;;
 esac
@@ -185,6 +187,10 @@ esac
       name: "flow-main-frg-workstation", agent: reports.agent, pane_id: reports.agentPane, agent_status: "idle",
       agent_session: session(reports.agentSessionPath), cwd: reports.cwd,
     } } });
+    if (operation[0] === "agent" && operation[1] === "list") return JSON.stringify({ result: { agents: [
+      { name: "flow-main-frg-workstation", agent: reports.agent, pane_id: reports.agentPane, agent_status: "idle", agent_session: session(reports.agentSessionPath), cwd: reports.cwd },
+      ...(reports.canonicalAgentPane ? [{ name: "old-main-frg-workstation", agent: "pi", pane_id: reports.canonicalAgentPane, agent_status: "idle", agent_session: session(canonicalPath), cwd: reports.cwd }] : []),
+    ] } });
     if (operation[0] === "pane" && operation[1] === "process-info") return JSON.stringify({ result: { process_info: {
       pane_id: pane, shell_pid: 42,
       foreground_processes: Array.from({ length: reports.writers }, (_, index) => ({ name: "node", argv0: "pi", pid: 100 + index, cwd: reports.cwd })),
@@ -303,6 +309,19 @@ test("RED: the prior canonical source occupying the authorized pane is a live co
       "live pane/session/path/cwd does not match the authorized source tuple",
     );
     expect(value.calls.length).toBeGreaterThan(0);
+    expect(value.calls.some(mutatingHerdrCommand)).toBe(false);
+    await assertUnchanged(value, before);
+  } finally { await cleanup(value); }
+});
+
+test("RED: the prior canonical source live on another pane refuses publication", async () => {
+  const value = await fixture({ canonicalAgentPane: "w6:p9" }, "frg-stale-canonical-source");
+  try {
+    const before = await snapshot(value);
+    await expect(requestWithDependencies(value.root, address, value.args, { command: value.command })).rejects.toThrow(
+      "prior canonical source is still a live Pi agent",
+    );
+    expect(value.calls).toContainEqual(["herdr", "--session", "forge", "agent", "list"]);
     expect(value.calls.some(mutatingHerdrCommand)).toBe(false);
     await assertUnchanged(value, before);
   } finally { await cleanup(value); }
