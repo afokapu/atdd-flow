@@ -421,9 +421,6 @@ function assertCanonicalPlacement(intent: Awaited<ReturnType<typeof prepareRepla
     || resolve(request.target.cwd) !== resolve(intent.record.worktree)) {
     throw new Error("Consumed Path-A replacement does not match the unchanged canonical main runtime and placement.");
   }
-  if (intent.handover.supersedes !== request.handover.id && !canonicalSourceMatchesRuntime(intent.record.runtime, intent.source)) {
-    throw new Error("Consumed Path-A replacement does not match the current handover lineage.");
-  }
 }
 
 function canonicalRuntimeForSupersession(intent: Awaited<ReturnType<typeof prepareReplacement>>, request: HandoverReplacementRequest) {
