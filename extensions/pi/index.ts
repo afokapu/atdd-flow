@@ -1,3 +1,9 @@
+// URN: component:flow:e007:index:backend:integration
+// Tested-By:
+// - test:atdd-flow:delegated-seat-runtime-rotation:E007-RED-001
+// Runtime: bun
+// Purpose: Own native Pi heartbeat, mail wake, and exact handover release behavior.
+
 import * as fs from "node:fs";
 import { mkdir, readFile, rename, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
@@ -47,6 +53,8 @@ export type PiRuntimeOptions = {
   createTransport?: (options: InboxOptions) => FlowInboxTransport;
   /** Flow-launched Pi instances register and heartbeat before their verified launch activates inbox delivery. */
   deferActivation?: boolean;
+  /** Piggyback a token-fenced native wake on the existing heartbeat; never creates another watcher or timer. */
+  onHeartbeat?: (sendIfOwned: SendIfOwned) => Promise<void>;
 };
 
 export type LaunchActivationOptions = {
@@ -229,6 +237,17 @@ export function createInboxTransport({ root, seat, deliver, batchSize = defaultB
 /** Backward-compatible name for the one internal FlowInboxTransport implementation. */
 export const createInboxReconciler = createInboxTransport;
 
+/** Keep native release observation on the existing token-fenced heartbeat. */
+function startHeartbeat(root: string, seat: string, ownerToken: string, intervalMs: number, stop: () => Promise<void>, onHeartbeat?: PiRuntimeOptions["onHeartbeat"]) {
+  // Registration can replace this owner between ticks, so every wake reacquires the state lock.
+  return setInterval(() => {
+    void heartbeatRuntimeState(root, seat, ownerToken).then((state) => {
+      if (!state) return void stop();
+      if (onHeartbeat) void onHeartbeat(async (wake) => (await withOwnedRuntimeState(root, seat, ownerToken, wake)).owned);
+    });
+  }, intervalMs);
+}
+
 /**
  * Binds a Pi process lifecycle to one non-authoritative, token-fenced runtime
  * observation. Losing the token stops this instance from consuming mail; the
@@ -236,7 +255,7 @@ export const createInboxReconciler = createInboxTransport;
  */
 export function createPiRuntime({
   root, seat, pid = process.pid, model = process.env.PI_MODEL ?? "pi", cwd = process.cwd(),
-  heartbeatMs = defaultHeartbeatMs, staleAfterMs = defaultStaleAfterMs, deliver, createTransport = createInboxTransport, deferActivation = false,
+  heartbeatMs = defaultHeartbeatMs, staleAfterMs = defaultStaleAfterMs, deliver, createTransport = createInboxTransport, deferActivation = false, onHeartbeat,
 }: PiRuntimeOptions) {
   const ownerToken = runtimeOwnerToken();
   let transport: FlowInboxTransport | undefined;
@@ -284,11 +303,7 @@ export function createPiRuntime({
     // replacement-safe and does not alter the authoritative Desk seat.
     await clearStaleRuntimeState(root, seat, staleAfterMs);
     await registerRuntimeState(root, { seat, owner_token: ownerToken, pid, model, cwd });
-    heartbeat = setInterval(() => {
-      void heartbeatRuntimeState(root, seat, ownerToken).then((state) => {
-        if (!state) void stop();
-      });
-    }, heartbeatMs);
+    heartbeat = startHeartbeat(root, seat, ownerToken, heartbeatMs, stop, onHeartbeat);
     if (!deferActivation) await activate();
   };
   return { ownerToken, start, activate, stop, reconcile, get transport() { return transport; } };
@@ -363,6 +378,8 @@ export default function (pi: ExtensionAPI) {
   if (!root || !seat) return;
   let runtime: ReturnType<typeof createPiRuntime> | undefined;
   let handoverPrompted = false;
+  // This process-local identity suppresses duplicate wake prompts; the request remains authoritative.
+  let replacementWoken: string | undefined;
   // Host-attach only: mail older than this activation is consumed without a prompt, so a long backlog cannot trigger one turn per message.
   let hostActivatedAt: number | undefined;
   pi.on("turn_end", async (_event, ctx) => {
@@ -387,7 +404,8 @@ export default function (pi: ExtensionAPI) {
     try {
       const request = await readHandoverReplacement(root, seat);
       if (request.source.pi_session !== sourceSession) return;
-      pi.sendMessage({
+      const identity = `${request.handover.id}:${request.source.pi_session}`;
+      if (replacementWoken !== identity) pi.sendMessage({
         customType: "atdd-flow-context-handover-replacement",
         content: `SYSTEM: Validated Path-A request for ${seat} observed. The successor must not start until this Pi has shut down and Herdr reports the exact source pane released.`,
         display: true, details: { seat, handover: request.handover.id, authority: "handover-replacement" },
@@ -396,7 +414,24 @@ export default function (pi: ExtensionAPI) {
     } catch { /* No validated replacement request exists for this source session. */ }
   });
   pi.on("session_start", async (_event, ctx) => {
-    runtime = createPiRuntime({ root, seat, deferActivation: true, deliver: async (mail, thread, path, sendIfOwned) => {
+    // Rotation observation piggybacks the existing heartbeat and ownership lock.
+    runtime = createPiRuntime({ root, seat, deferActivation: true, onHeartbeat: async (sendIfOwned) => {
+      const sourceSession = process.env.ATDD_FLOW_PI_SESSION;
+      if (!sourceSession) return;
+      try {
+        const request = await readHandoverReplacement(root, seat);
+        if (request.source.pi_session !== sourceSession) return;
+        // Only the exact source session may receive the one native release turn.
+        const identity = `${request.handover.id}:${request.source.pi_session}`;
+        if (replacementWoken === identity) return;
+        const sent = await sendIfOwned(() => pi.sendMessage({
+          customType: "atdd-flow-context-handover-replacement",
+          content: `SYSTEM: Validated replacement request ${request.handover.id} observed for ${seat}; finish the current turn and release the source runtime.`,
+          display: true, details: { seat, handover: request.handover.id, authority: "handover-replacement" },
+        }, { triggerTurn: true, deliverAs: "followUp" }));
+        if (sent) replacementWoken = identity;
+      } catch { /* No exact request exists for this heartbeat owner. */ }
+    }, deliver: async (mail, thread, path, sendIfOwned) => {
       if (!sendIfOwned) return false;
       if (hostActivatedAt !== undefined && Date.parse(typeof mail.created_at === "string" ? mail.created_at : "") < hostActivatedAt) return sendIfOwned(async () => undefined);
       return sendIfOwned(async () => {

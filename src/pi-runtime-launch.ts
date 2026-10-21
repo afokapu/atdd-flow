@@ -1,6 +1,7 @@
 // URN: component:flow:e003:pi-runtime-launch:backend:integration
 // Tested-By:
 // - test:atdd-flow:context-handover-session-replacement
+// - test:atdd-flow:delegated-seat-runtime-rotation:E007-RED-001
 // Runtime: bun
 // Purpose: Execute generic, exact Pi/Herdr runtime launch mechanics for seats.
 
@@ -31,13 +32,17 @@ import { type ModelSelectionInput, type ModelSelectionResponse, selectModel } fr
 import { type Task, seatTasks, terminal } from "./tasks";
 import { projectHerdrSeat } from "./multiplexer";
 import { resolveExactSessionAdoptionAuthorization } from "./adoption-authorizations";
-import { assertReplacementTarget, replacementForMainLaunch } from "./handover";
+import { type HandoverReplacementRequest, assertReplacementTarget, replacementForMainLaunch } from "./handover";
 
 export type PiRuntimeLaunchDependencies = {
   select?: (input: ModelSelectionInput) => Promise<ModelSelectionResponse>;
   command?: (command: string[]) => Promise<string>;
   sessionId?: () => string;
   at?: () => string;
+  /** A validated portfolio id selected by the delegated rotation boundary. */
+  requestedCandidate?: string;
+  /** Exact delegated request provenance; launch mechanics remain otherwise unchanged. */
+  rotation?: { request: HandoverReplacementRequest; request_sha256: string; by: string; task: string; handover: string; requested_model?: string };
 };
 
 type Bind = (root: string, address: string, args: string[], selectedModel?: string, wake?: Runtime["wake"], piSession?: string, piSessionPath?: string, launchReceipt?: string) => Promise<void>;
@@ -108,9 +113,11 @@ async function launchEligibleTasks(root: string, record: Seat, address: string) 
   return eligible.filter((entry): entry is NonNullable<typeof entry> => Boolean(entry));
 }
 
-async function chooseLaunchModel(root: string, config: Desk, record: Seat, portfolio: ModelPortfolio, select: (input: ModelSelectionInput) => Promise<ModelSelectionResponse> = selectModel) {
-  const candidates = availableModelCandidates(config, portfolio);
-  if (!candidates.length) throw new Error("No enabled model in models.yaml has an available executable.");
+async function chooseLaunchModel(root: string, config: Desk, record: Seat, portfolio: ModelPortfolio, select: (input: ModelSelectionInput) => Promise<ModelSelectionResponse> = selectModel, requested?: string) {
+  const available = availableModelCandidates(config, portfolio);
+  if (!available.length) throw new Error("No enabled model in models.yaml has an available executable.");
+  const candidates = requested ? available.filter((candidate) => candidate.id === requested) : available;
+  if (!candidates.length) throw new Error(`Requested model candidate ${requested} is not enabled and available.`);
   const work = (await seatTasks(root, record.project, record.address)).filter((entry) => !terminal(entry.task));
   const selection = await select({
     seat: { address: record.address, role: record.role, ...(record.purpose ? { purpose: record.purpose } : {}) },
@@ -270,7 +277,7 @@ async function prepareLaunch(root: string, address: string, args: string[], depe
   const replacement = await replacementForMainLaunch(root, record, resolved);
   const active = replacement ? [{ id: replacement.request.task, task: replacement.task }] : await launchEligibleTasks(root, record, resolved);
   if (!active.length) throw new Error(`${resolved} has no launch-eligible task; refusing runtime launch.`);
-  const selection = await chooseLaunchModel(root, config, record, required(await modelPortfolio(root), "models.yaml for Pi runtime launch"), dependencies.select);
+  const selection = await chooseLaunchModel(root, config, record, required(await modelPortfolio(root), "models.yaml for Pi runtime launch"), dependencies.select, dependencies.requestedCandidate);
   const model = resolveModelCommand(config, selection.candidate);
   if (basename(model.agent) !== "pi") throw new Error(`Pi runtime launch requires a Pi candidate, received ${selection.candidate.id}.`);
   const command = dependencies.command ?? runOutput;
@@ -401,7 +408,11 @@ async function persistLaunch(launch: PreparedLaunch, plan: LaunchPlan["plan"], s
   const receiptRecord = {
     schema: "atdd-flow/pi-runtime-launch-receipt/v1", seat: resolved, tasks: active.map((entry) => entry.id), candidate: selection.candidate.id,
     selection: receiptSelection(launch), pi_session: piSession, pi_session_path: sessionPath, herdr_session: options.herdrSession, pane: plan.pane,
-    ...(replacement ? { handover_replacement: { request: replacement.request, successor_session: piSession } } : {}),
+    ...(replacement || dependencies.rotation ? { handover_replacement: { request: replacement?.request ?? dependencies.rotation!.request, successor_session: piSession } } : {}),
+    ...(dependencies.rotation ? { rotation: {
+      request_sha256: dependencies.rotation.request_sha256, by: dependencies.rotation.by, task: dependencies.rotation.task,
+      handover: dependencies.rotation.handover, ...(dependencies.rotation.requested_model ? { requested_model: dependencies.rotation.requested_model } : {}),
+    } } : {}),
     ...(relocation ? { relocation: { source_herdr_session: options.sourceHerdrSession, source_pane: options.sourcePane, authorization: authorizationRecord, backup: relocation.backup, backup_sha256: relocation.sha256 } } : {}),
     created_at: dependencies.at?.() ?? now(),
   };
