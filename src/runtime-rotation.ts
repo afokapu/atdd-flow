@@ -8,7 +8,7 @@ import { mkdir, readdir, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import {
   type Seat, canonicalAddress, desk, modelPortfolio, paths, project,
-  readYaml, required, seat, words, yaml,
+  readYaml, required, runOutput, seat, words, yaml,
 } from "./core";
 import { type Handover, type HandoverReplacementRequest, handoverReplacementPath, resumedHandoverReplacement } from "./handover";
 import { readRuntimeState } from "./runtime-state";
@@ -194,8 +194,7 @@ function observationMatchesSource(observed: ReturnType<typeof sourceObservation>
 async function assertLiveSource(root: string, target: Seat, options: RotationOptions, dependencies: RotationDependencies) {
   const state = await readRuntimeState(root, target.address);
   if (!state || resolve(state.cwd) !== resolve(target.worktree)) throw new Error("Rotation source runtime heartbeat is absent or stale.");
-  const command = dependencies.command;
-  if (!command) return;
+  const command = required(dependencies.command, "a Herdr command runner");
   const [paneRaw, processRaw] = await Promise.all([
     command(herdr(options.source.herdr_session, "pane", "get", options.source.pane)),
     command(herdr(options.source.herdr_session, "pane", "process-info", "--pane", options.source.pane)),
@@ -329,7 +328,8 @@ export function rotatePiRuntime(root: string, address: string, args: string[], d
   const signature = digest({ address, options });
   const current = active.get(address);
   if (current) return current.signature === signature ? current.promise : Promise.reject(new Error("A different rotation tuple is already executing for this target."));
-  const promise = execute(root, address, args, options, dependencies);
+  const orchestration = { ...dependencies, command: dependencies.command ?? runOutput };
+  const promise = execute(root, address, args, options, orchestration);
   active.set(address, { signature, promise });
   void promise.finally(() => { if (active.get(address)?.promise === promise) active.delete(address); }).catch(() => undefined);
   return promise;

@@ -8,13 +8,23 @@
 import { afterEach, expect, test } from "bun:test";
 import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
-import { atomicYaml, exists, paths, readYaml } from "../src/core";
+import { atomicYaml, exists, paths, readYaml, yaml } from "../src/core";
 import { handoverReplacementPath } from "../src/handover";
 import { registerRuntimeState } from "../src/runtime-state";
 import {
-  at, args, cleanupFixtures, fakeHerdr, fixture, immutableSnapshot, processEffects, rotate,
+  at, args, cleanupFixtures, fakeHerdr, fixture, immutableSnapshot, processEffects, publicHerdr, rotate,
   sourcePath, sourceSession, successorPath, successorSession,
 } from "./helpers/delegated-runtime-rotation-fixture.red.test";
+
+const cli = join(import.meta.dir, "..", "src", "cli.ts");
+async function invokePublic(root: string, commandArgs: string[]) {
+  const child = Bun.spawn([process.execPath, cli, "--root", root, "pi", "runtime", "rotate", "driver.rotate@demo", ...commandArgs], {
+    stdout: "pipe", stderr: "pipe",
+    env: { ...process.env, ATDD_WORKFLOW_ROOT: undefined, ATDD_WORKFLOW_SEAT: undefined, PATH: `${join(root, "bin")}:${process.env.PATH ?? ""}` },
+  });
+  const [stdout, stderr, exitCode] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+  return { stdout, stderr, exitCode };
+}
 
 afterEach(cleanupFixtures);
 
@@ -26,6 +36,37 @@ test("public CLI declares the one-command delegated rotation grammar", async () 
   expect(output).toContain("--source-pi-session <id>");
   expect(output).toContain("--target-herdr-session <session>");
   expect(output).toContain("[--model <candidate>] [--timeout-ms <milliseconds>]");
+});
+
+test("public CLI subprocess completes with the default Herdr command runner", async () => {
+  const value = await fixture(), fake = await publicHerdr(value);
+  const invocation = invokePublic(value.root, args(value, { "--timeout-ms": "1000" }));
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const calls = await Bun.file(fake.log).exists() ? await readFile(fake.log, "utf8") : "";
+    if (calls.includes("pane get") && calls.includes("pane process-info")) break;
+    await Bun.sleep(5);
+  }
+  expect(await exists(handoverReplacementPath(value.root, value.target))).toBe(false);
+  await fake.release();
+  const completed = await invocation;
+  expect(completed.exitCode, completed.stderr).toBe(0);
+  const resultStart = completed.stdout.lastIndexOf("\n{\n");
+  expect(resultStart, completed.stdout).toBeGreaterThanOrEqual(0);
+  expect(yaml.parse<Record<string, any>>(completed.stdout.slice(resultStart + 1))).toMatchObject({
+    schema: "atdd-flow/delegated-runtime-rotation-result/v1", state: "complete", seat: value.target,
+    successor: { pi_session: expect.any(String), pi_session_path: expect.stringContaining("fresh_") },
+    resumed: { verified: 6, total: 6 },
+  });
+  expect(await readFile(fake.log, "utf8")).toContain("agent start");
+});
+
+test("public CLI stale source has zero request, process, receipt, or binding effects", async () => {
+  const value = await fixture(), fake = await publicHerdr(value), before = await immutableSnapshot(value);
+  const completed = await invokePublic(value.root, args(value, { "--source-pi-session": successorSession }));
+  expect(completed.exitCode).not.toBe(0);
+  expect(completed.stderr).toMatch(/source tuple is stale/i);
+  expect(await immutableSnapshot(value)).toEqual(before);
+  expect(await Bun.file(fake.log).exists()).toBe(false);
 });
 
 test("one main-authorized invocation completes request through fresh receipt and RESUMED 6/6", async () => {

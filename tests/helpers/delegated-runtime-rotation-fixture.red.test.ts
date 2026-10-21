@@ -202,6 +202,61 @@ function fakeHerdr(value: Awaited<ReturnType<typeof fixture>>, options: { releas
   return { calls, command, pause, release: () => { released = true; }, starts: () => starts, ticks: () => ticks };
 }
 
+async function publicHerdr(value: Awaited<ReturnType<typeof fixture>>) {
+  const state = join(value.root, "public-herdr-state.json"), log = join(value.root, "public-herdr.log");
+  const gate = join(value.root, "public-source-observed"), executable = join(value.root, "bin", "herdr");
+  const runtime = runtimeStatePath(value.root, value.target);
+  await writeFile(state, JSON.stringify({ phase: "source" }));
+  await writeFile(executable, `#!/usr/bin/env bun
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+const args = process.argv.slice(2), operation = args.slice(2);
+const stateFile = ${JSON.stringify(state)}, gate = ${JSON.stringify(gate)}, log = ${JSON.stringify(log)}, runtime = ${JSON.stringify(runtime)};
+const root = ${JSON.stringify(value.root)}, cwd = ${JSON.stringify(value.targetWorktree)}, seat = ${JSON.stringify(value.target)};
+const sourcePath = ${JSON.stringify(sourcePath)}, pane = "w1:p2", agent = "flow-driver-rotate-demo";
+const current = JSON.parse(readFileSync(stateFile, "utf8"));
+appendFileSync(log, operation.join(" ") + "\\n");
+if (current.phase === "source" && operation[0] === "pane" && ["get", "process-info"].includes(operation[1])) {
+  const sleep = new Int32Array(new SharedArrayBuffer(4));
+  while (!existsSync(gate)) Atomics.wait(sleep, 0, 0, 5);
+}
+const emit = (value) => process.stdout.write(JSON.stringify({ result: value }));
+const sessionPath = current.phase === "started" ? current.path : sourcePath;
+const live = current.phase === "source" || current.phase === "started";
+if (operation[0] === "workspace" && operation[1] === "list") emit({ workspaces: [
+  { workspace_id: "w1", label: "demo", worktree: { checkout_path: "/work/primary" } },
+  { workspace_id: "w2", label: seat, worktree: { checkout_path: cwd } },
+] });
+else if (operation[0] === "tab" && operation[1] === "list") emit({ tabs: [{ tab_id: "w1:t1", workspace_id: "w2", label: seat }] });
+else if (operation[0] === "pane" && operation[1] === "list") emit({ panes: [{ pane_id: pane, tab_id: "w1:t1", label: seat }] });
+else if (operation[0] === "pane" && operation[1] === "get") emit({ pane: live
+  ? { pane_id: pane, cwd, agent, agent_status: "idle", agent_session: { source: "pi", agent, kind: "path", value: sessionPath } }
+  : { pane_id: pane, cwd, agent: null, agent_status: "unknown", agent_session: null } });
+else if (operation[0] === "pane" && operation[1] === "process-info") emit({ process_info: { pane_id: pane, shell_pid: 11,
+  foreground_processes: live ? [{ pid: 202, name: "pi", argv0: "pi", cmdline: "pi" }] : [{ pid: 11, name: "zsh", argv0: "zsh", cmdline: "zsh" }] } });
+else if (operation[0] === "pane" && operation[1] === "run") emit({ pane_id: pane });
+else if (operation[0] === "agent" && operation[1] === "start") {
+  const idAt = operation.indexOf("--session-id"), id = operation[idAt + 1], path = root + "/fresh_" + id + ".jsonl";
+  const at = new Date().toISOString();
+  writeFileSync(path, '{"type":"session"}\\n');
+  writeFileSync(stateFile, JSON.stringify({ phase: "started", id, path }));
+  writeFileSync(runtime, JSON.stringify({ schema: "atdd-flow/pi-runtime-state/v1", seat, owner_token: "successor-owner", pid: 202, model: "economy", cwd, started_at: at, heartbeat_at: at }));
+  emit({ name: agent });
+} else if (operation[0] === "agent" && operation[1] === "get") emit({ agent: {
+  name: agent, agent: "pi", pane_id: pane, cwd, agent_status: "idle", agent_session: { kind: "path", value: sessionPath },
+} });
+else { console.error("unexpected Herdr command: " + operation.join(" ")); process.exit(2); }
+`);
+  await chmod(executable, 0o755);
+  return {
+    log,
+    release: async () => {
+      await clearRuntimeState(value.root, value.target, sourceOwner);
+      await writeFile(state, JSON.stringify({ phase: "vacant" }));
+      await writeFile(gate, "observed\n");
+    },
+  };
+}
+
 const selectEconomy = async () => ({ available: true as const, model: "governed", selected_model: "economy", confidence: 0.99 });
 
 async function rotate(value: Awaited<ReturnType<typeof fixture>>, herdr: ReturnType<typeof fakeHerdr>, commandArgs = args(value), extra: Record<string, unknown> = {}) {
@@ -228,5 +283,5 @@ function processEffects(calls: string[][]) {
   return calls.map((call) => call.slice(3).join(" ")).filter((call) => call.startsWith("pane run") || call.startsWith("agent start"));
 }
 
-export { at, args, fakeHerdr, fixture, immutableSnapshot, processEffects, rotate, sourcePath, sourceSession, successorPath, successorSession };
+export { at, args, fakeHerdr, fixture, immutableSnapshot, processEffects, publicHerdr, rotate, sourcePath, sourceSession, successorPath, successorSession };
 export async function cleanupFixtures() { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); }
