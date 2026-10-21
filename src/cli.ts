@@ -2,6 +2,7 @@
 // URN: component:flow:e005:cli:backend:presentation
 // Tested-By:
 // - test:atdd-flow:repeat-handover-replacement-supersession
+// - test:atdd-flow:delegated-seat-runtime-rotation:E007-RED-001
 // Runtime: bun
 // Purpose: Route supported Desk commands and publish their exact CLI grammar.
 
@@ -20,6 +21,7 @@ import * as cleanup from "./ephemeral-resources";
 import * as ownerAlerts from "./owner-escalations";
 import { recoveryFor } from "./recovery-bundle";
 import { recordHandover, requestHandoverReplacement, resumedHandoverReplacement, showHandover } from "./handover";
+import { rotatePiRuntime } from "./runtime-rotation";
 
 const usage = `atdd-flow — filesystem-first agent seats and tasks
 
@@ -38,6 +40,9 @@ Usage:
   atdd-flow pi extension-path
   atdd-flow pi runtime authorize-adoption <id> --by operator@desk --seat <seat> --pi-session <id> --pi-session-path <jsonl> --source-herdr-session <session> --source-pane <pane> --target-herdr-session <session> --target-pane <pane> --target-cwd <path>
   atdd-flow pi runtime launch <address> [--pane <asserted-herdr-pane>] --herdr-session <session> [--resume] [--dry-run] [--adopt-session <exact-jsonl> --source-herdr-session <session> --source-pane <pane> --authorization <record-id>]
+  atdd-flow pi runtime rotate <address> --by <caller> --task <id> --handover <id>
+    --source-pi-session <id> --source-pi-session-path <jsonl> --source-herdr-session <session> --source-pane <pane>
+    --target-herdr-session <session> --target-pane <pane> --target-cwd <worktree> [--model <candidate>] [--timeout-ms <milliseconds>]
   atdd-flow application use <address> <application>
   atdd-flow multiplexer status|apply herdr [--session <name>]
   atdd-flow describe <address> --purpose <one-line responsibility>
@@ -120,7 +125,11 @@ async function main() {
         else console.log(`Launched Pi runtime for ${required(rest[2], "address")} with ${plan.candidate}.`);
         return;
       }
-      throw new Error("Use `pi extension-path`, `pi runtime authorize-adoption <id> ...`, or `pi runtime launch <address> [--pane <asserted-pane>] --herdr-session <session> [--resume] [--dry-run] [--adopt-session <exact-jsonl> --source-herdr-session <session> --source-pane <pane> --authorization <record-id>]`.");
+      if (rest[0] === "runtime" && rest[1] === "rotate") {
+        console.log(yaml.print(await rotatePiRuntime(root, required(rest[2], "address"), rest.slice(3))));
+        return;
+      }
+      throw new Error("Use `pi extension-path`, `pi runtime authorize-adoption <id> ...`, `pi runtime launch <address> ...`, or `pi runtime rotate <address> ...`.");
     },
     application: async () => {
       if (rest[0] === "use") return useApplication(root, required(rest[1], "address"), required(rest[2], "application"));
