@@ -233,3 +233,63 @@ test("RED 5 MAIL: mail this seat already answered with a receipt or reply is not
   expect(notices).toContain("M-open");
   expect(notices).not.toContain("M-answered");
 });
+
+// GREEN guard behaviour of the notice state (pending flag, unchanged marker, withdrawn notice).
+import { createNoticeState, refreshDelivered, sendTaskDirective } from "../src/next-action-notices";
+
+const green = { phase: "green", handoff: { state: "awaiting_assignee", evidence: "M-phase", updated_at: reviewer } };
+
+function recordingHost() {
+  const queued: Sent[] = [];
+  return { queued, host: { sendMessage: (message: unknown) => { queued.push({ role: "custom", ...(message as Sent) }); } } };
+}
+
+test("GREEN: a pending flag blocks a second enqueue until the queue settles, then a notice is queued again", async () => {
+  const root = await desk(green);
+  const state = createNoticeState();
+  const { host, queued } = recordingHost();
+  await sendTaskDirective(host, root, driver, state);
+  await sendTaskDirective(host, root, driver, state);
+  expect(queued).toHaveLength(1);
+  state.pending = false; // what the agent_settled hook does when Pi's follow-up queue was cleared
+  await sendTaskDirective(host, root, driver, state);
+  expect(queued).toHaveLength(2);
+});
+
+test("GREEN: the extension registers agent_settled and message_end hooks", async () => {
+  const root = await desk(green);
+  const seen: string[] = [];
+  // The factory only registers listeners; it reads identity at call time, so run it in a child to keep shared env untouched.
+  const script = `import install from ${JSON.stringify(extension)}; const seen = []; install({ on(e) { seen.push(e); }, sendMessage() {} }); console.log(JSON.stringify(seen));`;
+  const child = Bun.spawn([process.execPath, "-e", script], { env: { ...process.env, ATDD_WORKFLOW_ROOT: root, ATDD_WORKFLOW_SEAT: driver }, stdout: "pipe", stderr: "pipe" });
+  const out = await new Response(child.stdout).text();
+  await child.exited;
+  seen.push(...(JSON.parse(out.trim().split("\n").at(-1)!) as string[]));
+  expect(seen).toContain("message_end");
+  expect(seen).toContain("agent_settled");
+});
+
+test("GREEN: a held duplicate notice becomes a one-line unchanged marker, and a notice for a vanished action is withdrawn", async () => {
+  const root = await desk(green);
+  const state = createNoticeState();
+  const notice = { role: "custom", customType: "atdd-flow-next-action", content: "stale", details: {} };
+  const first = await refreshDelivered(root, driver, state, notice);
+  expect(first?.content).toContain("Implement the accepted GREEN scope");
+  const second = await refreshDelivered(root, driver, state, notice);
+  expect(second?.content).toContain("unchanged");
+  expect(second?.content).not.toContain("Implement the accepted GREEN scope");
+  await atomicYaml(taskPath(root), taskRecord({ status: "done" }));
+  const third = await refreshDelivered(root, driver, state, notice);
+  expect(third?.content).toContain("withdrawn");
+  expect(state.lastDelivered).toBeUndefined();
+});
+
+test("GREEN: mail that was answered while held is replaced by a one-line already-answered notice", async () => {
+  const root = await desk(green);
+  await queueMail(root, driver, ["M-held"], ["M-held"]);
+  const state = createNoticeState();
+  const message = { role: "custom", customType: "atdd-flow-mail", content: "original", details: { thread: "T-notice", message: "M-held" } };
+  expect((await refreshDelivered(root, driver, state, message))?.content).toContain("already answered");
+  const open = { ...message, details: { thread: "T-notice", message: "M-other" } };
+  expect(await refreshDelivered(root, driver, state, open)).toBeUndefined();
+});

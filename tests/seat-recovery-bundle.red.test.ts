@@ -39,7 +39,8 @@ test("RED: the bundle renders every field from git, Desk and the previous Pi ses
   const alpha = lines(bundle).find((line) => line.startsWith("task alpha"))!;
   for (const part of ["in_progress", "red", "awaiting_coordinator", "M-red-ev", "1/2", "waiting on owner", "dep-task"]) expect(alpha).toContain(part);
   expect(bundle).not.toContain("finished-task");
-  expect(field(bundle, "next:")).toContain("alpha");
+  // alpha is blocked ("waiting on owner"): a blocked assignee has no injected next action, so the bundle reports none.
+  expect(field(bundle, "next:")).toContain("none");
   expect(lines(bundle).find((line) => line.startsWith("inbound M-in1"))).toMatch(/main@demo -> driver\.pi@demo.*3d/);
   expect(lines(bundle).find((line) => line.startsWith("outbound M-out1"))).toMatch(/driver\.pi@demo -> main@demo/);
   expect(bundle).not.toContain("M-ans");
