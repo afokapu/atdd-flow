@@ -3,6 +3,16 @@ import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { addressParts, atomicYaml, yaml } from "./core";
 
+/** The values one activation attempt compared, as recorded for `status seat`; advisory and absent on legacy records. */
+export type MailActivation = {
+  at: string;
+  transport: "active" | "inactive";
+  live: { pi_session?: string; herdr_session?: string; pane?: string };
+  bound: { pi_session?: string; herdr_session?: string; pane?: string; receipt: "present" | "missing" | "none" };
+  differs: string[];
+  error?: string;
+};
+
 /**
  * A local, advisory observation of one runtime for one already-authoritative
  * Desk seat. This record is deliberately not a registry: it cannot select a
@@ -19,6 +29,7 @@ export type RuntimeState = {
   heartbeat_at: string;
   /** Live Pi session id when known; absent on legacy records. Advisory only: it never selects a recipient. */
   pi_session?: string;
+  mail_activation?: MailActivation;
 };
 
 export type RuntimeStateRegistration = Pick<RuntimeState, "seat" | "owner_token" | "pid" | "model" | "cwd"> & Partial<Pick<RuntimeState, "pi_session">>;
@@ -47,7 +58,8 @@ function valid(value: unknown): value is RuntimeState {
     && nonEmpty(record.cwd)
     && timestamp(record.started_at)
     && timestamp(record.heartbeat_at)
-    && (record.pi_session === undefined || nonEmpty(record.pi_session));
+    && (record.pi_session === undefined || nonEmpty(record.pi_session))
+    && (record.mail_activation === undefined || (typeof record.mail_activation === "object" && record.mail_activation !== null));
 }
 
 function assertRegistration(value: RuntimeStateRegistration) {
@@ -159,6 +171,18 @@ export async function heartbeatRuntimeState(root: string, seat: string, ownerTok
     const next = { ...current, heartbeat_at: at };
     await atomicYaml(file, next);
     return next;
+  });
+}
+
+/** Record the compared activation values only while this owner holds the record; the heartbeat and every other field are kept. */
+export async function recordMailActivation(root: string, seat: string, ownerToken: string, activation: MailActivation) {
+  if (!nonEmpty(ownerToken)) throw new Error("Runtime state requires a non-empty owner token.");
+  const file = runtimeStatePath(root, seat);
+  return exclusive(file, async () => {
+    const current = await readRuntimeState(root, seat);
+    if (!current || current.owner_token !== ownerToken) return false;
+    await atomicYaml(file, { ...current, mail_activation: activation });
+    return true;
   });
 }
 

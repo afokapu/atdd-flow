@@ -1,0 +1,9 @@
+urn: acc:flow:E010-RED-001
+phase: RED
+description: >-
+  The inactive-mail notice is display-only and diagnosable: it never triggers
+  an agent turn, lists the exact live and bound session, Herdr session and pane
+  values with only the differing fields named, reports a startup failure of an
+  already active transport as ACTIVE with its error instead of INACTIVE, runs
+  the launcher activation callback at most once, and records the same fields on
+  the advisory runtime state so status seat can show them.

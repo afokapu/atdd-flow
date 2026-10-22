@@ -3,9 +3,9 @@ import { mkdir, readFile, rename, rm, stat, unlink, writeFile } from "node:fs/pr
 import { basename, dirname, join } from "node:path";
 import { parse, stringify } from "yaml";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { clearStaleRuntimeState, clearRuntimeState, heartbeatRuntimeState, ownsRuntimeState, registerRuntimeState, runtimeOwnerToken, withOwnedRuntimeState } from "../../src/runtime-state";
+import { clearStaleRuntimeState, clearRuntimeState, heartbeatRuntimeState, ownsRuntimeState, recordMailActivation, registerRuntimeState, runtimeOwnerToken, withOwnedRuntimeState } from "../../src/runtime-state";
 import { paths, readYaml, type Seat } from "../../src/core";
-import { expectsNativeMail, inactiveMailNotice } from "../../src/mail-activation-notice";
+import { activationNotice, diagnoseMailActivation, expectsNativeMail } from "../../src/mail-activation-notice";
 import { type NoticeState, createNoticeState, refreshDelivered, sendTaskDirective, shouldNotifyMail } from "../../src/next-action-notices";
 import { handoverThresholdInstruction, runtimeStartupInstruction, successorInstruction } from "../../src/collaboration-policy";
 import { type RecoveryMode, recoveryFor } from "../../src/recovery-bundle";
@@ -261,7 +261,7 @@ export function createPiRuntime({
   const activate = async () => {
     if (!await owned()) return false;
     if (activated) return true;
-    transport = createTransport({
+    const candidate = createTransport({
       root, seat, batchSize: defaultBatchSize, intervalMs: defaultIntervalMs,
       deliver: async (mail, thread, path) => {
         // The application supplies the wake action, but this shared filesystem
@@ -278,7 +278,9 @@ export function createPiRuntime({
         return ownership === true && accepted !== false;
       },
     });
-    await transport.start();
+    // The transport counts as started only after start() succeeds; a failed start is stopped and leaves no transport behind.
+    try { await candidate.start(); } catch (error) { candidate.stop(); throw error; }
+    transport = candidate;
     activated = true;
     return true;
   };
@@ -294,7 +296,7 @@ export function createPiRuntime({
     }, heartbeatMs);
     if (!deferActivation) await activate();
   };
-  return { ownerToken, start, activate, stop, reconcile, get transport() { return transport; } };
+  return { ownerToken, start, activate, stop, reconcile, get transport() { return transport; }, get active() { return activated; } };
 }
 
 type LaunchReceipt = { seat?: string; pi_session?: string; pi_session_path?: string; herdr_session?: string; pane?: string };
@@ -307,7 +309,8 @@ export class ActivationTimeout extends Error {
 /** Wait only for the launcher's already-verified receipt and exact Desk binding; this never creates either record. */
 export async function awaitLaunchActivation({ root, seat, piSession, herdrSession, pane, activate, intervalMs = defaultActivationIntervalMs, timeoutMs = defaultActivationTimeoutMs }: LaunchActivationOptions) {
   const deadline = Date.now() + timeoutMs;
-  while (Date.now() <= deadline) {
+  let matched = false;
+  while (!matched && Date.now() <= deadline) {
     try {
       const record = await readYaml<Seat>(paths(root).seatFile(seat));
       const runtime = record.runtime;
@@ -315,16 +318,26 @@ export async function awaitLaunchActivation({ root, seat, piSession, herdrSessio
       if (runtime?.application === "herdr" && typeof locator !== "string" && locator?.session === herdrSession && locator.pane === pane
         && runtime.pi_session === piSession && runtime.pi_session_path && runtime.launch_receipt) {
         const receipt = await readYaml<LaunchReceipt>(runtime.launch_receipt);
-        if (receipt.seat === seat && receipt.pi_session === piSession && receipt.pi_session_path === runtime.pi_session_path
-          && receipt.herdr_session === herdrSession && receipt.pane === pane) {
-          await activate();
-          return;
-        }
+        matched = receipt.seat === seat && receipt.pi_session === piSession && receipt.pi_session_path === runtime.pi_session_path
+          && receipt.herdr_session === herdrSession && receipt.pane === pane;
       }
     } catch { /* Binding and receipt are written after Herdr verification; wait within this finite window. */ }
-    await pause(intervalMs);
+    if (!matched) await pause(intervalMs);
   }
+  // The callback runs at most once, outside the polling try: a failing startup step is reported, never retried every poll.
+  if (matched) return activate();
   throw new ActivationTimeout();
+}
+
+/** A transient start failure (for example a busy inbox lock under concurrent reloads) is retried a bounded number of times before it is reported. */
+export async function activateWithRetry(activate: () => Promise<boolean>, attempts = 3, delayMs = 1_000) {
+  for (let attempt = 1; ; attempt += 1) {
+    try { return await activate(); }
+    catch (error) {
+      if (attempt >= attempts) throw error;
+      await pause(delayMs);
+    }
+  }
 }
 
 /**
@@ -403,13 +416,19 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     const sessionManager = (ctx as { sessionManager?: { getSessionId?: () => string; getSessionFile?: () => string | undefined } }).sessionManager;
     const liveSession = process.env.ATDD_FLOW_PI_SESSION ?? sessionManager?.getSessionId?.();
-    // One visible notice per session: a refused or timed-out activation must never be silent.
-    let inactiveNoticed = false;
-    const noticeInactive = async () => {
-      if (inactiveNoticed) return;
-      inactiveNoticed = true;
-      const content = await inactiveMailNotice(root, seat, liveSession).catch(() => undefined);
-      if (content) pi.sendMessage({ customType: "atdd-flow-mail-inactive", content, display: true, details: { seat, live: liveSession, authority: "binding" } }, { triggerTurn: true, deliverAs: "followUp" });
+    // One display-only notice per session: a refused, timed-out or failed activation must never be silent, and never wakes the agent.
+    let noticed = false;
+    const noticeActivation = async (transport: "active" | "inactive", error?: string) => {
+      if (noticed) return;
+      noticed = true;
+      const live = { pi_session: liveSession, herdr_session: process.env.ATDD_FLOW_HERDR_SESSION ?? process.env.HERDR_SESSION, pane: process.env.ATDD_FLOW_HERDR_PANE ?? process.env.HERDR_PANE_ID };
+      const activation = await diagnoseMailActivation(root, seat, live, transport, error).catch(() => undefined);
+      if (!activation) return;
+      if (runtime) await recordMailActivation(root, seat, runtime.ownerToken, activation).catch(() => undefined);
+      if (transport === "active" && !error) return;
+      const content = await activationNotice(root, seat, activation).catch(() => undefined);
+      const customType = transport === "active" ? "atdd-flow-mail-startup-failed" : "atdd-flow-mail-inactive";
+      if (content) pi.sendMessage({ customType, content, display: true, details: { seat, live, authority: "binding" } }, { triggerTurn: false });
     };
     runtime = createPiRuntime({ root, seat, piSession: liveSession, deferActivation: true, deliver: async (mail, thread, path, sendIfOwned) => {
       if (!sendIfOwned) return false;
@@ -437,7 +456,7 @@ export default function (pi: ExtensionAPI) {
           const notice = "Notices created before this session were not replayed; run atdd-flow status seat " + seat + " for unanswered mail.";
           pi.sendMessage({ customType: "atdd-flow-start", content: `${runtimeStartupInstruction(seat, bundle)} ${notice}`, display: true, details: { seat, root } }, { triggerTurn: true, deliverAs: "followUp" });
         }
-      } else if (await expectsNativeMail(root, seat)) await noticeInactive();
+      } else if (await expectsNativeMail(root, seat)) await noticeActivation("inactive");
       return;
     }
     if (!piSession || !herdrSession || !pane) return;
@@ -445,7 +464,7 @@ export default function (pi: ExtensionAPI) {
     void awaitLaunchActivation({
       root, seat, piSession, herdrSession, pane,
       activate: async () => {
-        if (!await current.activate()) return;
+        if (!await activateWithRetry(() => current.activate())) return;
         const request = await readHandoverReplacement(root, seat).catch(() => undefined);
         const successor = request && request.source.pi_session !== piSession ? request : undefined;
         const bundle = await recovery(root, seat, successor ? "successor" : "start", piSession);
@@ -460,7 +479,9 @@ export default function (pi: ExtensionAPI) {
         await sendTaskDirective(host, root, seat, notices);
         if (ctx.hasUI) ctx.ui.notify(`ATDD Flow native mail active for ${seat}`, "info");
       },
-    }).catch((error) => error instanceof ActivationTimeout ? noticeInactive() : undefined);
+    }).catch((error) => error instanceof ActivationTimeout
+      ? noticeActivation("inactive")
+      : noticeActivation(current.active ? "active" : "inactive", error instanceof Error ? error.message : String(error)));
   });
   pi.on("session_shutdown", () => { void runtime?.stop(); });
 }
