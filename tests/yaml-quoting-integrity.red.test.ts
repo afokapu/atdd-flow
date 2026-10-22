@@ -1,5 +1,5 @@
 // URN: test:atdd-flow:yaml-quoting-integrity
-// Acceptance: acc:flow:E007-UNIT-001
+// Acceptance: acc:flow:E008-UNIT-001
 // Phase: UNIT
 import { expect, test } from "bun:test";
 import { mkdtemp, readFile, readdir } from "node:fs/promises";
