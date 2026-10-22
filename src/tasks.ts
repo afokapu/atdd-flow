@@ -13,6 +13,7 @@ export type HandoffState = "executing" | "awaiting_coordinator" | "awaiting_assi
 export type TaskHandoff = { state: HandoffState; evidence: string; updated_at: string; submitted_phase?: TaskPhase };
 export type DoneWhen = { text: string; proof?: string };
 export type GovernedBase = { coordinator: string; branch: string; commit: string };
+export type LineageRef = { ref: string; commit: string; reason?: string };
 /** An append-only accountability decision; prior coordinator evidence remains untouched. */
 export type CoordinatorTransfer = {
   from: string;
@@ -21,6 +22,8 @@ export type CoordinatorTransfer = {
   /** Required when main executes the transfer; references an operator@desk message. */
   authorization?: string;
   exact_head: { branch: string; commit: string };
+  /** The driver ref used for the lineage check; HEAD means the recorded branch no longer resolved. */
+  lineage_ref?: LineageRef;
   effective_at: string;
 };
 export type TerminalDisposition = { kind: "superseded" | "rejected"; by: string; at: string; reason: string };
@@ -117,6 +120,23 @@ async function writeTask(root: string, projectName: string, id: string, task: Ta
 
 /** Records the exact parent head for new bounded topology without rewriting legacy tasks. */
 async function governedBase(root: string, projectName: string, coordinatorAddress: string, assignee?: string): Promise<GovernedBase | undefined> {
+  return (await governedLineage(root, projectName, coordinatorAddress, assignee))?.base;
+}
+
+/** The recorded branch when it resolves; otherwise the driver worktree HEAD; otherwise fail closed. */
+async function driverLineageRef(driver: Seat): Promise<LineageRef> {
+  const resolveRef = (ref: string) => runOutput(["git", "-C", driver.worktree, "rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
+  try { return { ref: driver.branch, commit: await resolveRef(driver.branch) }; }
+  catch {
+    if (!await exists(driver.worktree)) {
+      throw new Error(`Driver ${driver.address} branch ${driver.branch} no longer resolves and its worktree ${driver.worktree} is missing; cannot verify lineage.`);
+    }
+    try { return { ref: "HEAD", commit: await resolveRef("HEAD"), reason: `recorded branch ${driver.branch} no longer resolves; used worktree HEAD` }; }
+    catch { throw new Error(`Driver ${driver.address} branch ${driver.branch} no longer resolves and worktree ${driver.worktree} has no valid HEAD.`); }
+  }
+}
+
+async function governedLineage(root: string, projectName: string, coordinatorAddress: string, assignee?: string): Promise<{ base: GovernedBase; lineage: LineageRef } | undefined> {
   if (!assignee) return undefined;
   const config = await project(root, projectName);
   if (!config.repository) return undefined;
@@ -146,9 +166,10 @@ async function governedBase(root: string, projectName: string, coordinatorAddres
     throw new Error(`Task coordinator ${coordinator.address} must be main or a named coordinator.`);
   }
   const commit = await runOutput(["git", "-C", coordinator.worktree, "rev-parse", branch]);
-  const common = await runOutput(["git", "-C", driver.worktree, "merge-base", commit, driver.branch]);
+  const lineage = await driverLineageRef(driver);
+  const common = await runOutput(["git", "-C", driver.worktree, "merge-base", commit, lineage.commit]);
   if (common !== commit) throw new Error(`Driver ${driver.address} is not based on the exact coordinator head ${commit}.`);
-  return { coordinator: coordinator.address, branch, commit };
+  return { base: { coordinator: coordinator.address, branch, commit }, lineage };
 }
 
 /**
@@ -390,8 +411,9 @@ export async function transfer(root: string, projectName: string, id: string, ar
 
   // governedBase confirms main/named-coordinator identity, exact branch head,
   // and the driver's descendant relationship before accountability changes.
-  const base = await governedBase(root, projectName, target, task.assignee);
-  if (!base) throw new Error(`Task ${id} needs an assigned driver and governed repository before transfer.`);
+  const governed = await governedLineage(root, projectName, target, task.assignee);
+  const base = governed?.base;
+  if (!governed || !base) throw new Error(`Task ${id} needs an assigned driver and governed repository before transfer.`);
   const authorization = actor === main ? required(words(args, "--authorization"), "an owner-authorized topology plan") : undefined;
   if (authorization) await operatorAuthorization(root, authorization, main, {
     schema: "atdd-workflow/task-transfer-authorization/v1",
@@ -408,6 +430,7 @@ export async function transfer(root: string, projectName: string, id: string, ar
     reason: required(words(args, "--reason"), "--reason"),
     ...(authorization ? { authorization } : {}),
     exact_head: { branch: base.branch, commit: base.commit },
+    lineage_ref: governed.lineage,
     effective_at: now(),
   };
   task.coordinator = target;
