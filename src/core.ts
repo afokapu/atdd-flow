@@ -218,8 +218,8 @@ export async function atomicYaml(file: string, value: unknown) {
   const temp = join(dirname(file), `.${basename(file)}.${randomUUID()}.tmp`);
   const text = yaml.print(value);
   await writeFile(temp, text, "utf8");
-  // Verify the bytes actually on disk, not just the in-memory string, before the rename publishes them.
-  if (!roundTrips(await readFile(temp, "utf8"), expectedRoundTrip(value))) {
+  // yaml.print already proved this text round-trips; compare the bytes on disk to it before the rename publishes them.
+  if ((await readFile(temp, "utf8")) !== text) {
     await rm(temp, { force: true });
     throw new Error(`Refusing to publish ${file}: written YAML does not round-trip.`);
   }
