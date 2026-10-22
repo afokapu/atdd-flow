@@ -145,3 +145,14 @@ test("RED guard: a healthy launcher start sends no diagnostic notice and the mis
   expect(healthy.starts).toHaveLength(1);
   expect((await runPi(await desk(), live)).inactive).toHaveLength(1);
 });
+
+test("GREEN guard: a session mismatch records transport inactive with the differing field, and status seat keeps its bound/live line", async () => {
+  const root = await desk();
+  await runPi(root, live, { keepState: true });
+  const state = await readRuntimeState(root, seat) as { mail_activation?: unknown } | undefined;
+  expect(state?.mail_activation).toMatchObject({ transport: "inactive", differs: ["session"], live: { pi_session: live }, bound: { pi_session: bound, receipt: "present" } });
+  const child = Bun.spawn([process.execPath, cli, "--root", root, "status", "seat", seat], { cwd: root, env: { ...process.env, ATDD_WORKFLOW_ROOT: undefined, ATDD_WORKFLOW_SEAT: undefined, NO_COLOR: "1" }, stdout: "pipe", stderr: "pipe" });
+  const [stdout] = await Promise.all([new Response(child.stdout).text(), child.exited]);
+  expect(stdout).toContain(`native mail inactive (bound ${bound}, live ${live})`);
+  expect(stdout).toContain("differs session");
+});
