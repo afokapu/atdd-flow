@@ -128,7 +128,11 @@ async function chooseLaunchModel(root: string, config: Desk, record: Seat, portf
     const reason = !selection.available ? selection.reason : selection.confidence < 0.75
       ? `Jev model selection confidence is low (${selection.confidence}).`
       : `Jev selected a model outside the available portfolio: ${selection.selected_model}.`;
-    return { candidate: candidates[0]!, selection, fallback: reason };
+    const configured = config.fallback_model?.[record.role];
+    if (configured === undefined) return { candidate: candidates[0]!, selection, fallback: reason };
+    const candidate = candidates.find((entry) => entry.id === configured);
+    if (!candidate) throw new Error(`fallback_model.${record.role} names "${configured}", which is not an enabled model with an available executable in models.yaml; refusing launch.`);
+    return { candidate, selection, fallback: reason, appliedFallback: { role: record.role, model: candidate.id, reason } };
   }
   return { candidate: required(candidates.find((entry) => entry.id === selection.selected_model), `selected model ${selection.selected_model}`), selection };
 }
@@ -390,7 +394,7 @@ async function verifyRuntime(launch: PreparedLaunch, pane: string, priorPath?: s
 
 function receiptSelection(launch: PreparedLaunch) {
   const { selection } = launch;
-  if (selection.fallback) return { result: "fallback", reason: selection.fallback };
+  if (selection.fallback) return { result: "fallback", reason: selection.fallback, ...(selection.appliedFallback ? { applied_fallback: selection.appliedFallback } : {}) };
   return { result: "selected", confidence: selection.selection.confidence,
     ...(selection.selection.available && selection.selection.model ? { model: selection.selection.model } : {}) };
 }
