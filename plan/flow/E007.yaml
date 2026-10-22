@@ -1,0 +1,10 @@
+urn: acc:flow:E007-RED-001
+phase: RED
+description: >-
+  Pi next-action notices derive from current task state at delivery and never
+  from an enqueue-time snapshot: terminal (done, superseded, rejected, deferred)
+  tasks and blocked assignees yield no directive, a blocked coordinator is
+  notified once per unchanged blocker, at most one unchanged next-action
+  follow-up is pending, a same-phase accepted handoff directs to the next phase
+  or to proofs and review, and mail this seat already answered is not notified
+  again.

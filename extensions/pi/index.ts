@@ -5,7 +5,7 @@ import { parse, stringify } from "yaml";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { clearStaleRuntimeState, clearRuntimeState, heartbeatRuntimeState, ownsRuntimeState, registerRuntimeState, runtimeOwnerToken, withOwnedRuntimeState } from "../../src/runtime-state";
 import { paths, readYaml, type Seat } from "../../src/core";
-import { directiveNotice, nextDirective } from "../../src/tasks";
+import { type NoticeState, createNoticeState, refreshDelivered, sendTaskDirective, shouldNotifyMail } from "../../src/next-action-notices";
 import { handoverThresholdInstruction, runtimeStartupInstruction, successorInstruction } from "../../src/collaboration-policy";
 import { type RecoveryMode, recoveryFor } from "../../src/recovery-bundle";
 import { contextHandoverThreshold, readHandoverReplacement } from "../../src/handover";
@@ -341,18 +341,6 @@ const unsetOrEqual = (recorded: string | undefined, live: string | undefined) =>
 const sessionUnsetOrEqual = (runtime: Seat["runtime"], piSession?: string, piSessionPath?: string) =>
   unsetOrEqual(runtime?.pi_session, piSession) && unsetOrEqual(runtime?.pi_session_path, piSessionPath);
 
-/** Injects the current task-derived action; failure to derive never blocks mail or startup. */
-async function sendTaskDirective(pi: ExtensionAPI, root: string, seat: string) {
-  try {
-    const directive = await nextDirective(root, seat);
-    if (!directive) return;
-    pi.sendMessage({
-      customType: "atdd-flow-next-action", content: directiveNotice(seat, directive), display: true,
-      details: { project: directive.project, task: directive.task, lifecycle: directive.lifecycle, role: directive.role, authority: "task" },
-    }, { triggerTurn: true, deliverAs: "followUp" });
-  } catch { /* The durable task remains authoritative and is re-derived at the next startup or wake. */ }
-}
-
 /** The recovery bundle is advisory; any failure falls back to the plain prompt. */
 const recovery = (root: string, seat: string, mode: RecoveryMode, session?: string) => recoveryFor(root, seat, mode, session).catch(() => undefined);
 
@@ -365,6 +353,15 @@ export default function (pi: ExtensionAPI) {
   let handoverPrompted = false;
   // Host-attach only: mail older than this activation is consumed without a prompt, so a long backlog cannot trigger one turn per message.
   let hostActivatedAt: number | undefined;
+  const notices: NoticeState = createNoticeState();
+  const host = pi as unknown as Parameters<typeof sendTaskDirective>[0];
+  // Held follow-ups are re-derived when Pi delivers them, so a notice queued before a state change cannot reach the model stale.
+  pi.on("message_end", async (event) => {
+    const message = await refreshDelivered(root, seat, notices, event.message as Parameters<typeof refreshDelivered>[3]);
+    return message ? { message: message as typeof event.message } : undefined;
+  });
+  // Nothing queued survives a settled run, so a pending flag left by a cleared queue cannot suppress future notices.
+  pi.on("agent_settled", () => { notices.pending = false; });
   pi.on("turn_end", async (_event, ctx) => {
     if (handoverPrompted) return;
     const percent = ctx.getContextUsage()?.percent;
@@ -399,9 +396,10 @@ export default function (pi: ExtensionAPI) {
     runtime = createPiRuntime({ root, seat, deferActivation: true, deliver: async (mail, thread, path, sendIfOwned) => {
       if (!sendIfOwned) return false;
       if (hostActivatedAt !== undefined && Date.parse(typeof mail.created_at === "string" ? mail.created_at : "") < hostActivatedAt) return sendIfOwned(async () => undefined);
+      const notify = typeof mail.id === "string" && typeof thread.id === "string" && await shouldNotifyMail(root, seat, notices, thread.id, mail.id);
       return sendIfOwned(async () => {
-        // Task state is re-read at every wake, so queued mail cannot carry a stale action.
-        await sendTaskDirective(pi, root, seat);
+        if (!notify) return;
+        await sendTaskDirective(host, root, seat, notices);
         pi.sendMessage({
           customType: "atdd-flow-mail",
           content: mailNotice(typeof thread.id === "string" ? thread.id : "unknown", { ...mail, subject: typeof thread.subject === "string" ? thread.subject : undefined }),
@@ -442,7 +440,7 @@ export default function (pi: ExtensionAPI) {
             display: true, details: { seat, handover: successor.handover.id, authority: "handover-replacement" },
           }, { triggerTurn: true, deliverAs: "followUp" });
         }
-        await sendTaskDirective(pi, root, seat);
+        await sendTaskDirective(host, root, seat, notices);
         if (ctx.hasUI) ctx.ui.notify(`ATDD Flow native mail active for ${seat}`, "info");
       },
     }).catch(() => undefined);

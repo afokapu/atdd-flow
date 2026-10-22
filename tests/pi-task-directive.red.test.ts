@@ -87,9 +87,11 @@ async function startPi(lifecycle: Lifecycle, staleMail = false) {
     sendMessage(message: Sent) { sent.push(message); },
   } as never);
   await start?.({}, { hasUI: false });
-  for (let attempt = 0; attempt < 100 && sent.filter((message) => message.customType === "atdd-flow-next-action").length < 2; attempt += 1) {
+  // Startup injects one action; the queued mail wake must not add a second copy while it is pending.
+  for (let attempt = 0; attempt < 100 && sent.filter((message) => message.customType === "atdd-flow-mail").length < (staleMail ? 1 : 0); attempt += 1) {
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
+  await new Promise((resolve) => setTimeout(resolve, 100));
   shutdown?.();
   return sent;
 }
@@ -101,17 +103,19 @@ const expected: Record<Lifecycle, string> = {
   GREEN: "Implement the accepted GREEN scope",
   REFACTOR: "Refactor only after GREEN acceptance",
   REVIEW: "Await coordinator review; do not continue implementation",
-  DONE: "Perform DONE housekeeping only",
-  BLOCKED: "Remain blocked and await coordinator resolution",
+  DONE: "",
+  BLOCKED: "",
 };
+
+// Terminal tasks and blocked assignees receive no injected action (next-action-notice-correctness).
+const silent: Lifecycle[] = ["DONE", "BLOCKED"];
 
 test("RED: Pi startup and reconciliation inject the authoritative task-derived next action for every lifecycle state", async () => {
   for (const lifecycle of Object.keys(expected) as Lifecycle[]) {
     const sent = await startPi(lifecycle, true);
     const directives = sent.filter((message) => message.customType === "atdd-flow-next-action");
-    // One action is injected at startup and another when inbox reconciliation
-    // wakes Pi; both must be derived from the current durable task record.
-    expect(directives, lifecycle).toHaveLength(2);
+    // One action is injected at startup; the reconciliation wake coalesces into it while it is pending.
+    expect(directives, lifecycle).toHaveLength(silent.includes(lifecycle) ? 0 : 1);
     for (const directive of directives) {
       expect(directive).toMatchObject({
         content: expect.stringContaining(expected[lifecycle]),
@@ -124,7 +128,7 @@ test("RED: Pi startup and reconciliation inject the authoritative task-derived n
 test("RED: stale native mail is advisory and cannot become a second next-action authority", async () => {
   const sent = await startPi("GREEN", true);
   const directives = sent.filter((message) => message.customType === "atdd-flow-next-action");
-  expect(directives).toHaveLength(2);
+  expect(directives).toHaveLength(1);
   expect(directives.every((directive) => directive.content?.includes(expected.GREEN) && directive.details?.authority === "task")).toBe(true);
   expect(directives.some((directive) => directive.content?.includes("another task"))).toBe(false);
 });
