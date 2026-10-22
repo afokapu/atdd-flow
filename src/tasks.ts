@@ -9,7 +9,8 @@ export type TaskStatus = "todo" | "in_progress" | "review" | "done" | "supersede
 export type TaskPhase = "plan" | "red" | "green" | "refactor";
 export type HandoffState = "executing" | "awaiting_coordinator" | "awaiting_assignee";
 /** A mutable projection of an immutable evidence message/reference, not a second task lifecycle. */
-export type TaskHandoff = { state: HandoffState; evidence: string; updated_at: string };
+/** `submitted_phase` is absent on legacy records; it lets a same-phase accept be told apart from a never-submitted phase. */
+export type TaskHandoff = { state: HandoffState; evidence: string; updated_at: string; submitted_phase?: TaskPhase };
 export type DoneWhen = { text: string; proof?: string };
 export type GovernedBase = { coordinator: string; branch: string; commit: string };
 /** An append-only accountability decision; prior coordinator evidence remains untouched. */
@@ -539,7 +540,7 @@ export async function submitHandoff(root: string, projectName: string, id: strin
   if (task.handoff?.state === "awaiting_coordinator") throw new Error(`Task ${id} is already awaiting coordinator handoff response.`);
   const evidence = required(words(args, "--evidence"), "--evidence");
   task.phase = phase(words(args, "--phase"));
-  task.handoff = { state: "awaiting_coordinator", evidence, updated_at: now() };
+  task.handoff = { state: "awaiting_coordinator", evidence, updated_at: now(), submitted_phase: task.phase };
   await writeTask(root, projectName, taskId(id), task);
   console.log(`${id}  handoff awaiting_coordinator`);
 }
@@ -662,7 +663,7 @@ export async function open(root: string, projectName: string, id: string) {
 export type TaskDirective = {
   project: string;
   task: string;
-  lifecycle: "TODO" | "PLAN" | "RED" | "GREEN" | "REFACTOR" | "REVIEW" | "DONE" | "BLOCKED";
+  lifecycle: "TODO" | "PLAN" | "RED" | "GREEN" | "REFACTOR" | "REVIEW" | "BLOCKED";
   role: "assignee" | "coordinator";
   action: string;
   command?: string;
@@ -675,43 +676,65 @@ const phaseActions: Record<TaskPhase, string> = {
   refactor: "Refactor only after GREEN acceptance, then submit the REFACTOR handoff",
 };
 
-/** Pure projection of an existing task record; it creates no durable state. */
-async function directiveFor(root: string, projectName: string, id: string, task: Task, address: string): Promise<TaskDirective | undefined> {
-  const base = { project: projectName, task: id };
-  if (task.assignee === address) {
-    const as = { ...base, role: "assignee" as const };
-    if (task.status === "done") return { ...as, lifecycle: "DONE", action: "Perform DONE housekeeping only; start no new implementation." };
-    if (terminal(task)) return undefined;
-    if (task.blocker) return { ...as, lifecycle: "BLOCKED", action: `Remain blocked and await coordinator resolution (${task.blocker}). Continue only independent required work.` };
-    if (task.status === "review") return { ...as, lifecycle: "REVIEW", action: "Await coordinator review; do not continue implementation." };
-    if (task.status === "todo") {
-      const waiting = await ready(root, projectName, task);
-      return waiting.length
-        ? { ...as, lifecycle: "TODO", action: `Wait; dependencies are unfinished: ${waiting.join(", ")}.` }
-        : { ...as, lifecycle: "TODO", action: "Start assigned ready task.", command: `atdd-flow task start ${projectName} ${id} --by ${address}` };
-    }
-    const current = task.phase ?? "plan";
-    const lifecycle = current.toUpperCase() as TaskDirective["lifecycle"];
-    if (task.handoff?.state === "awaiting_coordinator") return { ...as, lifecycle, action: `Await coordinator response to the ${lifecycle} handoff; do not continue to the next phase.` };
+const phaseOrder: TaskPhase[] = ["plan", "red", "green", "refactor"];
+
+const phaseCommand = (projectName: string, id: string, address: string, current: TaskPhase) =>
+  `atdd-flow task handoff ${projectName} ${id} --by ${address} --phase ${current} --evidence <message-or-reference>`;
+
+/** An assignee whose submitted phase was accepted without naming a later phase is directed forward, never to resubmit. */
+function acceptedDirective(base: Pick<TaskDirective, "project" | "task" | "role">, id: string, address: string, current: TaskPhase): TaskDirective {
+  const next = phaseOrder[phaseOrder.indexOf(current) + 1];
+  if (!next) {
     return {
-      ...as, lifecycle, action: `${phaseActions[current]}.`,
-      command: `atdd-flow task handoff ${projectName} ${id} --by ${address} --phase ${current} --evidence <message-or-reference>`,
+      ...base, lifecycle: "REVIEW", action: "REFACTOR accepted; record a proof for every done_when item, then submit the task for review.",
+      command: `atdd-flow task review ${base.project} ${id} --by ${address}`,
     };
   }
-  if (task.coordinator === address && !terminal(task)) {
-    const as = { ...base, role: "coordinator" as const };
-    if (task.blocker) return { ...as, lifecycle: "BLOCKED", action: `Resolve the blocker (${task.blocker}) and then unblock the task.`, command: `atdd-flow task unblock ${projectName} ${id} --by ${address}` };
-    if (task.status === "review") return { ...as, lifecycle: "REVIEW", action: "Review the submitted task; complete it or return it to work.", command: `atdd-flow task open ${projectName} ${id}` };
-    if (task.status === "in_progress" && task.handoff?.state === "awaiting_coordinator") {
-      const current = task.phase ?? "plan";
-      return { ...as, lifecycle: current.toUpperCase() as TaskDirective["lifecycle"], action: `Accept or return the ${current.toUpperCase()} handoff.`, command: `atdd-flow task respond ${projectName} ${id} --by ${address} --outcome <accept|return> --phase <plan|red|green|refactor>` };
-    }
+  return {
+    ...base, lifecycle: next.toUpperCase() as TaskDirective["lifecycle"], action: `${current.toUpperCase()} accepted; ${phaseActions[next]}.`,
+    command: phaseCommand(base.project, id, address, next),
+  };
+}
+
+async function assigneeDirective(root: string, projectName: string, id: string, task: Task, address: string): Promise<TaskDirective> {
+  const as = { project: projectName, task: id, role: "assignee" as const };
+  if (task.status === "review") return { ...as, lifecycle: "REVIEW", action: "Await coordinator review; do not continue implementation." };
+  if (task.status === "todo") {
+    const waiting = await ready(root, projectName, task);
+    return waiting.length
+      ? { ...as, lifecycle: "TODO", action: `Wait; dependencies are unfinished: ${waiting.join(", ")}.` }
+      : { ...as, lifecycle: "TODO", action: "Start assigned ready task.", command: `atdd-flow task start ${projectName} ${id} --by ${address}` };
+  }
+  const current = task.phase ?? "plan";
+  const lifecycle = current.toUpperCase() as TaskDirective["lifecycle"];
+  if (task.handoff?.state === "awaiting_coordinator") return { ...as, lifecycle, action: `Await coordinator response to the ${lifecycle} handoff; do not continue to the next phase.` };
+  if (task.handoff?.state === "awaiting_assignee" && task.handoff.submitted_phase === current) return acceptedDirective(as, id, address, current);
+  return { ...as, lifecycle, action: `${phaseActions[current]}.`, command: phaseCommand(projectName, id, address, current) };
+}
+
+function coordinatorDirective(projectName: string, id: string, task: Task, address: string): TaskDirective | undefined {
+  const as = { project: projectName, task: id, role: "coordinator" as const };
+  if (task.blocker) return { ...as, lifecycle: "BLOCKED", action: `Resolve the blocker (${task.blocker}) and then unblock the task.`, command: `atdd-flow task unblock ${projectName} ${id} --by ${address}` };
+  if (task.status === "review") return { ...as, lifecycle: "REVIEW", action: "Review the submitted task; complete it or return it to work.", command: `atdd-flow task open ${projectName} ${id}` };
+  if (task.status === "in_progress" && task.handoff?.state === "awaiting_coordinator") {
+    const current = task.phase ?? "plan";
+    return { ...as, lifecycle: current.toUpperCase() as TaskDirective["lifecycle"], action: `Accept or return the ${current.toUpperCase()} handoff.`, command: `atdd-flow task respond ${projectName} ${id} --by ${address} --outcome <accept|return> --phase <plan|red|green|refactor>` };
   }
   return undefined;
 }
 
+/**
+ * Pure projection of an existing task record; it creates no durable state. Terminal and deferred tasks
+ * yield nothing for any role, a blocked assignee is told nothing, and only the coordinator hears of a blocker.
+ */
+async function directiveFor(root: string, projectName: string, id: string, task: Task, address: string): Promise<TaskDirective | undefined> {
+  if (terminal(task) || task.deferred) return undefined;
+  if (task.assignee === address && !task.blocker) return assigneeDirective(root, projectName, id, task, address);
+  return task.coordinator === address ? coordinatorDirective(projectName, id, task, address) : undefined;
+}
+
 const directiveRank = (directive: TaskDirective, task: Task) =>
-  directive.lifecycle === "DONE" ? 4 : directive.lifecycle === "BLOCKED" ? 3 : task.status === "todo" ? 2 : task.status === "review" ? 1 : 0;
+  directive.lifecycle === "BLOCKED" ? 3 : task.status === "todo" ? 2 : task.status === "review" ? 1 : 0;
 
 /**
  * Derives the one next required action for an address from authoritative task
@@ -727,10 +750,8 @@ export async function nextDirective(root: string, address: string): Promise<Task
     if (directive) candidates.push({ directive, task: entry.task });
   }
   const best = (role: "assignee" | "coordinator") => {
-    const pool = candidates.filter((entry) => entry.directive.role === role)
-      .sort((left, right) => directiveRank(left.directive, left.task) - directiveRank(right.directive, right.task));
-    // Completed housekeeping names the most recent completed task, not the oldest.
-    return pool[0] && directiveRank(pool[0].directive, pool[0].task) === 4 ? pool.at(-1) : pool[0];
+    return candidates.filter((entry) => entry.directive.role === role)
+      .sort((left, right) => directiveRank(left.directive, left.task) - directiveRank(right.directive, right.task))[0];
   };
   return (best("assignee") ?? best("coordinator"))?.directive;
 }
