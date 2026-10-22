@@ -1,7 +1,6 @@
 // URN: component:flow:e007:next-action-notices:backend:application
 // Tested-By:
 // - test:flow:next-action-notice-correctness
-// - test:atdd-flow:pi-task-directive
 // Runtime: bun
 // Purpose: Keep Pi next-action and mail notices current and non-repeating.
 
