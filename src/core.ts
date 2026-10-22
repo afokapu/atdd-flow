@@ -25,6 +25,8 @@ export type Desk = {
   /** Named commands that model portfolio entries may resolve through. */
   executables?: Record<string, string>;
   aliases?: Record<string, string>;
+  /** Model id used for a role when launch model selection falls back; unlisted roles use the strongest candidate. */
+  fallback_model?: Record<string, string>;
 };
 export type ModelCandidate = {
   id: string;

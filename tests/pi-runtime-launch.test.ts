@@ -330,6 +330,57 @@ test("unavailable, low-confidence, or invalid Jev selection receipts the stronge
   }
 });
 
+async function configureFallback(root: string, fallback_model: Record<string, string>) {
+  await atomicYaml(paths(root).desk, { ...await readYaml<Record<string, unknown>>(paths(root).desk), fallback_model });
+}
+
+const fallbackSelections = {
+  unavailable: async () => ({ available: false as const, reason: "Jev offline" }),
+  "low-confidence": async () => ({ available: true as const, selected_model: "economy", confidence: 0.74 }),
+  "out-of-portfolio": async () => ({ available: true as const, selected_model: "missing", confidence: 0.99 }),
+};
+
+test("driver fallback uses desk fallback_model.driver and receipts role, model, and reason", async () => {
+  for (const [kind, select] of Object.entries(fallbackSelections)) {
+    const root = await desk();
+    await configureFallback(root, { driver: "economy" });
+    const result = await launchPiRuntime(root, seat, ["--pane", "w1:p2", "--herdr-session", "forge"], { select, command: fakeHerdr().command, sessionId: () => sessionId });
+    expect(result.candidate, kind).toBe("economy");
+    const receipt = await readYaml<Record<string, any>>(result.receipt);
+    expect(receipt.candidate).toBe("economy");
+    expect(receipt.selection.result).toBe("fallback");
+    expect(receipt.selection.applied_fallback).toEqual({ role: "driver", model: "economy", reason: receipt.selection.reason });
+    expect(receipt.selection.reason).toBeTruthy();
+  }
+});
+
+test("a successful Jev selection ignores the configured fallback", async () => {
+  const root = await desk();
+  await configureFallback(root, { driver: "strong" });
+  const result = await launchPiRuntime(root, seat, ["--pane", "w1:p2", "--herdr-session", "forge"], { select: selectEconomy, command: fakeHerdr().command, sessionId: () => sessionId });
+  expect(result.candidate).toBe("economy");
+});
+
+test("roles without a configured fallback keep the strongest candidate", async () => {
+  const root = await desk();
+  await configureFallback(root, { coordinator: "economy" });
+  const result = await launchPiRuntime(root, seat, ["--pane", "w1:p2", "--herdr-session", "forge"], { select: fallbackSelections.unavailable, command: fakeHerdr().command, sessionId: () => sessionId });
+  expect(result.candidate).toBe("strong");
+  expect((await readYaml<Record<string, any>>(result.receipt)).selection.applied_fallback).toBeUndefined();
+});
+
+test("a missing or disabled configured fallback fails closed with a clear error", async () => {
+  const launch = (root: string) => launchPiRuntime(root, seat, ["--pane", "w1:p2", "--herdr-session", "forge"], { select: fallbackSelections.unavailable, command: fakeHerdr().command, sessionId: () => sessionId });
+  const missing = await desk();
+  await configureFallback(missing, { driver: "nonexistent" });
+  await expect(launch(missing)).rejects.toThrow("fallback_model.driver");
+
+  const disabled = await desk();
+  await configureFallback(disabled, { driver: "economy" });
+  await atomicYaml(paths(disabled).models, { schema: "atdd-workflow/models/v1", models: [{ id: "strong", executable: "pi", args: ["--model", "strong"] }, { id: "economy", executable: "pi", enabled: false, args: ["--model", "economy"] }] });
+  await expect(launch(disabled)).rejects.toThrow("fallback_model.driver");
+});
+
 test("launch eligibility admits assigned active or dependency-ready TODO without changing lifecycle and refuses every other task", async () => {
   const dryRun = (root: string) => launchPiRuntime(root, seat, ["--pane", "w1:p2", "--herdr-session", "forge", "--dry-run"], { select: selectEconomy, command: fakeHerdr().command, sessionId: () => sessionId });
   const active = await desk();
