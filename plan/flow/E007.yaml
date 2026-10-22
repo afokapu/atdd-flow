@@ -1,0 +1,7 @@
+urn: acc:flow:E007-UNIT-001
+phase: UNIT
+description: >-
+  Every Desk YAML write round-trips: a multi-line message body such as the
+  REC-JEV addendum is stored quoted or as a block scalar, parses back to exactly
+  the input, and any value that cannot round-trip fails closed before an atomic
+  rename publishes it.
