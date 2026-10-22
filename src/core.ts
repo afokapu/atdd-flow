@@ -1,8 +1,9 @@
-import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
-import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
+import { isDeepStrictEqual } from "node:util";
+import { Document, Scalar, parse as parseYaml, stringify as stringifyYaml, visit } from "yaml";
 
 export type Role = { address: string; branch: string; agent?: string; purpose?: string; worktree?: string; base?: string };
 export type Group = { role?: string; members?: string[] };
@@ -133,9 +134,48 @@ export const required = <T>(value: T | undefined, label: string) => {
   if (value === undefined || value === "") throw new Error(`Missing ${label}.`);
   return value;
 };
+const printOptions = { collectionStyle: "flow", flowCollectionPadding: false } as const;
+
+// What a faithful YAML round trip must return: JSON semantics, but never silently lossy.
+function expectedRoundTrip(value: unknown) {
+  return JSON.parse(JSON.stringify(value, (_key, entry) => {
+    if (typeof entry === "function" || typeof entry === "symbol" || typeof entry === "bigint") throw new Error("Value is not representable in YAML.");
+    if (typeof entry === "number" && !Number.isFinite(entry)) throw new Error("Value is not representable in YAML.");
+    return entry;
+  }));
+}
+
+// Tier 2 keeps multi-line text readable as block literals; tier 3 quotes every string.
+const printTiers: Array<(expected: unknown) => string> = [
+  (expected) => stringifyYaml(expected, printOptions),
+  (expected) => {
+    const document = new Document(expected, { ...printOptions, lineWidth: 0 });
+    visit(document, { Scalar: (_key, node) => { if (typeof node.value === "string" && node.value.includes("\n")) node.type = Scalar.BLOCK_LITERAL; } });
+    return document.toString();
+  },
+  (expected) => stringifyYaml(expected, { ...printOptions, lineWidth: 0, defaultStringType: "QUOTE_DOUBLE", defaultKeyType: "PLAIN" }),
+];
+
+// A parse error and a value mismatch are equally unsafe to publish, so both count as "does not round-trip".
+// Strict deep equality also catches silent coercions such as the string "null" becoming null.
+function roundTrips(text: string, expected: unknown) {
+  try { return isDeepStrictEqual(parseYaml(text), expected); }
+  catch { return false; }
+}
+
+/** Serializes and proves the text parses back to the same value; the first tier that does wins, otherwise fail closed. */
+function printVerified(value: unknown) {
+  const expected = expectedRoundTrip(value);
+  for (const tier of printTiers) {
+    const text = tier(expected);
+    if (roundTrips(text, expected)) return text;
+  }
+  throw new Error("Refusing to write YAML that does not parse back to the original value.");
+}
+
 export const yaml = {
   parse: <T>(text: string) => parseYaml(text) as T,
-  print: (value: unknown) => stringifyYaml(value, { collectionStyle: "flow", flowCollectionPadding: false }),
+  print: (value: unknown) => printVerified(value),
 };
 
 export function addressParts(address: string) {
@@ -176,7 +216,13 @@ export const paths = (root: string) => ({
 export async function atomicYaml(file: string, value: unknown) {
   await mkdir(dirname(file), { recursive: true });
   const temp = join(dirname(file), `.${basename(file)}.${randomUUID()}.tmp`);
-  await writeFile(temp, yaml.print(value), "utf8");
+  const text = yaml.print(value);
+  await writeFile(temp, text, "utf8");
+  // Verify the bytes actually on disk, not just the in-memory string, before the rename publishes them.
+  if (!roundTrips(await readFile(temp, "utf8"), expectedRoundTrip(value))) {
+    await rm(temp, { force: true });
+    throw new Error(`Refusing to publish ${file}: written YAML does not round-trip.`);
+  }
   await rename(temp, file);
 }
 
