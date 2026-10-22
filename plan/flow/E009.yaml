@@ -1,0 +1,8 @@
+urn: acc:flow:E009-RED-001
+phase: RED
+description: >-
+  A Pi whose live session differs from its seat binding is never silent: the
+  extension emits one inactive-mail notice naming the bound and live sessions
+  after the bounded activation window, status seat reports native mail inactive
+  with both sessions, and pi runtime launch tolerates Herdr reporting the exact
+  session path a poll late so a successful start is always bound with a receipt.
