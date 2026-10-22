@@ -6,6 +6,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { atomicYaml, paths } from "../src/core";
+import { createPiRuntime } from "../extensions/pi/index";
 import { readRuntimeState } from "../src/runtime-state";
 
 // Contract under test (RED):
@@ -42,7 +43,7 @@ async function desk() {
 }
 
 type Sent = { customType?: string; content?: string; details?: Record<string, unknown>; options?: { triggerTurn?: boolean; deliverAs?: string } };
-type Options = { throwOn?: string; keepState?: boolean };
+type Options = { throwOn?: string; keepState?: boolean; blockInbox?: "transient" | "persistent"; waitMs?: number };
 
 // The Pi host runs in a child process with an explicit environment so no test mutates shared process.env.
 // `throwOn` makes sendMessage throw for that customType, which fails the launcher activation callback after the transport started.
@@ -52,6 +53,10 @@ import install from ${JSON.stringify(extension)};
 const options = JSON.parse(process.env.NOTICE_TEST_OPTIONS);
 const sent = []; const listeners = {};
 const real = Date.now; let jump = 0; Date.now = () => real() + jump;
+// An inbox lock held by another process makes transport.start() throw "Timed out waiting for inbox queue lock" after about a second.
+const lock = options.blockInbox ? (await import("node:path")).join(process.env.ATDD_WORKFLOW_ROOT, ".atdd-flow", "pi-inbox", encodeURIComponent(process.env.ATDD_WORKFLOW_SEAT), "queue.lock") : undefined;
+if (lock) (await import("node:fs")).mkdirSync(lock, { recursive: true });
+if (lock && options.blockInbox === "transient") setTimeout(() => (import("node:fs").then((fs) => fs.rmSync(lock, { recursive: true, force: true }))), 2200);
 install({
   on(event, listener) { (listeners[event] ??= []).push(listener); },
   sendMessage(message, sendOptions) {
@@ -60,8 +65,9 @@ install({
   },
 });
 await listeners.session_start[0]({}, { hasUI: false });
-await new Promise((resolve) => setTimeout(resolve, 1200));
-jump = 61_000;
+await new Promise((resolve) => setTimeout(resolve, options.waitMs ?? 1200));
+// Moving the clock would also make a held lock look stale, so blocked-inbox runs keep real time.
+if (!options.blockInbox) jump = 61_000;
 await new Promise((resolve) => setTimeout(resolve, 400));
 if (!options.keepState) {
   for (const listener of listeners.session_shutdown ?? []) await listener({}, {});
@@ -155,4 +161,39 @@ test("GREEN guard: a session mismatch records transport inactive with the differ
   const [stdout] = await Promise.all([new Response(child.stdout).text(), child.exited]);
   expect(stdout).toContain(`native mail inactive (bound ${bound}, live ${live})`);
   expect(stdout).toContain("differs session");
+});
+
+test("GREEN guard: a transport start that throws once then succeeds activates mail with no notice and one start message", async () => {
+  const root = await desk();
+  const { inactive, failed, starts } = await runPi(root, bound, { blockInbox: "transient", waitMs: 6000 });
+  expect(inactive).toHaveLength(0);
+  expect(failed).toHaveLength(0);
+  expect(starts).toHaveLength(1);
+}, 20_000);
+
+test("GREEN guard: a transport start that keeps throwing is reported INACTIVE with the error, never ACTIVE, and runs no startup step", async () => {
+  const root = await desk();
+  const { inactive, failed, starts } = await runPi(root, bound, { blockInbox: "persistent", waitMs: 9000 });
+  expect(failed).toHaveLength(0);
+  expect(starts).toHaveLength(0);
+  expect(inactive).toHaveLength(1);
+  const content = inactive[0]?.content ?? "";
+  expect(content).toContain("INACTIVE");
+  expect(content).toContain("Last activation error: Timed out waiting for inbox queue lock");
+  expect(content).not.toContain("native Flow mail is ACTIVE");
+}, 20_000);
+
+test("GREEN guard: createPiRuntime stops a transport whose start failed and exposes neither transport nor active", async () => {
+  const root = await desk();
+  let stopped = 0;
+  const runtime = createPiRuntime({
+    root, seat, deferActivation: true, deliver: async () => true,
+    createTransport: () => ({ reconcile: async () => undefined, start: async () => { throw new Error("start failed"); }, stop: () => { stopped += 1; }, watermarkFile: "" }),
+  });
+  await runtime.start();
+  await expect(runtime.activate()).rejects.toThrow("start failed");
+  expect(stopped).toBe(1);
+  expect(runtime.transport).toBeUndefined();
+  expect(runtime.active).toBe(false);
+  await runtime.stop();
 });

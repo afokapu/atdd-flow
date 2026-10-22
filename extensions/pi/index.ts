@@ -261,7 +261,7 @@ export function createPiRuntime({
   const activate = async () => {
     if (!await owned()) return false;
     if (activated) return true;
-    transport = createTransport({
+    const candidate = createTransport({
       root, seat, batchSize: defaultBatchSize, intervalMs: defaultIntervalMs,
       deliver: async (mail, thread, path) => {
         // The application supplies the wake action, but this shared filesystem
@@ -278,7 +278,9 @@ export function createPiRuntime({
         return ownership === true && accepted !== false;
       },
     });
-    await transport.start();
+    // The transport counts as started only after start() succeeds; a failed start is stopped and leaves no transport behind.
+    try { await candidate.start(); } catch (error) { candidate.stop(); throw error; }
+    transport = candidate;
     activated = true;
     return true;
   };
@@ -294,7 +296,7 @@ export function createPiRuntime({
     }, heartbeatMs);
     if (!deferActivation) await activate();
   };
-  return { ownerToken, start, activate, stop, reconcile, get transport() { return transport; } };
+  return { ownerToken, start, activate, stop, reconcile, get transport() { return transport; }, get active() { return activated; } };
 }
 
 type LaunchReceipt = { seat?: string; pi_session?: string; pi_session_path?: string; herdr_session?: string; pane?: string };
@@ -325,6 +327,17 @@ export async function awaitLaunchActivation({ root, seat, piSession, herdrSessio
   // The callback runs at most once, outside the polling try: a failing startup step is reported, never retried every poll.
   if (matched) return activate();
   throw new ActivationTimeout();
+}
+
+/** A transient start failure (for example a busy inbox lock under concurrent reloads) is retried a bounded number of times before it is reported. */
+export async function activateWithRetry(activate: () => Promise<boolean>, attempts = 3, delayMs = 1_000) {
+  for (let attempt = 1; ; attempt += 1) {
+    try { return await activate(); }
+    catch (error) {
+      if (attempt >= attempts) throw error;
+      await pause(delayMs);
+    }
+  }
 }
 
 /**
@@ -451,7 +464,7 @@ export default function (pi: ExtensionAPI) {
     void awaitLaunchActivation({
       root, seat, piSession, herdrSession, pane,
       activate: async () => {
-        if (!await current.activate()) return;
+        if (!await activateWithRetry(() => current.activate())) return;
         const request = await readHandoverReplacement(root, seat).catch(() => undefined);
         const successor = request && request.source.pi_session !== piSession ? request : undefined;
         const bundle = await recovery(root, seat, successor ? "successor" : "start", piSession);
@@ -468,7 +481,7 @@ export default function (pi: ExtensionAPI) {
       },
     }).catch((error) => error instanceof ActivationTimeout
       ? noticeActivation("inactive")
-      : noticeActivation(current.transport ? "active" : "inactive", error instanceof Error ? error.message : String(error)));
+      : noticeActivation(current.active ? "active" : "inactive", error instanceof Error ? error.message : String(error)));
   });
   pi.on("session_shutdown", () => { void runtime?.stop(); });
 }
