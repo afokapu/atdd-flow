@@ -17,9 +17,11 @@ export type RuntimeState = {
   cwd: string;
   started_at: string;
   heartbeat_at: string;
+  /** Live Pi session id when known; absent on legacy records. Advisory only: it never selects a recipient. */
+  pi_session?: string;
 };
 
-export type RuntimeStateRegistration = Pick<RuntimeState, "seat" | "owner_token" | "pid" | "model" | "cwd">;
+export type RuntimeStateRegistration = Pick<RuntimeState, "seat" | "owner_token" | "pid" | "model" | "cwd"> & Partial<Pick<RuntimeState, "pi_session">>;
 
 const schema = "atdd-flow/pi-runtime-state/v1" as const;
 const lockStaleMs = 5 * 60_000;
@@ -44,7 +46,8 @@ function valid(value: unknown): value is RuntimeState {
     && nonEmpty(record.model)
     && nonEmpty(record.cwd)
     && timestamp(record.started_at)
-    && timestamp(record.heartbeat_at);
+    && timestamp(record.heartbeat_at)
+    && (record.pi_session === undefined || nonEmpty(record.pi_session));
 }
 
 function assertRegistration(value: RuntimeStateRegistration) {
