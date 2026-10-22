@@ -38,6 +38,10 @@ export type PiRuntimeLaunchDependencies = {
   command?: (command: string[]) => Promise<string>;
   sessionId?: () => string;
   at?: () => string;
+  /** Pause between session-path polls; injectable so tests need no real delay. */
+  sleep?: (milliseconds: number) => Promise<void>;
+  /** How long Herdr may take to report the exact session path after start. */
+  sessionPathWindowMs?: number;
 };
 
 type Bind = (root: string, address: string, args: string[], selectedModel?: string, wake?: Runtime["wake"], piSession?: string, piSessionPath?: string, launchReceipt?: string) => Promise<void>;
@@ -382,18 +386,35 @@ function assertVerifiedProcess(launch: PreparedLaunch, pane: string, agent: Retu
   }
 }
 
-/** Corroborate the started runtime through agent, pane, and process reports. */
-async function verifyRuntime(launch: PreparedLaunch, pane: string, priorPath?: string) {
+const sessionPathPollMs = 250;
+const defaultSessionPathWindowMs = 10_000;
+
+async function readRuntimeReports(launch: PreparedLaunch, pane: string) {
   const { command, options, resolved } = launch;
   const [agentRaw, paneRaw, processRaw] = await Promise.all([
     command(herdr(options.herdrSession, "agent", "get", agentName(resolved))),
     command(herdr(options.herdrSession, "pane", "get", pane)),
     command(herdr(options.herdrSession, "pane", "process-info", "--pane", pane)),
   ]);
-  const agent = agentReport(JSON.parse(agentRaw)), verifiedPane = paneReport(JSON.parse(paneRaw));
-  const verifiedProcess = piProcess(processReport(JSON.parse(processRaw)).processes);
-  const sessionPath = assertVerifiedSession(launch, verifiedPane, priorPath);
-  assertVerifiedProcess(launch, pane, agent, verifiedPane, verifiedProcess);
+  return { agent: agentReport(JSON.parse(agentRaw)), verifiedPane: paneReport(JSON.parse(paneRaw)), verifiedProcess: piProcess(processReport(JSON.parse(processRaw)).processes) };
+}
+
+/**
+ * Corroborate the started runtime through agent, pane, and process reports. Only an absent session path is
+ * polled again, within a bounded window: Herdr may report it a moment after the process starts. Every other
+ * mismatch, and a path still absent when the window ends, fails closed without changing the seat binding.
+ */
+async function verifyRuntime(launch: PreparedLaunch, pane: string, priorPath?: string) {
+  const { dependencies } = launch;
+  const sleep = dependencies.sleep ?? ((milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
+  const polls = Math.floor((dependencies.sessionPathWindowMs ?? defaultSessionPathWindowMs) / sessionPathPollMs);
+  let reports = await readRuntimeReports(launch, pane);
+  for (let poll = 0; poll < polls && !reports.verifiedPane.sessionPath; poll += 1) {
+    await sleep(sessionPathPollMs);
+    reports = await readRuntimeReports(launch, pane);
+  }
+  const sessionPath = assertVerifiedSession(launch, reports.verifiedPane, priorPath);
+  assertVerifiedProcess(launch, pane, reports.agent, reports.verifiedPane, reports.verifiedProcess);
   return sessionPath;
 }
 

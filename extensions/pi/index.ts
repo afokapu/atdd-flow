@@ -5,6 +5,7 @@ import { parse, stringify } from "yaml";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { clearStaleRuntimeState, clearRuntimeState, heartbeatRuntimeState, ownsRuntimeState, registerRuntimeState, runtimeOwnerToken, withOwnedRuntimeState } from "../../src/runtime-state";
 import { paths, readYaml, type Seat } from "../../src/core";
+import { expectsNativeMail, inactiveMailNotice } from "../../src/mail-activation-notice";
 import { type NoticeState, createNoticeState, refreshDelivered, sendTaskDirective, shouldNotifyMail } from "../../src/next-action-notices";
 import { handoverThresholdInstruction, runtimeStartupInstruction, successorInstruction } from "../../src/collaboration-policy";
 import { type RecoveryMode, recoveryFor } from "../../src/recovery-bundle";
@@ -44,6 +45,8 @@ export type PiRuntimeOptions = {
   heartbeatMs?: number;
   staleAfterMs?: number;
   deliver: InboxOptions["deliver"];
+  /** Live Pi session id recorded on the advisory runtime state for status seat. */
+  piSession?: string;
   createTransport?: (options: InboxOptions) => FlowInboxTransport;
   /** Flow-launched Pi instances register and heartbeat before their verified launch activates inbox delivery. */
   deferActivation?: boolean;
@@ -236,7 +239,7 @@ export const createInboxReconciler = createInboxTransport;
  */
 export function createPiRuntime({
   root, seat, pid = process.pid, model = process.env.PI_MODEL ?? "pi", cwd = process.cwd(),
-  heartbeatMs = defaultHeartbeatMs, staleAfterMs = defaultStaleAfterMs, deliver, createTransport = createInboxTransport, deferActivation = false,
+  heartbeatMs = defaultHeartbeatMs, staleAfterMs = defaultStaleAfterMs, deliver, piSession, createTransport = createInboxTransport, deferActivation = false,
 }: PiRuntimeOptions) {
   const ownerToken = runtimeOwnerToken();
   let transport: FlowInboxTransport | undefined;
@@ -283,7 +286,7 @@ export function createPiRuntime({
     // This removes only an expired local observation. Registration itself is
     // replacement-safe and does not alter the authoritative Desk seat.
     await clearStaleRuntimeState(root, seat, staleAfterMs);
-    await registerRuntimeState(root, { seat, owner_token: ownerToken, pid, model, cwd });
+    await registerRuntimeState(root, { seat, owner_token: ownerToken, pid, model, cwd, ...(piSession ? { pi_session: piSession } : {}) });
     heartbeat = setInterval(() => {
       void heartbeatRuntimeState(root, seat, ownerToken).then((state) => {
         if (!state) void stop();
@@ -295,6 +298,11 @@ export function createPiRuntime({
 }
 
 type LaunchReceipt = { seat?: string; pi_session?: string; pi_session_path?: string; herdr_session?: string; pane?: string };
+
+/** The bounded window ended without a verified receipt and matching binding. */
+export class ActivationTimeout extends Error {
+  constructor() { super("Timed out waiting for verified Flow launch receipt and binding."); }
+}
 
 /** Wait only for the launcher's already-verified receipt and exact Desk binding; this never creates either record. */
 export async function awaitLaunchActivation({ root, seat, piSession, herdrSession, pane, activate, intervalMs = defaultActivationIntervalMs, timeoutMs = defaultActivationTimeoutMs }: LaunchActivationOptions) {
@@ -316,7 +324,7 @@ export async function awaitLaunchActivation({ root, seat, piSession, herdrSessio
     } catch { /* Binding and receipt are written after Herdr verification; wait within this finite window. */ }
     await pause(intervalMs);
   }
-  throw new Error("Timed out waiting for verified Flow launch receipt and binding.");
+  throw new ActivationTimeout();
 }
 
 /**
@@ -393,7 +401,17 @@ export default function (pi: ExtensionAPI) {
     } catch { /* No validated replacement request exists for this source session. */ }
   });
   pi.on("session_start", async (_event, ctx) => {
-    runtime = createPiRuntime({ root, seat, deferActivation: true, deliver: async (mail, thread, path, sendIfOwned) => {
+    const sessionManager = (ctx as { sessionManager?: { getSessionId?: () => string; getSessionFile?: () => string | undefined } }).sessionManager;
+    const liveSession = process.env.ATDD_FLOW_PI_SESSION ?? sessionManager?.getSessionId?.();
+    // One visible notice per session: a refused or timed-out activation must never be silent.
+    let inactiveNoticed = false;
+    const noticeInactive = async () => {
+      if (inactiveNoticed) return;
+      inactiveNoticed = true;
+      const content = await inactiveMailNotice(root, seat, liveSession).catch(() => undefined);
+      if (content) pi.sendMessage({ customType: "atdd-flow-mail-inactive", content, display: true, details: { seat, live: liveSession, authority: "binding" } }, { triggerTurn: true, deliverAs: "followUp" });
+    };
+    runtime = createPiRuntime({ root, seat, piSession: liveSession, deferActivation: true, deliver: async (mail, thread, path, sendIfOwned) => {
       if (!sendIfOwned) return false;
       if (hostActivatedAt !== undefined && Date.parse(typeof mail.created_at === "string" ? mail.created_at : "") < hostActivatedAt) return sendIfOwned(async () => undefined);
       const notify = typeof mail.id === "string" && typeof thread.id === "string" && await shouldNotifyMail(root, seat, notices, thread.id, mail.id);
@@ -412,7 +430,6 @@ export default function (pi: ExtensionAPI) {
     const herdrSession = process.env.ATDD_FLOW_HERDR_SESSION;
     const pane = process.env.ATDD_FLOW_HERDR_PANE;
     if (!piSession && !herdrSession && !pane) {
-      const sessionManager = (ctx as { sessionManager?: { getSessionId?: () => string; getSessionFile?: () => string | undefined } }).sessionManager;
       if (await hostAttachedActivation({ root, seat, herdrSession: process.env.HERDR_SESSION, pane: process.env.HERDR_PANE_ID, piSession: sessionManager?.getSessionId?.(), piSessionPath: sessionManager?.getSessionFile?.() })) {
         hostActivatedAt = Date.now();
         if (await runtime.activate()) {
@@ -420,7 +437,7 @@ export default function (pi: ExtensionAPI) {
           const notice = "Notices created before this session were not replayed; run atdd-flow status seat " + seat + " for unanswered mail.";
           pi.sendMessage({ customType: "atdd-flow-start", content: `${runtimeStartupInstruction(seat, bundle)} ${notice}`, display: true, details: { seat, root } }, { triggerTurn: true, deliverAs: "followUp" });
         }
-      }
+      } else if (await expectsNativeMail(root, seat)) await noticeInactive();
       return;
     }
     if (!piSession || !herdrSession || !pane) return;
@@ -443,7 +460,7 @@ export default function (pi: ExtensionAPI) {
         await sendTaskDirective(host, root, seat, notices);
         if (ctx.hasUI) ctx.ui.notify(`ATDD Flow native mail active for ${seat}`, "info");
       },
-    }).catch(() => undefined);
+    }).catch((error) => error instanceof ActivationTimeout ? noticeInactive() : undefined);
   });
   pi.on("session_shutdown", () => { void runtime?.stop(); });
 }

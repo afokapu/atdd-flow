@@ -55,8 +55,9 @@ await new Promise((resolve) => setTimeout(resolve, 100));
 console.log(JSON.stringify(sent));
 process.exit(0);`;
 
-async function runPi(root: string, piSession: string) {
-  const env = { ...process.env, ATDD_WORKFLOW_ROOT: root, ATDD_WORKFLOW_SEAT: seat, ATDD_FLOW_PI_SESSION: piSession, ATDD_FLOW_HERDR_SESSION: "forge", ATDD_FLOW_HERDR_PANE: "w1:p2" };
+async function runPi(root: string, piSession?: string) {
+  const launcher = piSession ? { ATDD_FLOW_PI_SESSION: piSession, ATDD_FLOW_HERDR_SESSION: "forge", ATDD_FLOW_HERDR_PANE: "w1:p2" } : {};
+  const env = { ...process.env, ATDD_FLOW_PI_SESSION: undefined, ATDD_FLOW_HERDR_SESSION: undefined, ATDD_FLOW_HERDR_PANE: undefined, HERDR_SESSION: undefined, HERDR_PANE_ID: undefined, ...launcher, ATDD_WORKFLOW_ROOT: root, ATDD_WORKFLOW_SEAT: seat };
   const child = Bun.spawn([process.execPath, "-e", hostScript], { cwd: root, env, stdout: "pipe", stderr: "pipe" });
   const [stdout, stderr, exitCode] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
   expect(exitCode, stderr).toBe(0);
@@ -103,12 +104,12 @@ const sessionId = live;
 const sessionPath = pathFor(live);
 
 /** Installed-Herdr fake in which the exact session path appears only after `lateByPolls` pane reads following the start. */
-function lateHerdr(lateByPolls: number) {
+function lateHerdr(lateByPolls: number, reported = sessionPath) {
   let started = false, polls = 0;
   const agent = "flow-driver-pi-demo";
   const shell = { pane_id: "w1:p2", agent: null, agent_status: "unknown", agent_session: null };
-  const running = () => ({ pane_id: "w1:p2", agent, agent_status: "idle", agent_session: polls > lateByPolls ? { source: "pi", agent, kind: "path", value: sessionPath } : null });
-  return async (command: string[]) => {
+  const running = () => ({ pane_id: "w1:p2", agent, agent_status: "idle", agent_session: polls > lateByPolls ? { source: "pi", agent, kind: "path", value: reported } : null });
+  const command = async (command: string[]) => {
     const args = command.slice(3);
     if (args[0] === "workspace" && args[1] === "list") return JSON.stringify({ result: { workspaces: [
       { workspace_id: "w1", label: "demo", worktree: { checkout_path: "/work/primary" } },
@@ -124,6 +125,7 @@ function lateHerdr(lateByPolls: number) {
     if (args[0] === "agent" && args[1] === "get") return JSON.stringify({ result: { agent: { name: agent, pane_id: "w1:p2", status: "idle" } } });
     throw new Error(`unexpected Herdr command: ${command.join(" ")}`);
   };
+  return { command, polls: () => polls };
 }
 
 async function launchDesk() {
@@ -146,9 +148,43 @@ const select = async () => ({ available: true as const, model: "fake-jev", selec
 test("RED 3 LAUNCH: Herdr reporting the exact session path one poll late still binds the seat with a receipt", async () => {
   const root = await launchDesk();
   const result = await launchPiRuntime(root, seat, ["--pane", "w1:p2", "--herdr-session", "forge"], {
-    select, command: lateHerdr(1), sessionId: () => sessionId, at: () => "2026-10-22T09:41:00.000Z", sleep: async () => undefined,
+    select, command: lateHerdr(1).command, sessionId: () => sessionId, at: () => "2026-10-22T09:41:00.000Z", sleep: async () => undefined,
   } as never);
   const record = await readYaml<Record<string, any>>(paths(root).seatFile(seat));
   expect(record.runtime).toMatchObject({ pi_session: sessionId, pi_session_path: sessionPath, launch_receipt: result.receipt });
   expect(await readYaml<Record<string, unknown>>(result.receipt)).toMatchObject({ pi_session: sessionId, pi_session_path: sessionPath });
+});
+
+test("GREEN guard: a session path still absent after the bounded window fails closed and leaves the seat binding unchanged", async () => {
+  const root = await launchDesk();
+  const herdr = lateHerdr(1_000);
+  await expect(launchPiRuntime(root, seat, ["--pane", "w1:p2", "--herdr-session", "forge"], {
+    select, command: herdr.command, sessionId: () => sessionId, sleep: async () => undefined, sessionPathWindowMs: 1_000,
+  } as never)).rejects.toThrow("Herdr did not report an exact Pi session path; seat binding was not changed.");
+  expect(herdr.polls()).toBe(5); // the first read plus one per 250 ms of the 1 s window
+  expect((await readYaml<Record<string, any>>(paths(root).seatFile(seat))).runtime).toBeUndefined();
+});
+
+test("GREEN guard: a reported path with a different session ID fails immediately without polling", async () => {
+  const root = await launchDesk();
+  const herdr = lateHerdr(0, pathFor(bound));
+  await expect(launchPiRuntime(root, seat, ["--pane", "w1:p2", "--herdr-session", "forge"], {
+    select, command: herdr.command, sessionId: () => sessionId, sleep: async () => { throw new Error("must not poll"); },
+  } as never)).rejects.toThrow("Herdr did not verify the exact requested Pi session ID; seat binding was not changed.");
+  expect(herdr.polls()).toBe(1);
+});
+
+test("GREEN guard: a native-wake seat that host-attach refuses gets the same single inactive-mail notice", async () => {
+  const root = await desk();
+  const notices = (await runPi(root)).filter((message) => message.customType === "atdd-flow-mail-inactive");
+  expect(notices).toHaveLength(1);
+  expect(notices[0]?.content).toContain(bound);
+  expect(notices[0]?.content).toContain("coordinator@demo");
+});
+
+test("GREEN guard: the notice falls back to main of the project when no open task names a coordinator", async () => {
+  const root = await desk();
+  await rm(paths(root).taskFile("demo", "work"));
+  const notices = (await runPi(root, live)).filter((message) => message.customType === "atdd-flow-mail-inactive");
+  expect(notices[0]?.content).toContain("ask main@demo");
 });
