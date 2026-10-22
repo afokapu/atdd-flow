@@ -1,0 +1,70 @@
+= Linear one-way mirror: discovery and pilot plan
+:doc-id: purpose.linear-one-way-mirror-pilot
+:status: current
+
+== Read-only discovery — 2026-10-10
+
+No Linear write was made. The workspace was inspected through read-only team, project, and issue listing calls; no token, credential, issue body, or comment body is retained here.
+
+The only active non-deprecated candidate discovered for an owner-approved pilot is:
+
+* *Team:* `Forge` / key `FOS` / ID `ae91eacd-4cc0-4924-bb1e-4e4fa718d8ca`
+* *Project:* `Play and Run v0.1.0` / MCP-surface identifier `P-FOS-25` / status `In Progress`
+
+IMPORTANT: `P-FOS-25` is the identifier the read-only listing tool displayed; it is *not* a verified Linear project UUID. Linear's issue filter and `issueCreate` need the real UUID. The mirror therefore refuses `authorize` and `--apply` unless the team, project, and every status mapping are UUIDs. Owner/main decision needed before any pilot: confirm the project (and the Forge workflow-state UUIDs) through a read-only lookup and record the UUIDs in the local config. Until then the pilot stays dry-run only; no live write is possible.
+
+This is a proposed routing target, not authorization to write. The former `FRG` team is explicitly marked `(Deprecated)` and is excluded.
+
+== Projection contract
+
+Flow is authoritative. A task has the canonical key `flow:task:<project>/<task-id>`; a message has `flow:message:<thread-id>/<message-id>`. The mirror adds that canonical key as an HTML marker on its Linear object and stores an append-only local mapping to the Linear ID. It does not read a Linear mutation into Flow, parse inbound webhooks, expose an inbound command, or write any Flow task/thread/message from Linear data.
+
+Only explicitly allowlisted Flow projects, task IDs (when supplied), and fields can leave Flow. `title` and `status` are required for a task. `body` and `comment` are opt-in. Redaction is fail-closed and applies to titles and bodies: credential assignments (`secret`, `token`, `password`, `api key`, `authorization`), Bearer values, GitHub tokens (`ghp_`, `gho_`, `ghs_`, `github_pat_`), secret keys (`sk_`, `sk-`), Linear, Slack and AWS credentials, JSON web tokens, private-key blocks, any URL, any email address, and text that looks like a mirror marker are refused before a Linear call. Nothing is partially redacted or rewritten. Unsupported fields are refused rather than silently broadened.
+
+Every attempt writes a body-free immutable receipt below the Desk's `.atdd-flow/linear-mirror/evidence/`. The receipt records canonical ID, idempotency key, route, operation, state mapping, and outcome, but never a Linear token or projected content. Canonical mappings are write-once. Our marker is always the final line of the remote description or comment; marker text elsewhere in a body is ignored. Issue lookup is scoped to the authorized team and project (server-side filter plus a client-side check), and a result outside that route is refused. Comment lookup walks every page of the issue's comments, so a long issue cannot hide an existing projection. Replays first look up the marker and then update the existing object; a retry cannot bind the Flow object to another Linear object. A missing marker on a mapped issue is recorded as drift and fails closed.
+
+== Exact planned status mapping
+
+The pilot config must use the Forge team's actual Linear workflow-state IDs (not guessed display labels) and preserve this deterministic mapping:
+
+[cols="1,2",options="header"]
+|===
+|Flow task state |Linear Forge workflow state
+|`todo` |`Backlog`
+|`in_progress` |`In Progress`
+|`review` |`In Progress` (Flow remains the review authority)
+|`done` |`Completed`
+|===
+
+The current read-only discovery did not retrieve workflow-state UUIDs. An approved pilot operator must insert the exact existing IDs into the config before an `--apply`; an empty mapping is rejected before any write.
+
+== Owner-reviewable pilot
+
+. The owner explicitly accepts this pilot's exact `FOS` / verified-project-UUID route by creating a write-once `operator@desk` authorization record (only after the UUIDs above are verified) from the local config (`atdd-flow linear mirror authorize --config ... --id LMA-... --by operator@desk`). The immutable record binds the complete route, task subset, fields, and status map; a config string cannot authorize a write.
+. Scope is exactly the Flow project `atdd-flow`, initially *only* task `linear-one-way-mirror-contract`; no historical bulk sync and no inbound handling.
+. Run `atdd-flow linear mirror task ... --config <local-config>` without `--apply`. Inspect the durable dry-run receipt and destination payload plan.
+. With a separate Linear credential in `LINEAR_API_KEY`, run the same command with `--apply --authorization <the-exact-accepted-reference>`. The CLI rejects a missing or mismatched reference. The secret stays only in process environment.
+. Verify the Linear issue has its canonical marker, repeat the command to verify idempotency, and project at most one safe Flow message as a comment. Verify all receipts and mapping IDs.
+. If a marker is missing, a route changes, a sensitive value is encountered, or any operation fails, disable by omitting `--apply`/removing the credential. There is no compensating Flow mutation and no remote-delete action. Rollback is therefore *disable the mirror*, preserve receipts, and investigate drift.
+
+Example local config (do not commit a credential):
+
+[source,yaml]
+----
+schema: atdd-flow/linear-mirror-config/v1
+routing:
+  team_id: ae91eacd-4cc0-4924-bb1e-4e4fa718d8ca
+  project_id: <verified Play and Run project UUID>
+  # team_id, project_id and every state must be Linear UUIDs for --apply
+  states:
+    todo: <Forge Backlog workflow-state UUID>
+    in_progress: <Forge In Progress workflow-state UUID>
+    review: <Forge In Progress workflow-state UUID>
+    done: <Forge Completed workflow-state UUID>
+allow:
+  projects: [atdd-flow]
+  task_ids: [linear-one-way-mirror-contract]
+  fields: [title, status, body, comment]
+----
+
+No live write happens merely by adding this file. `--apply`, a matching immutable `LMA-...` authorization from the Desk, and `LINEAR_API_KEY` are all required.
