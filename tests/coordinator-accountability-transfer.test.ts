@@ -237,3 +237,37 @@ test("RED: transfer never moves worktrees and duplicate, nested, or mismatched t
   expect(await fail(subject.site, "task", "transfer", "demo", "fail-closed", "--to", "coordinator.nested.stream@demo", "--reason", "Nested", "--authorization", authorization, "--by", "main@demo"))
     .toMatch(/nested|integration lineage/i);
 }, 20_000);
+
+test("RED: transfer uses the driver worktree HEAD when the recorded branch was pruned and records the ref used", async () => {
+  const subject = await fixture();
+  await addActiveTask(subject, "pruned");
+  await git(subject.driver, "checkout", "--detach");
+  await git(subject.repository, "branch", "-D", "delivery/transfer");
+  const head = await git(subject.driver, "rev-parse", "HEAD");
+
+  expect(await run(subject.site, "task", "transfer", "demo", "pruned", "--to", "main@demo", "--reason", "Coordinator exited", "--by", "coordinator.payments@demo"))
+    .toBe("pruned  coordinator transferred  coordinator.payments@demo -> main@demo");
+  expect(await task(subject, "pruned")).toMatchObject({
+    coordinator: "main@demo",
+    governed_base: { coordinator: "main@demo", branch: "main", commit: subject.mainHead },
+    coordinator_transfers: [{ to: "main@demo", lineage_ref: { ref: "HEAD", commit: head, reason: expect.stringContaining("delivery/transfer") } }],
+  });
+}, 20_000);
+
+test("RED: transfer keeps using the recorded branch when it resolves, and fails closed naming a missing branch and worktree", async () => {
+  const live = await fixture();
+  await addActiveTask(live, "live");
+  await run(live.site, "task", "transfer", "demo", "live", "--to", "main@demo", "--reason", "Duplicate", "--by", "coordinator.payments@demo");
+  expect(((await task(live, "live")).coordinator_transfers as Array<Record<string, any>>)[0]!.lineage_ref).toMatchObject({ ref: "delivery/transfer" });
+
+  const gone = await fixture();
+  await addActiveTask(gone, "gone");
+  await git(gone.driver, "checkout", "--detach");
+  await git(gone.repository, "branch", "-D", "delivery/transfer");
+  await git(gone.repository, "worktree", "remove", "--force", gone.driver);
+  const output = await fail(gone.site, "task", "transfer", "demo", "gone", "--to", "main@demo", "--reason", "Coordinator exited", "--by", "coordinator.payments@demo");
+  expect(output).toContain("delivery/transfer");
+  expect(output).toContain(gone.driver);
+  expect(output).not.toContain("Not a valid object name");
+  expect((await task(gone, "gone")).coordinator).toBe("coordinator.payments@demo");
+}, 30_000);
