@@ -234,9 +234,13 @@ export async function publishNativeMail(root: string, address: string, _segment:
   });
 }
 
+/** The single predicate for a durable native inbox queue: an explicit native wake or a Pi-designated seat. */
+export const hasNativeQueue = (target: { agent?: string; runtime?: { wake?: string } }) =>
+  target.runtime?.wake === "native" || target.agent === "pi";
+
 async function prepareNativeMail(root: string, address: string, message: Message, threadId: string) {
   const target = await seat(root, address);
-  if (target.runtime?.wake !== "native" && target.agent !== "pi") return;
+  if (!hasNativeQueue(target)) return;
   const segment = await enqueueNativeMail(root, address, { thread: threadId, message: message.id, created_at: message.created_at });
   return { address, segment };
 }
@@ -244,7 +248,7 @@ async function prepareNativeMail(root: string, address: string, message: Message
 async function inject(root: string, address: string, message: Message, threadId: string, queued = false) {
   const target = await seat(root, address);
   const runtime = target.runtime;
-  if (runtime?.wake === "native" || target.agent === "pi") {
+  if (hasNativeQueue(target)) {
     if (!queued) await enqueueNativeMail(root, address, { thread: threadId, message: message.id, created_at: message.created_at, published: true });
     if (!runtime || runtime.wake === "native") return;
   }

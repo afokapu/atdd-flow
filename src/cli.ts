@@ -51,7 +51,9 @@ Usage:
   atdd-flow handover replace <address> [--supersede-consumed] [--legacy-source-bootstrap] --handover <id> --authorization <operator-record> --takeover-task <id> --source-pi-session <id> --source-pi-session-path <jsonl> --source-herdr-session <session> --source-pane <pane> --herdr-session <session> --target-pane <pane> --target-cwd <canonical-main-worktree>
   atdd-flow handover resumed <address>
   atdd-flow task add <project> <task-id> --title <text> --coordinator <address> [--assignee <address>] [--body <text>] [--source <reference>] [--depends-on <task-id,...>] --done-when <text> [--done-when <text> ...]
-  atdd-flow task assign <project> <task-id> --assignee <address> --by <coordinator-address>
+  atdd-flow task assign <project> <task-id> --assignee <address> --by <coordinator-address> [--immediate --priority <priority> --mutation-boundary <text>]
+  atdd-flow task acknowledge <project> <task-id> --dispatch <message-id> --by <assignee>
+  atdd-flow task observe-assignment <project> <task-id> --by <coordinator-address>
   atdd-flow task transfer <project> <task-id> --to <main-or-named-coordinator> --reason <text> --by <actor> [--authorization <operator-message-id>]
   atdd-flow task amend <project> <task-id> [--title <text>] [--body <text>] [--source <reference>] [--depends-on <task-id,...>]
   atdd-flow task import <project> <task-id> --proof <reference> [--proof <reference> ...] [--done-when <text> ...] [--source <reference>]
@@ -146,6 +148,8 @@ async function main() {
       const [subcommand, projectName, taskId, ...tail] = rest;
       if (subcommand === "add") return tasks.add(root, required(projectName, "project"), required(taskId, "task id"), tail);
       if (subcommand === "assign") return tasks.assign(root, required(projectName, "project"), required(taskId, "task id"), tail);
+      if (subcommand === "acknowledge") return tasks.acknowledge(root, required(projectName, "project"), required(taskId, "task id"), tail);
+      if (subcommand === "observe-assignment") return tasks.observeAssignment(root, required(projectName, "project"), required(taskId, "task id"), tail);
       if (subcommand === "transfer") return tasks.transfer(root, required(projectName, "project"), required(taskId, "task id"), tail);
       if (subcommand === "amend") return tasks.amend(root, required(projectName, "project"), required(taskId, "task id"), tail);
       if (subcommand === "import") return tasks.importCompleted(root, required(projectName, "project"), required(taskId, "task id"), tail);
@@ -163,7 +167,7 @@ async function main() {
       if (subcommand === "unblock") return tasks.unblock(root, required(projectName, "project"), required(taskId, "task id"), tail);
       if (subcommand === "list") return tasks.list(root, required(projectName, "project"), rest.slice(2));
       if (subcommand === "open") return tasks.open(root, required(projectName, "project"), required(taskId, "task id"));
-      throw new Error("Use `atdd-flow task add|assign|transfer|amend|import|start|prove|handoff|respond|review|return|done|block|supersede|reject|defer|unblock|list|open`.");
+      throw new Error("Use `atdd-flow task add|assign|acknowledge|observe-assignment|transfer|amend|import|start|prove|handoff|respond|review|return|done|block|supersede|reject|defer|unblock|list|open`.");
     },
     seat: async () => {
       if (rest[0] === "retire") return tasks.retireSeat(root, required(rest[1], "address"), rest.slice(2));
