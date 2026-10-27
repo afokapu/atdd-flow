@@ -20,6 +20,7 @@ import * as cleanup from "./ephemeral-resources";
 import * as ownerAlerts from "./owner-escalations";
 import { recoveryFor } from "./recovery-bundle";
 import { recordHandover, requestHandoverReplacement, resumedHandoverReplacement, showHandover } from "./handover";
+import { migrateProjectVcs } from "./vcs-migration";
 
 const usage = `atdd-flow — filesystem-first agent seats and tasks
 
@@ -31,6 +32,7 @@ Usage:
   atdd-flow desk migrate
   atdd-flow project init <project>
   atdd-flow project configure <project> [--vcs <git|jj>] [--repository <primary-checkout>] [--worktree-root <directory>]
+  atdd-flow project migrate-vcs <project> --to jj [--dry-run]
   atdd-flow project migrate-named-coordinator-topology <project> --baseline <40-lowercase-hex-remote-main-sha>
   atdd-flow spawn <project> <role> <name> [--worktree <path>] [--branch <branch>] [--agent <legacy-executable>]
   atdd-flow bind <address> [--application <application>] --address <native-address> [--session <name>] [--agent <executable>] [--worktree <path>] [--wake host|native]
@@ -105,8 +107,9 @@ async function main() {
     project: async () => {
       if (rest[0] === "init") return initProject(root, required(rest[1], "project"));
       if (rest[0] === "configure") return configureProject(root, required(rest[1], "project"), rest.slice(2));
+      if (rest[0] === "migrate-vcs") return migrateProjectVcs(root, required(rest[1], "project"), rest.slice(2));
       if (rest[0] === "migrate-named-coordinator-topology") return migrateNamedCoordinatorTopology(root, required(rest[1], "project"), rest.slice(2));
-      throw new Error("Use `atdd-flow project init <project>`, `atdd-flow project configure <project> [--repository <primary-checkout>] [--worktree-root <directory>]`, or `atdd-flow project migrate-named-coordinator-topology <project> --baseline <40-lowercase-hex-remote-main-sha>`.");
+      throw new Error("Use `atdd-flow project init <project>`, `atdd-flow project configure <project> [--vcs <git|jj>] [--repository <primary-checkout>] [--worktree-root <directory>]`, `atdd-flow project migrate-vcs <project> --to jj [--dry-run]`, or `atdd-flow project migrate-named-coordinator-topology <project> --baseline <40-lowercase-hex-remote-main-sha>`.");
     },
     spawn: () => spawn(root, required(rest[0], "project"), required(rest[1], "role"), required(rest[2], "name"), rest.slice(3)),
     bind: () => bind(root, required(rest[0], "address"), rest.slice(1)),

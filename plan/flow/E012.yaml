@@ -1,0 +1,8 @@
+urn: acc:flow:E012-UNIT-001
+phase: UNIT
+description: >-
+  An existing Flow project with active clean Git seat worktrees can explicitly migrate to
+  colocated Jujutsu while preserving every seat path, branch/bookmark identity, legacy Git
+  tip as the unchanged parent of the seat's clean JJ working-copy revision, task governed-base
+  ancestry, and exported Git synchronization; the project VCS flips to jj only after all
+  workspaces verify, while dirty, review-state, or ambiguous legacy topology fails before mutation.
