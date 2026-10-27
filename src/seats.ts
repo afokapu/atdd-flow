@@ -188,9 +188,10 @@ export async function configureProject(root: string, name: string, args: string[
   if (selectedVcs && selectedVcs !== "git" && selectedVcs !== "jj") throw new Error(configureUsage);
   const mode = (selectedVcs ?? vcsMode(config)) as "git" | "jj";
   const repository = values.get("--repository"), worktreeRoot = values.get("--worktree-root");
-  const repositoryPath = resolve(repository ?? config.repository ?? "");
-  if ((repository || selectedVcs) && !repositoryPath) throw new Error("Project repository is required before selecting a VCS.");
-  if (repository || selectedVcs) {
+  const configuredRepository = repository ?? config.repository;
+  if (selectedVcs && !configuredRepository) throw new Error("Project repository is required before selecting a VCS.");
+  const repositoryPath = configuredRepository ? resolve(configuredRepository) : undefined;
+  if (repositoryPath && (repository || selectedVcs)) {
     try { await assertRepository(mode, repositoryPath); }
     catch (error) { throw new Error((error as Error).message); }
     config.repository = repositoryPath;
