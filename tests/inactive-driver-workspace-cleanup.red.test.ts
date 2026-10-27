@@ -510,6 +510,20 @@ async function finishCoordinated(fixture: TopologyFixture, coordinator: string, 
   await run(site, environment, "task", "done", "demo", id, "--by", coordinator);
 }
 
+test("RED: main retires a terminal non-main generic coordinator on the primary checkout without finishing it", async () => {
+  const fixture = await desk(["terminal"]);
+  await finishTask(fixture.site, fixture.clean, "driver.terminal@demo", "W-terminal");
+  await rm(join(fixture.repository, "node_modules", ".bin", "atdd-bun"));
+  await wrapper(join(fixture.repository, "node_modules", ".bin"), "primary", join(fixture.root, "atdd-bun.log"));
+
+  await run(fixture.site, fixture.clean, "seat", "retire", "coordinator@demo", "--by", "main@demo");
+
+  expect(await run(fixture.site, fixture.clean, "open", "coordinator@demo")).toContain("retired:");
+  expect((await stat(fixture.repository)).isDirectory()).toBe(true);
+  expect(await git(fixture.repository, "branch", "--show-current")).toBe("main");
+  expect(await Bun.file(join(fixture.root, "atdd-bun.log")).exists()).toBe(false);
+});
+
 async function refused(fixture: TopologyFixture, address: string, by: string, message?: string) {
   const result = await spawnCli(fixture.site, fixture.environment, ["seat", "retire", address, "--by", by]);
   expect(result.code).not.toBe(0);

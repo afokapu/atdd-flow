@@ -242,7 +242,7 @@ async function retirementBun(root: string, projectName: string) {
   return [required(Bun.which("atdd-bun") ?? undefined, "atdd-bun in the primary checkout node_modules/.bin or on PATH")];
 }
 
-async function retireDriver(root: string, projectName: string, assignee: string, id: string, allowAbsentWorktree = false) {
+async function retireDriver(root: string, projectName: string, assignee: string, id: string, allowAbsentWorktree = false, allowPrimaryCheckout = false) {
   const unfinished = (await allTasks(root, projectName))
     .filter((entry) => entry.id !== id && (entry.task.assignee === assignee || entry.task.coordinator === assignee) && !terminal(entry.task))
     .map((entry) => entry.id);
@@ -251,7 +251,10 @@ async function retireDriver(root: string, projectName: string, assignee: string,
   const owner = await seat(root, assignee);
   if (owner.retired) throw new Error(`Seat ${assignee} is already retired.`);
   try {
-    const summary = (allowAbsentWorktree ? await absentUnregisteredWorktree(root, projectName, owner) : undefined)
+    const primary = (await project(root, projectName)).repository;
+    const primaryCheckout = allowPrimaryCheckout && primary && await canonicalPath(owner.worktree) === await canonicalPath(primary);
+    const summary = (primaryCheckout ? `Primary checkout ${owner.worktree} retained; retired without worktree finish.` : undefined)
+      ?? (allowAbsentWorktree ? await absentUnregisteredWorktree(root, projectName, owner) : undefined)
       ?? await runOutput([...await retirementBun(root, projectName), "worktree", "finish", "--delete-branch", "--vcs", vcsMode(await project(root, projectName))], owner.worktree);
     owner.retired = { task: `${projectName}/${id}`, completed_at: now(), summary };
     await atomicYaml(paths(root).seatFile(assignee), owner);
@@ -276,18 +279,11 @@ async function retireDriver(root: string, projectName: string, assignee: string,
   await closeRetiredDriverWorkspace(root, owner);
 }
 
-/**
- * Only main retires a coordinator, and never one seated on the primary checkout; a driver may also be
- * retired by the coordinator of every task assigned to it.
- */
+/** Only main retires a coordinator; a driver may also be retired by the coordinator of every task assigned to it. */
 async function assertRetireAuthority(root: string, owner: Seat, actor: string, owned: ListedTask[]) {
   const main = `main@${owner.project}`;
   if (owner.role === "coordinator") {
     if (actor !== main) throw new Error(`Only ${main} may retire coordinator ${owner.address}.`);
-    const primary = (await project(root, owner.project)).repository;
-    if (primary && await canonicalPath(owner.worktree) === await canonicalPath(primary)) {
-      throw new Error(`Cannot retire ${owner.address}; its worktree is the primary checkout.`);
-    }
   } else if (actor !== main && owned.some((entry) => entry.task.coordinator !== actor)) {
     throw new Error(`Only ${main} or the coordinator of every task assigned to ${owner.address} may retire it.`);
   }
@@ -295,7 +291,8 @@ async function assertRetireAuthority(root: string, owner: Seat, actor: string, o
 
 /**
  * Retires a driver whose assigned tasks are all terminal (done, superseded, or rejected), or, for main only, a coordinator
- * (never main or the primary checkout) whose coordinated and assigned tasks are all terminal.
+ * (never main) whose coordinated and assigned tasks are all terminal. A non-main coordinator on the
+ * primary checkout retires its record without invoking worktree finish.
  */
 export async function retireSeat(root: string, address: string, args: string[]) {
   const resolved = await canonicalAddress(root, address);
@@ -310,7 +307,7 @@ export async function retireSeat(root: string, address: string, args: string[]) 
   const unfinished = owned.filter((entry) => !terminal(entry.task)).map((entry) => entry.id);
   if (unfinished.length) throw new Error(`Cannot retire ${resolved}; it still owns unfinished tasks: ${unfinished.join(", ")}.`);
   await assertRetireAuthority(root, owner, actor, owned);
-  await retireDriver(root, owner.project, resolved, owned.at(-1)!.id, true);
+  await retireDriver(root, owner.project, resolved, owned.at(-1)!.id, true, coordinator && resolved !== `main@${owner.project}`);
   console.log(`${resolved}  retired`);
 }
 
