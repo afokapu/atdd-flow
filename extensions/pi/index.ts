@@ -11,6 +11,8 @@ import { handoverThresholdInstruction, runtimeStartupInstruction, successorInstr
 import { type RecoveryMode, recoveryFor } from "../../src/recovery-bundle";
 import { contextHandoverThreshold, readHandoverReplacement } from "../../src/handover";
 import { requestSessionRotation } from "../../src/session-rotation";
+import { markHandoffOnly } from "../../src/runtime-state";
+import { quotaHandoffInstruction, selectQuotaHandoffModel } from "../../src/quota-handoff";
 
 type Thread = { id?: unknown; participants?: unknown; subject?: unknown };
 export type Mail = { id?: unknown; from?: unknown; to?: unknown; subject?: unknown; created_at?: unknown };
@@ -375,6 +377,8 @@ export default function (pi: ExtensionAPI) {
   let handoverPrompted = false;
   let thresholdAt: Date | undefined;
   let rateLimited = false;
+  let quotaRescueAt: Date | undefined;
+  let quotaReminderSent = false;
   // Host-attach only: mail older than this activation is consumed without a prompt, so a long backlog cannot trigger one turn per message.
   let hostActivatedAt: number | undefined;
   const notices: NoticeState = createNoticeState();
@@ -410,12 +414,39 @@ export default function (pi: ExtensionAPI) {
   pi.on("agent_settled", async (_event, ctx) => {
     notices.pending = false;
     const token = runtime?.ownerToken;
-    if (token && ((rateLimited && await requestSessionRotation(root, seat, token, "rate_limit"))
-      || (thresholdAt && await requestSessionRotation(root, seat, token, "context", thresholdAt)))) {
+    if (token && quotaRescueAt) {
+      if (await requestSessionRotation(root, seat, token, "rate_limit", quotaRescueAt).catch(() => false)) {
+        ctx.shutdown();
+        return;
+      }
+      if (!quotaReminderSent) {
+        quotaReminderSent = true;
+        pi.sendMessage({
+          customType: "atdd-flow-quota-handoff",
+          content: quotaHandoffInstruction(seat),
+          display: true, details: { seat, authority: "handover-only", reminder: true },
+        }, { triggerTurn: true, deliverAs: "followUp" });
+      }
+      return; // Never return a rescue model to ordinary task execution.
+    }
+    if (rateLimited) {
+      const switched = token && await selectQuotaHandoffModel(root, seat, ctx, pi).catch(() => false);
+      if (!switched || !token) return; // Never infer an available independent quota.
+      quotaRescueAt = new Date();
+      if (!(await markHandoffOnly(root, seat, token, quotaRescueAt.toISOString())).owned) return;
+      const bundle = await recovery(root, seat, "threshold", process.env.ATDD_FLOW_PI_SESSION);
+      pi.sendMessage({
+        customType: "atdd-flow-quota-handoff",
+        content: quotaHandoffInstruction(seat, bundle),
+        display: true, details: { seat, authority: "handover-only" },
+      }, { triggerTurn: true, deliverAs: "followUp" });
+      return;
+    }
+    if (token && thresholdAt && await requestSessionRotation(root, seat, token, "context", thresholdAt).catch(() => false)) {
       ctx.shutdown();
       return;
     }
-    if (thresholdAt || rateLimited) return; // Do not nag a model that cannot continue.
+    if (thresholdAt) return; // The source must finish its validated handover first.
     await sendSettledDirective(host, root, seat, notices);
   });
   pi.on("turn_end", async (_event, ctx) => {
