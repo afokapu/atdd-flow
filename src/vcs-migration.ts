@@ -1,6 +1,7 @@
 // URN: component:flow:jj-vcs-migration:vcs-migration:backend:application
 // Tested-By:
 // - test:flow:jj-vcs-migration:E013-UNIT-001
+// - test:flow:jj-vcs-migration:E014-UNIT-001
 // Runtime: bun
 // Purpose: Migrate one legacy Flow Git project to colocated JJ without losing lineage.
 //
@@ -19,8 +20,9 @@
 // Rollback uses the captured branch, commit, and path tuple rather than inferring
 // state from a partial JJ conversion. The durable project VCS is written last.
 
-import { readdir, realpath, rm } from "node:fs/promises";
+import { lstat, readFile, readdir, readlink, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { createHash } from "node:crypto";
 import {
   type Project, type Seat, atomicYaml, exists, paths, project, readYaml, required, yaml,
 } from "./core";
@@ -32,6 +34,16 @@ type GitWorktree = { path: string; branch?: string };
 type TaskLite = { assignee?: string; status?: string; governed_base?: { commit?: string } };
 type ReviewsLite = { attempts?: Array<{ delivery_head?: string }> };
 
+/** JJ silently skips new files above this size (snapshot.max-new-file-size default). */
+const SNAPSHOT_MAX_NEW_FILE_BYTES = 1048576;
+const DIRTY_PRIMARY_FLAG = "--allow-dirty-primary";
+
+type DiskState =
+  | { kind: "absent" }
+  | { kind: "file"; sha256: string; exec: boolean }
+  | { kind: "symlink"; target: string };
+type DirtyEntry = { path: string; status: string; disk: DiskState };
+
 export type VcsMigrationPlan = {
   schema: "atdd-flow/vcs-migration-plan/v1";
   project: string;
@@ -40,6 +52,7 @@ export type VcsMigrationPlan = {
   primary: SeatState;
   workspaces: SeatState[];
   lineage: { tasks_checked: number; reviews_checked: number };
+  dirty_primary?: { entries: Array<{ path: string; status: string }> };
 };
 
 type PreparedMigration = {
@@ -47,6 +60,8 @@ type PreparedMigration = {
   repository: string;
   states: SeatState[];
   plan: VcsMigrationPlan;
+  dirty: DirtyEntry[];
+  index: Buffer | null;
 };
 
 /** Run one external VCS command without throwing so rollback can inspect failures. */
@@ -97,19 +112,58 @@ async function activeSeats(root: string, name: string) {
   return records.filter(record => !record.retired);
 }
 
+/** Read one working-copy path exactly as JJ will snapshot it, without following symlinks. */
+async function diskState(worktree: string, path: string): Promise<DiskState> {
+  const full = join(worktree, path);
+  const info = await lstat(full).catch(() => null);
+  if (!info) return { kind: "absent" };
+  if (info.isSymbolicLink()) return { kind: "symlink", target: await readlink(full) };
+  if (info.isDirectory()) throw new Error(`Dirty primary path ${path} is a nested repository or gitlink; JJ cannot retain it.`);
+  const sha256 = createHash("sha256").update(await readFile(full)).digest("hex");
+  return { kind: "file", sha256, exec: (info.mode & 0o111) !== 0 };
+}
+
+/** Capture the primary's uncommitted paths read-only, refusing anything JJ would drop. */
+async function captureDirtyPrimary(worktree: string): Promise<DirtyEntry[]> {
+  // Raw, untrimmed: the first record's leading status space is significant.
+  const status = await Bun.spawn(["git", "status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames"], { cwd: worktree, stdout: "pipe", stderr: "pipe" });
+  const [raw, failure, code] = await Promise.all([new Response(status.stdout).text(), new Response(status.stderr).text(), status.exited]);
+  if (code !== 0) throw new Error(`git status failed: ${failure.trim()}`);
+  const entries: DirtyEntry[] = [];
+  for (const record of raw.split("\0").filter(Boolean)) {
+    const flags = record.slice(0, 2), path = record.slice(3);
+    const disk = await diskState(worktree, path);
+    const isNew = flags.includes("?") || flags.includes("A");
+    if (isNew && disk.kind === "file") {
+      const size = (await lstat(join(worktree, path))).size;
+      if (size > SNAPSHOT_MAX_NEW_FILE_BYTES) {
+        throw new Error(`Dirty primary file ${path} (${size} bytes) exceeds the JJ snapshot size limit of ${SNAPSHOT_MAX_NEW_FILE_BYTES} bytes and would not be retained; commit it, move it, or ignore it first.`);
+      }
+    }
+    entries.push({ path, status: flags, disk });
+  }
+  return entries;
+}
+
 /** Capture the exact clean Git tuple that migration must preserve or parent. */
-async function inspectSeat(repository: string, record: Seat): Promise<SeatState> {
+async function inspectSeat(repository: string, record: Seat, allowDirtyPrimary: boolean): Promise<{ state: SeatState; dirty: DirtyEntry[] }> {
   const worktree = await realpath(resolve(record.worktree)).catch(() => null);
   if (!worktree) throw new Error(`Seat ${record.address} worktree does not exist: ${record.worktree}`);
   const top = await realpath(await output(worktree, "git", ["rev-parse", "--show-toplevel"]));
   if (top !== worktree) throw new Error(`Seat ${record.address} is not at a Git worktree root: ${worktree}`);
-  if (await output(worktree, "git", ["status", "--porcelain"])) throw new Error(`Seat ${record.address} worktree is dirty: ${worktree}`);
+  const primary = worktree === repository;
+  let dirty: DirtyEntry[] = [];
+  if (await output(worktree, "git", ["status", "--porcelain"])) {
+    if (!primary) throw new Error(`Seat ${record.address} worktree is dirty: ${worktree}`);
+    if (!allowDirtyPrimary) throw new Error(`Seat ${record.address} worktree is dirty: ${worktree}. Pass ${DIRTY_PRIMARY_FLAG} to retain the primary checkout's uncommitted changes as JJ working-copy state.`);
+    dirty = await captureDirtyPrimary(worktree);
+  }
   const branch = await output(worktree, "git", ["branch", "--show-current"]);
   if (branch !== record.branch) throw new Error(`Seat ${record.address} is checked out at ${branch || "detached HEAD"}, not ${record.branch}.`);
   const commit = await output(worktree, "git", ["rev-parse", "HEAD"]);
   const ref = await output(repository, "git", ["rev-parse", "--verify", `refs/heads/${record.branch}^{commit}`]);
   if (commit !== ref) throw new Error(`Seat ${record.address} HEAD does not match branch ${record.branch}.`);
-  return { address: record.address, branch: record.branch, worktree, commit, primary: worktree === repository };
+  return { state: { address: record.address, branch: record.branch, worktree, commit, primary }, dirty };
 }
 
 /** Parse Git's porcelain registry rather than trusting directory existence alone. */
@@ -195,7 +249,7 @@ async function assertLineage(root: string, name: string, repository: string, sta
 }
 
 /** Build the complete deterministic migration plan before creating .jj metadata. */
-async function prepare(root: string, name: string): Promise<PreparedMigration> {
+async function prepare(root: string, name: string, allowDirtyPrimary: boolean): Promise<PreparedMigration> {
   const config = await project(root, name);
   if (vcsMode(config) !== "git") throw new Error(`Project ${name} is not a Git project.`);
   const repository = await realpath(resolve(required(config.repository, `project ${name} repository`))).catch(() => null);
@@ -205,7 +259,9 @@ async function prepare(root: string, name: string): Promise<PreparedMigration> {
   await assertToolVersions(repository);
   const records = await activeSeats(root, name);
   if (!records.length) throw new Error("Project has no active seats; configure vcs: jj directly before creating seats.");
-  const states = await Promise.all(records.map(record => inspectSeat(repository, record)));
+  const inspected = await Promise.all(records.map(record => inspectSeat(repository, record, allowDirtyPrimary)));
+  const states = inspected.map(entry => entry.state);
+  const dirty = inspected.flatMap(entry => entry.dirty);
   const primary = states.filter(state => state.primary);
   if (primary.length !== 1) throw new Error(`Migration requires exactly one active seat in the primary checkout; found ${primary.length}.`);
   if (new Set(states.map(state => state.worktree)).size !== states.length) throw new Error("Active Flow seats must have distinct worktree paths before migration.");
@@ -213,13 +269,59 @@ async function prepare(root: string, name: string): Promise<PreparedMigration> {
   await assertWorktreeRegistry(repository, states);
   const lineage = await assertLineage(root, name, repository, states);
   const workspaces = states.filter(state => !state.primary);
-  return { config, repository, states, plan: { schema: "atdd-flow/vcs-migration-plan/v1", project: name, from: "git", to: "jj", primary: primary[0]!, workspaces, lineage } };
+  const index = await readIndex(repository);
+  const plan: VcsMigrationPlan = { schema: "atdd-flow/vcs-migration-plan/v1", project: name, from: "git", to: "jj", primary: primary[0]!, workspaces, lineage };
+  if (dirty.length) plan.dirty_primary = { entries: dirty.map(({ path, status }) => ({ path, status })) };
+  return { config, repository, states, plan, dirty, index };
 }
 
 /** The primary bookmark is intentionally not advanced during migration. */
-async function verifyPrimary(state: SeatState) {
+async function verifyPrimary(state: SeatState, dirty: DirtyEntry[]) {
+  if (dirty.length) return verifyDirtyPrimary(state, dirty);
   const ready = await assertBranchReady("jj", state.worktree, state.branch);
   if (ready !== state.commit) throw new Error(`Primary bookmark ${state.branch} changed during JJ migration.`);
+}
+
+/** Read the Git tree entry for one path in the JJ working-copy commit. */
+async function treeEntry(state: SeatState, head: string, path: string) {
+  const listed = await output(state.worktree, "git", ["ls-tree", head, "--", path]);
+  if (!listed) return null;
+  const [meta] = listed.split("\t");
+  const [mode, , blob] = (meta ?? "").split(" ");
+  return { mode: mode!, blob: blob! };
+}
+
+/** True when the tree entry is exactly the captured disk state (content and mode). */
+async function entryMatches(state: SeatState, entry: DirtyEntry, found: { mode: string; blob: string }) {
+  const disk = entry.disk;
+  if (disk.kind === "symlink") {
+    return found.mode === "120000" && await output(state.worktree, "git", ["cat-file", "blob", found.blob]) === disk.target;
+  }
+  if (disk.kind !== "file") return false;
+  const hashed = await output(state.worktree, "git", ["hash-object", "--no-filters", "--", entry.path]);
+  return found.mode === (disk.exec ? "100755" : "100644") && found.blob === hashed;
+}
+
+/** Compare one retained path in the JJ working-copy commit against the captured disk state. */
+async function verifyDirtyPath(state: SeatState, head: string, entry: DirtyEntry) {
+  const now = await diskState(state.worktree, entry.path);
+  if (JSON.stringify(now) !== JSON.stringify(entry.disk)) throw new Error(`Primary path ${entry.path} changed on disk during JJ migration.`);
+  const found = await treeEntry(state, head, entry.path);
+  const retained = entry.disk.kind === "absent" ? found === null : found !== null && await entryMatches(state, entry, found);
+  if (!retained) throw new Error(`Primary path ${entry.path} was not retained exactly in the JJ working copy.`);
+}
+
+/** A dirty primary must be exactly `main` plus the captured manifest, nothing more. */
+async function verifyDirtyPrimary(state: SeatState, dirty: DirtyEntry[]) {
+  const bookmarked = await branchCommit("jj", state.worktree, state.branch);
+  const parent = await output(state.worktree, "jj", ["log", "-r", "@-", "--no-graph", "-T", "commit_id"]);
+  if (bookmarked !== state.commit || parent !== state.commit) throw new Error(`Primary bookmark ${state.branch} changed during JJ migration.`);
+  const head = await output(state.worktree, "jj", ["log", "-r", "@", "--no-graph", "-T", "commit_id"]);
+  const changed = (await output(state.worktree, "git", ["diff-tree", "-r", "-z", "--no-renames", "--name-only", state.commit, head])).split("\0").filter(Boolean);
+  const expected = new Set(dirty.map(entry => entry.path));
+  const extra = changed.filter(path => !expected.has(path));
+  if (extra.length) throw new Error(`JJ working copy contains paths outside the captured dirty manifest: ${extra.join(", ")}`);
+  for (const entry of dirty) await verifyDirtyPath(state, head, entry);
 }
 
 /** Secondary seats may gain one clean child; their legacy tip must be its parent. */
@@ -267,45 +369,77 @@ async function restoreGitWorkspace(repository: string, state: SeatState) {
   return errors;
 }
 
+/** Locate the primary's Git index so JJ's colocation rewrite can be undone byte-for-byte. */
+async function indexPath(repository: string) {
+  return resolve(repository, await output(repository, "git", ["rev-parse", "--git-path", "index"]));
+}
+
+async function readIndex(repository: string): Promise<Buffer | null> {
+  return readFile(await indexPath(repository)).catch(() => null);
+}
+
+/** Restore (or remove) the captured index atomically. */
+async function restoreIndex(repository: string, index: Buffer | null) {
+  const path = await indexPath(repository);
+  if (index === null) return rm(path, { force: true });
+  const temp = `${path}.migrate-restore`;
+  await writeFile(temp, index);
+  await rename(temp, path);
+}
+
+/** JJ records kept commits under refs/jj; they exist only because this attempt initialized JJ. */
+async function removeJjRefs(repository: string) {
+  const refs = (await output(repository, "git", ["for-each-ref", "--format=%(refname)", "refs/jj/"])).split("\n").filter(Boolean);
+  for (const ref of refs) await output(repository, "git", ["update-ref", "-d", ref]);
+}
+
 /** Best-effort rollback never changes project.vcs and reports every incomplete restore. */
-async function rollback(repository: string, primary: SeatState, displaced: SeatState[]) {
+async function rollback(repository: string, primary: SeatState, displaced: SeatState[], index: Buffer | null) {
   const errors: string[] = [];
   for (const state of [...displaced].reverse()) await removePartialWorkspace(repository, state);
   await rm(join(repository, ".jj"), { recursive: true, force: true }).catch(error => errors.push(String(error)));
+  await removeJjRefs(repository).catch(error => errors.push(String(error)));
   const switched = await command(repository, "git", ["switch", primary.branch]);
   if (switched.code) errors.push(switched.err || switched.out);
   for (const state of displaced) errors.push(...await restoreGitWorkspace(repository, state));
+  await restoreIndex(repository, index).catch(error => errors.push(String(error)));
   return errors;
+}
+
+/** Accept exactly `--to jj` plus at most one each of the known flags. */
+function parseMigrationArgs(args: string[]) {
+  const toIndex = args.indexOf("--to"), to = toIndex < 0 ? undefined : args[toIndex + 1];
+  const flags = ["--dry-run", DIRTY_PRIMARY_FLAG];
+  const rest = args.filter((_arg, index) => index !== toIndex && index !== toIndex + 1);
+  const valid = toIndex >= 0 && to === "jj"
+    && args.filter(arg => arg === "--to").length === 1
+    && rest.every(arg => flags.includes(arg))
+    && new Set(rest).size === rest.length;
+  if (!valid) throw new Error("Use `atdd-flow project migrate-vcs <project> --to jj [--allow-dirty-primary] [--dry-run]`.");
+  return { dryRun: rest.includes("--dry-run"), allowDirtyPrimary: rest.includes(DIRTY_PRIMARY_FLAG) };
 }
 
 /** Execute the only supported legacy conversion: Git project to colocated JJ. */
 export async function migrateProjectVcs(root: string, name: string, args: string[]) {
-  const toIndex = args.indexOf("--to"), to = toIndex < 0 ? undefined : args[toIndex + 1];
-  const dryRun = args.includes("--dry-run");
-  const consumed = new Set([toIndex, toIndex + 1, ...(dryRun ? [args.indexOf("--dry-run")] : [])]);
-  const valid = toIndex >= 0 && to === "jj"
-    && args.filter(arg => arg === "--to").length === 1
-    && args.filter(arg => arg === "--dry-run").length <= 1
-    && args.every((_arg, index) => consumed.has(index));
-  if (!valid) throw new Error("Use `atdd-flow project migrate-vcs <project> --to jj [--dry-run]`.");
-  const prepared = await prepare(root, name);
+  const { dryRun, allowDirtyPrimary } = parseMigrationArgs(args);
+  const prepared = await prepare(root, name, allowDirtyPrimary);
   if (dryRun) { process.stdout.write(yaml.print(prepared.plan)); return; }
 
   const displaced: SeatState[] = [];
   try {
     await output(prepared.repository, "jj", ["git", "init", "--colocate"]);
     await assertRepository("jj", prepared.repository);
-    await verifyPrimary(prepared.plan.primary);
+    await verifyPrimary(prepared.plan.primary, prepared.dirty);
     for (const state of prepared.plan.workspaces) {
       displaced.push(state);
       await convertWorkspace(prepared.repository, state);
     }
-    await verifyPrimary(prepared.plan.primary);
+    await verifyPrimary(prepared.plan.primary, prepared.dirty);
     for (const state of prepared.plan.workspaces) await verifyMigratedWorkspace(state);
     await atomicYaml(paths(root).projectFile(name), { ...prepared.config, vcs: "jj" });
     process.stdout.write(`${name}  migrated git -> jj  ${prepared.states.length} seats  lineage preserved\n`);
   } catch (error) {
-    const rollbackErrors = await rollback(prepared.repository, prepared.plan.primary, displaced);
+    const rollbackErrors = await rollback(prepared.repository, prepared.plan.primary, displaced, prepared.index);
     const suffix = rollbackErrors.length ? ` Automatic rollback was incomplete: ${rollbackErrors.join("; ")}` : " Git worktrees were restored.";
     throw new Error(`JJ migration failed before project.vcs changed: ${(error as Error).message}.${suffix}`);
   }

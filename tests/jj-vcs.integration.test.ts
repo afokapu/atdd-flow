@@ -10,9 +10,11 @@ import { assertBranchReady } from "../src/vcs";
 
 const roots: string[] = [];
 const cli = join(import.meta.dir, "..", "src", "cli.ts");
+// Isolation: seats export ATDD_WORKFLOW_ROOT (the live Desk); spawned CLIs must never inherit any ATDD_* variable.
+const isolatedEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("ATDD_")));
 
 async function exec(cwd: string, command: string, ...args: string[]) {
-  const child = Bun.spawn([command, ...args], { cwd, stdout: "pipe", stderr: "pipe" });
+  const child = Bun.spawn([command, ...args], { cwd, env: isolatedEnv, stdout: "pipe", stderr: "pipe" });
   const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
   if (code !== 0) throw new Error(`${command} ${args.join(" ")} failed: ${stderr || stdout}`);
   return stdout.trim();
@@ -23,7 +25,7 @@ async function flow(cwd: string, ...args: string[]) {
 }
 
 async function failFlow(cwd: string, ...args: string[]) {
-  const child = Bun.spawn([process.execPath, cli, ...args], { cwd, stdout: "pipe", stderr: "pipe" });
+  const child = Bun.spawn([process.execPath, cli, ...args], { cwd, env: isolatedEnv, stdout: "pipe", stderr: "pipe" });
   const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
   expect(code).not.toBe(0);
   return `${stdout}${stderr}`;

@@ -1,0 +1,11 @@
+urn: acc:flow:E014-UNIT-001
+phase: UNIT
+description: >-
+  A Flow project whose only dirty Git checkout is the sole primary seat can explicitly migrate to
+  colocated Jujutsu with --allow-dirty-primary: the primary's exact uncommitted content (modified,
+  deleted, staged, untracked, binary, executable, symlink) is retained as the JJ working-copy
+  revision above the unchanged main tip without any Git commit, stash, reset, clean, or checkout,
+  and every retained path is verified against its captured disk state. Dirty secondary worktrees,
+  nested repositories, new files JJ would skip, and any post-initialization failure remain refused
+  or fully rolled back, including the primary Git index bytes and JJ bookkeeping refs, and
+  project.vcs flips to jj last.
