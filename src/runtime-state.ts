@@ -30,6 +30,8 @@ export type RuntimeState = {
   /** Live Pi session id when known; absent on legacy records. Advisory only: it never selects a recipient. */
   pi_session?: string;
   mail_activation?: MailActivation;
+  /** Rescue model may only write handover; fleet nudges must not assign normal work. */
+  handoff_only?: { reason: "rate_limit"; started_at: string };
 };
 
 export type RuntimeStateRegistration = Pick<RuntimeState, "seat" | "owner_token" | "pid" | "model" | "cwd"> & Partial<Pick<RuntimeState, "pi_session">>;
@@ -182,6 +184,18 @@ export async function recordMailActivation(root: string, seat: string, ownerToke
     const current = await readRuntimeState(root, seat);
     if (!current || current.owner_token !== ownerToken) return false;
     await atomicYaml(file, { ...current, mail_activation: activation });
+    return true;
+  });
+}
+
+/** Mark the live Pi runtime as handoff-only while holding its owner-token fence.
+ * A fresh successor registration naturally clears this session-scoped advisory flag.
+ */
+export async function markHandoffOnly(root: string, seat: string, token: string, at = new Date().toISOString()) {
+  return withOwnedRuntimeState(root, seat, token, async () => {
+    const record = await readRuntimeState(root, seat);
+    if (!record) return false;
+    await atomicYaml(runtimeStatePath(root, seat), { ...record, handoff_only: { reason: "rate_limit", started_at: at } });
     return true;
   });
 }
