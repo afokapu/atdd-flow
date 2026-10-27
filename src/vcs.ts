@@ -79,6 +79,10 @@ export async function currentCommit(mode: VcsMode, cwd: string) {
 }
 
 export async function branchExists(mode: VcsMode, cwd: string, branch: string) {
+  if (mode === "git") {
+    try { await runOutput(["git", "-C", cwd, "show-ref", "--verify", "--quiet", `refs/heads/${branch}`]); return true; }
+    catch { return false; }
+  }
   try { await branchCommit(mode, cwd, branch); return true; }
   catch { return false; }
 }
