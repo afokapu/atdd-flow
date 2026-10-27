@@ -11,9 +11,10 @@ import { notify } from "./adapters";
 import { type RuntimeState, isRuntimeStateStale, readRuntimeState, withOwnedRuntimeState } from "./runtime-state";
 import { add as addTask, type Task } from "./tasks";
 
-export type MainRepairReport = { seat: string; task?: string; outcome: "reached" | "cooldown" | "exhausted" | "unverified" | "failed" };
+export type MainRepairReport = { seat: string; task?: string; outcome: "reached" | "ready" | "cooldown" | "exhausted" | "unverified" | "failed" };
 export type MainRepairOptions = {
   now?: Date;
+  dryRun?: boolean;
   inspect?: (session: string, pane: string, name: string) => Promise<{ name: string; pane: string; cwd: string; sessionPath: string }>;
   deliver?: (session: string, pane: string, notice: string) => Promise<void>;
 };
@@ -105,6 +106,7 @@ async function inspectMain(root: string, seat: Seat, options: MainRepairOptions)
   try {
     if (!await confirm(root, candidate, options.inspect ?? inspectHerdr))
       return { seat: seat.address, task, outcome: "unverified" };
+    if (options.dryRun) return { seat: seat.address, task, outcome: "ready" };
     const fenced = await withOwnedRuntimeState(root, seat.address, live.owner_token, () => sendRepair(root, candidate, options));
     return { seat: seat.address, task, outcome: fenced.owned ? fenced.value : "unverified" };
   } catch { return { seat: seat.address, task, outcome: "unverified" }; }
