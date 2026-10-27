@@ -94,7 +94,7 @@ const mutating = (argv: string[]) => argv.some((part) => ["run", "start", "bind"
 
 test("RED: help exposes the explicit stale-main recovery flag", async () => {
   const { output } = await invokeAtRoot(tmpdir(), "--help");
-  expect(output).toContain(`handover replace <address> [${recoverFlag}]`);
+  expect(output).toContain(`handover replace <address> [--supersede-consumed] [${recoverFlag}]`);
 });
 
 test("RED: stale recorded main session versus newer live Pi in the exact canonical pane/worktree is recoverable only through the operator-authorized request", async () => {

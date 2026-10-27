@@ -14,6 +14,7 @@ import { resolveExactSessionAdoptionAuthorization } from "./adoption-authorizati
 import { exactFailedAdoptionProof } from "./exact-adoption-recovery";
 import { isExactOperatorSeat, operatorActivation, operatorRelaunchSection } from "./operator-launch";
 import { readRuntimeState } from "./runtime-state";
+import { type StaleMainRecovery, buildStaleMainRecovery, staleRecoveryMatches } from "./stale-main-recovery";
 
 export type Handover = {
   schema: "atdd-workflow/handover/v1";
@@ -119,10 +120,11 @@ export type HandoverReplacementRequest = {
     canonical_source: { pi_session: string; pi_session_path: string; herdr_session: string; pane: string; cwd: string; launch_receipt: string };
     live_source: LiveSourceProof;
   };
+  stale_main_recovery?: StaleMainRecovery;
   created_at: string;
 };
 
-type LiveSourceProof = {
+export type LiveSourceProof = {
   authorization_hash: string;
   pi_session: string;
   pi_session_path: string;
@@ -204,6 +206,7 @@ function supersessionEvidenceMatches(request: HandoverReplacementRequest, proof:
 }
 
 export function replacementMatchesRuntime(runtime: Runtime | undefined, request: HandoverReplacementRequest) {
+  if (request.stale_main_recovery) return staleRecoveryMatches(runtime, request, request.stale_main_recovery);
   const proof = request.supersession;
   if (proof) return supersessionPlacementMatches(runtime, proof) && supersessionSessionMatches(runtime, proof) && supersessionEvidenceMatches(request, proof);
   if (!request.legacy_source) return canonicalSourceMatchesRuntime(runtime, request.source);
@@ -360,10 +363,11 @@ async function publishCreateOnly(file: string, content: string) {
   } finally { await rm(temporary, { force: true }); }
 }
 
-const replacementFlags = ["--supersede-consumed", "--legacy-source-bootstrap", "--handover", "--authorization", "--takeover-task", "--source-pi-session", "--source-pi-session-path", "--source-herdr-session", "--source-pane", "--herdr-session", "--target-pane", "--target-cwd"];
+const replacementFlags = ["--supersede-consumed", "--recover-stale-main", "--legacy-source-bootstrap", "--handover", "--authorization", "--takeover-task", "--source-pi-session", "--source-pi-session-path", "--source-herdr-session", "--source-pane", "--herdr-session", "--target-pane", "--target-cwd"];
 function validateReplacementArgs(args: string[]) {
-  if (args.some((arg) => arg.startsWith("--") && !replacementFlags.includes(arg))) throw new Error("Use `handover replace <main-seat> [--supersede-consumed] [--legacy-source-bootstrap] --handover <id> --authorization <operator-record> --takeover-task <id> --source-pi-session <id> --source-pi-session-path <jsonl> --source-herdr-session <session> --source-pane <pane> --herdr-session <session> --target-pane <pane> --target-cwd <canonical-main-worktree>`.");
+  if (args.some((arg) => arg.startsWith("--") && !replacementFlags.includes(arg))) throw new Error("Use `handover replace <main-seat> [--supersede-consumed] [--recover-stale-main] [--legacy-source-bootstrap] --handover <id> --authorization <operator-record> --takeover-task <id> --source-pi-session <id> --source-pi-session-path <jsonl> --source-herdr-session <session> --source-pane <pane> --herdr-session <session> --target-pane <pane> --target-cwd <canonical-main-worktree>`.");
   if (has(args, "--supersede-consumed") && has(args, "--legacy-source-bootstrap")) throw new Error("Consumed replacement supersession cannot use legacy source bootstrap.");
+  if (has(args, "--recover-stale-main") && (has(args, "--supersede-consumed") || has(args, "--legacy-source-bootstrap"))) throw new Error("Stale main recovery cannot be combined with consumed supersession or legacy source bootstrap.");
 }
 
 async function currentReplacementHandover(root: string, resolved: string, args: string[]) {
@@ -394,13 +398,13 @@ function assertReplacementSource(record: Seat, source: HandoverReplacementReques
 
 async function prepareReplacement(root: string, resolved: string, args: string[]) {
   validateReplacementArgs(args);
-  const legacy = has(args, "--legacy-source-bootstrap"), supersede = has(args, "--supersede-consumed");
+  const legacy = has(args, "--legacy-source-bootstrap"), supersede = has(args, "--supersede-consumed"), recover = has(args, "--recover-stale-main");
   const handover = await currentReplacementHandover(root, resolved, args);
   const task = nonEmpty(words(args, "--takeover-task"), "--takeover-task");
   const { record } = await exactMainTakeoverTask(root, resolved, task);
   const source = replacementSource(args), target = replacementTarget(args, record, source);
-  if (!supersede) assertReplacementSource(record, source, legacy);
-  return { legacy, supersede, handover, task, record, source, target };
+  if (!supersede && !recover) assertReplacementSource(record, source, legacy);
+  return { legacy, supersede, recover, handover, task, record, source, target };
 }
 
 function replacementRequest(resolved: string, intent: Awaited<ReturnType<typeof prepareReplacement>>, authorization: { id: string; hash: string }, legacySource: HandoverReplacementRequest["legacy_source"], dependencies: HandoverReplacementDependencies): HandoverReplacementRequest {
@@ -741,7 +745,8 @@ export async function requestHandoverReplacement(root: string, address: string, 
     source: { herdr_session: intent.source.herdr_session, pane: intent.source.pane }, target: intent.target,
   });
   const legacySource = intent.legacy ? await verifyLegacySource(intent.source, intent.target, authorization.hash, dependencies) : undefined;
-  const request = replacementRequest(resolved, intent, authorization, legacySource, dependencies);
+  const recovery = intent.recover ? await buildStaleMainRecovery(root, resolved, intent, (canonical) => verifyLegacySource(intent.source, intent.target, authorization.hash, dependencies, canonical)) : undefined;
+  const request = { ...replacementRequest(resolved, intent, authorization, legacySource, dependencies), ...(recovery ? { stale_main_recovery: recovery } : {}) };
   await (dependencies.publish ?? publishCreateOnly)(file, yaml.print(request));
   console.log(`Recorded Path-A replacement request for ${resolved}.`);
 }
