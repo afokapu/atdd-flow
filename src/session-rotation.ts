@@ -10,6 +10,7 @@ import { type Seat, desk, modelPortfolio, paths, readYaml, seat } from "./core";
 import { type Handover, handoverProblems } from "./handover";
 import { readRuntimeState, withOwnedRuntimeState, isRuntimeStateStale } from "./runtime-state";
 import { launchPiRuntime } from "./seats";
+import { availableModelCandidates } from "./pi-runtime-launch";
 
 type Reason = "context" | "rate_limit";
 type Intent = {
@@ -65,11 +66,15 @@ export async function requestSessionRotation(root: string, address: string, toke
   const owned = await withOwnedRuntimeState(root, address, token, async () => {
     const path = fileFor(root, address, runtime.pi_session!);
     await mkdir(directory(root), { recursive: true });
-    try { await writeFile(path, Bun.YAML.stringify(intent), { flag: "wx" }); }
-    catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
-    return true;
+    try { await writeFile(path, Bun.YAML.stringify(intent), { flag: "wx" }); return true; }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      const prior = Bun.YAML.parse(await readFile(path, "utf8")) as Intent;
+      return prior.source_session === intent.source_session && prior.reason === intent.reason
+        && prior.candidate === intent.candidate && prior.source_handover?.sha256 === intent.source_handover?.sha256;
+    }
   });
-  return owned.owned;
+  return owned.owned && owned.value === true;
 }
 
 async function validSource(root: string, intent: Intent) {
@@ -77,11 +82,16 @@ async function validSource(root: string, intent: Intent) {
   const runtime = record.runtime;
   if (!runtime || runtime.pi_session !== intent.source_session || runtime.launch_receipt !== intent.source_receipt) return;
   if (!["driver", "coordinator"].includes(record.role)) return;
-  if (await originalCandidate(runtime, intent.seat) === undefined) return;
+  const selected = await originalCandidate(runtime, intent.seat);
+  if (!selected || !["context", "rate_limit"].includes(intent.reason)) return;
+  const config = await desk(root);
+  const expected = intent.reason === "context" ? selected : config.fallback_model?.[record.role];
+  if (!expected || intent.candidate !== expected || (intent.reason === "rate_limit" && expected === selected)) return;
   if (intent.reason === "context") {
     const original = await readYaml<Handover>(paths(root).handoverFile(intent.seat)).catch(() => undefined);
-    if (!original || intent.source_handover?.id !== original.handover_id
-      || intent.source_handover.sha256 !== createHash("sha256").update(original.text).digest("hex")) return;
+    const proof = intent.source_handover;
+    if (!original || !proof || proof.id !== original.handover_id
+      || proof.sha256 !== createHash("sha256").update(original.text).digest("hex")) return;
   }
   return record;
 }
@@ -93,6 +103,9 @@ async function reconcileIntent(root: string, path: string, intent: Intent, optio
   if (intent.schema !== "atdd-flow/session-rotation/v1") return status("refused", "Invalid rotation record");
   const record = await validSource(root, intent);
   if (!record) return status("stale");
+  const config = await desk(root), portfolio = await modelPortfolio(root);
+  if (!portfolio || !availableModelCandidates(config, portfolio).some((entry) => entry.id === intent.candidate))
+    return status("refused", "Pinned model candidate is unavailable");
   const live = await readRuntimeState(root, intent.seat);
   if (live && live.pi_session === intent.source_session && !isRuntimeStateStale(live, 60_000)) return status("running");
   if (options.dryRun) return status("ready");
