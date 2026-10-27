@@ -104,6 +104,32 @@ test("runtime replacement between inspection and wake is fenced", async () => {
   expect(woken).toHaveLength(0);
 });
 
+test("a settled turn re-arms after an actionable directive changes and returns", async () => {
+  const root = await fixture();
+  await task(root);
+  const state = createNoticeState();
+  const sent: Array<{ customType: string; content: string; details: Record<string, unknown> }> = [];
+  const host = { sendMessage(message: (typeof sent)[number]) { sent.push(message); } };
+  const delivered = async () => refreshDelivered(root, driver, state, { role: "custom", ...sent.at(-1)! });
+
+  await sendTaskDirective(host, root, driver, state);
+  await delivered();
+  await sendSettledDirective(host, root, driver, state);
+  await delivered();
+
+  await task(root, { phase: "green" });
+  await sendSettledDirective(host, root, driver, state);
+  await delivered();
+
+  await task(root);
+  await sendSettledDirective(host, root, driver, state);
+  await delivered();
+  await sendSettledDirective(host, root, driver, state);
+
+  expect(sent).toHaveLength(5);
+  expect(sent.at(-1)?.details.continuation).toBe(true);
+});
+
 test("a settled turn nudges an unchanged actionable task once; awaiting an authority does not loop", async () => {
   const root = await fixture();
   await task(root);

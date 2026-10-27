@@ -79,6 +79,7 @@ async function currentDirective(root: string, seat: string, state: NoticeState, 
   const directive = await nextDirective(root, seat).catch(() => undefined);
   if (!directive) {
     state.lastDelivered = undefined;
+    state.settledNudged = undefined;
     return { ...message, content: `SYSTEM: next-action notice for ${seat} withdrawn: task state has no actionable step. Task state outranks mail.`, details: { authority: "task", lifecycle: "NONE" } };
   }
   const key = directiveKey(directive);
@@ -90,6 +91,7 @@ async function currentDirective(root: string, seat: string, state: NoticeState, 
     return { ...message, content: `SYSTEM: next action for ${seat} unchanged on ${directive.project}/${directive.task} [${directive.lifecycle}]; see the previous notice.`, details: directiveDetails(directive) };
   }
   state.lastDelivered = key;
+  state.settledNudged = undefined;
   if (directive.lifecycle === "BLOCKED") state.blockers.add(key);
   return { ...message, content: directiveNotice(seat, directive), details: directiveDetails(directive) };
 }
