@@ -111,6 +111,11 @@ async function currentHead(mode: VcsMode, worktree: string) {
 }
 
 async function assertCleanDelivery(mode: VcsMode, worktree: string, branch: string) {
+  if (mode === "git") {
+    const dirty = await runOutput(["git", "status", "--porcelain"], worktree);
+    if (dirty) throw new Error("Final behavioral review requires a clean committed delivery worktree.");
+    return;
+  }
   try { await assertBranchReady(mode, worktree, branch); }
   catch (error) {
     throw new Error(`Final behavioral review requires a clean committed delivery worktree: ${(error as Error).message}`);
