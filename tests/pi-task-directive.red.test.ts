@@ -1,3 +1,6 @@
+// URN: test:flow:pi-task-directive
+// Acceptance: acc:flow:E007-RED-001
+// Phase: UNIT
 import { afterEach, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -14,29 +17,16 @@ const taskId = "runtime-directive";
 const session = "01a12345-6789-7abc-8def-0123456789ab";
 const sessionPath = `/Users/test/.pi/agent/sessions/demo/run_${session}.jsonl`;
 const receipt = join(root, ".atdd-flow", "runtime-launch", "verified.yaml");
-const originalEnvironment = {
-  root: process.env.ATDD_WORKFLOW_ROOT,
-  seat: process.env.ATDD_WORKFLOW_SEAT,
-  piSession: process.env.ATDD_FLOW_PI_SESSION,
-  herdrSession: process.env.ATDD_FLOW_HERDR_SESSION,
-  pane: process.env.ATDD_FLOW_HERDR_PANE,
+const environment: NodeJS.ProcessEnv = {
+  ATDD_WORKFLOW_ROOT: root,
+  ATDD_WORKFLOW_SEAT: seat,
+  ATDD_FLOW_PI_SESSION: session,
+  ATDD_FLOW_HERDR_SESSION: "forge",
+  ATDD_FLOW_HERDR_PANE: "w1:p2",
 };
-
-function useEnvironment() {
-  process.env.ATDD_WORKFLOW_ROOT = root;
-  process.env.ATDD_WORKFLOW_SEAT = seat;
-  process.env.ATDD_FLOW_PI_SESSION = session;
-  process.env.ATDD_FLOW_HERDR_SESSION = "forge";
-  process.env.ATDD_FLOW_HERDR_PANE = "w1:p2";
-}
 
 afterEach(async () => {
   await rm(root, { recursive: true, force: true });
-  for (const [name, value] of [
-    ["ATDD_WORKFLOW_ROOT", originalEnvironment.root], ["ATDD_WORKFLOW_SEAT", originalEnvironment.seat],
-    ["ATDD_FLOW_PI_SESSION", originalEnvironment.piSession], ["ATDD_FLOW_HERDR_SESSION", originalEnvironment.herdrSession],
-    ["ATDD_FLOW_HERDR_PANE", originalEnvironment.pane],
-  ] as const) { if (value === undefined) delete process.env[name]; else process.env[name] = value; }
 });
 
 async function taskFixture(lifecycle: Lifecycle) {
@@ -73,7 +63,6 @@ async function queueStaleMail() {
 }
 
 async function startPi(lifecycle: Lifecycle, staleMail = false) {
-  useEnvironment();
   await taskFixture(lifecycle);
   if (staleMail) await queueStaleMail();
   const sent: Sent[] = [];
@@ -85,7 +74,7 @@ async function startPi(lifecycle: Lifecycle, staleMail = false) {
       if (event === "session_shutdown") shutdown = listener as typeof shutdown;
     },
     sendMessage(message: Sent) { sent.push(message); },
-  } as never);
+  } as never, environment);
   await start?.({}, { hasUI: false });
   // Startup injects one action; the queued mail wake must not add a second copy while it is pending.
   for (let attempt = 0; attempt < 100 && sent.filter((message) => message.customType === "atdd-flow-mail").length < (staleMail ? 1 : 0); attempt += 1) {
