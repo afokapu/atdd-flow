@@ -169,8 +169,13 @@ export async function reconcileRotations(root: string, options: RotationDependen
   const results: RotationReport[] = [];
   for (const file of files.filter((entry) => entry.endsWith(".yaml")).sort()) {
     const path = join(directory(root), file);
-    const intent = Bun.YAML.parse(await readFile(path, "utf8")) as Intent;
-    results.push(await reconcileIntent(root, path, intent, options));
+    try {
+      const intent = Bun.YAML.parse(await readFile(path, "utf8")) as Intent;
+      results.push(await reconcileIntent(root, path, intent, options));
+    } catch (error) {
+      // One incomplete or malformed advisory record must not strand another seat.
+      results.push({ seat: file, outcome: "refused", detail: error instanceof Error ? error.message : String(error) });
+    }
   }
   return results;
 }
