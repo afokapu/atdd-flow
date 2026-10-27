@@ -28,9 +28,3 @@ jobs:
           jj version
       - name: Real colocated Jujutsu integration
         run: bun test tests/jj-vcs.integration.test.ts
-      - name: Temporary focused continuation proof
-        run: bun test tests/obligation-continuation.test.ts
-      - name: Temporary ATDD diagnostic
-        if: always()
-        continue-on-error: true
-        run: bun run atdd-bun all
