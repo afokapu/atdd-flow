@@ -76,8 +76,8 @@ export async function initProject(root: string, name: string) {
 const configureUsage = "Use `atdd-flow project configure <project> [--vcs <git|jj>] [--repository <primary-checkout>] [--worktree-root <directory>]`.";
 
 /**
- * The supported way to declare an existing project's primary checkout and linked-worktree root.
- * Everything is validated before one atomic write; only those two project fields change.
+ * The supported way to declare an existing project's VCS, primary checkout, and linked-worktree root.
+ * Everything is validated before one atomic write; no seat, task, runtime, branch/bookmark, or workspace is mutated.
  */
 type MigrationSeat = { folder: string; record: Seat };
 
