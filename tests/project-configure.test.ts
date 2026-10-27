@@ -87,6 +87,18 @@ test("RED: one misplaced seat is left unprojected without aborting projection of
   await expect(projectHerdrSeat(site, "coordinator@demo", "fake", reachedHerdr)).rejects.toThrow("mismatched placement");
 });
 
+test("project VCS cannot change after seats exist, while redeclaring the effective mode is harmless", async () => {
+  const { site, repository, worktrees, projectFile } = await fixture();
+  await run(site, "project", "configure", "demo", "--repository", repository, "--worktree-root", worktrees);
+  await run(site, "spawn", "demo", "main", "primary");
+  const before = await readFile(projectFile, "utf8");
+
+  expect(await fail(site, "project", "configure", "demo", "--vcs", "jj")).toContain("Project VCS cannot change from git to jj after seats exist.");
+  expect(await readFile(projectFile, "utf8")).toBe(before);
+
+  expect(await run(site, "project", "configure", "demo", "--vcs", "git")).toContain("demo  configured");
+});
+
 test("RED: project configure reports seats whose recorded placement violates the configured topology", async () => {
   const { root, site, repository, worktrees } = await fixture();
   await run(site, "spawn", "demo", "coordinator", "main", "--worktree", join(root, "stale-main-copy"));
