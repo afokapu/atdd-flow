@@ -450,7 +450,7 @@ export default function (pi: ExtensionAPI) {
     await sendSettledDirective(host, root, seat, notices);
   });
   pi.on("turn_end", async (_event, ctx) => {
-    if (handoverPrompted) return;
+    if (handoverPrompted || quotaRescueAt || rateLimited) return;
     const percent = ctx.getContextUsage()?.percent;
     if (percent === null || percent === undefined) return;
     try {
