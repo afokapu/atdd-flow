@@ -9,7 +9,7 @@ import { resolve, join } from "node:path";
 import { type Seat, atomicYaml, exists, paths, project, readYaml, runOutput } from "./core";
 import { notify } from "./adapters";
 import { type RuntimeState, isRuntimeStateStale, readRuntimeState, withOwnedRuntimeState } from "./runtime-state";
-import { add as addTask, type Task } from "./tasks";
+import { add as addTask, terminal, type Task } from "./tasks";
 
 export type MainRepairReport = { seat: string; task?: string; outcome: "reached" | "ready" | "cooldown" | "exhausted" | "unverified" | "failed" };
 export type MainRepairOptions = {
@@ -84,7 +84,7 @@ async function confirm(root: string, candidate: Candidate, inspect: NonNullable<
   const primary = (await project(root, candidate.seat.project)).repository;
   if (!primary || resolve(primary) !== resolve(candidate.seat.worktree)) return false;
   const agent = await inspect(candidate.herdr.session, candidate.herdr.pane, codeFor(candidate.seat.address));
-  const sessionId = agent.sessionPath.match(/_([0-9a-f-]{36})\.jsonl$/i)?.[1];
+  const sessionId = agent.sessionPath.match(/_([0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12})\.jsonl$/i)?.[1];
   return agent.name === codeFor(candidate.seat.address) && agent.pane === candidate.herdr.pane
     && resolve(agent.cwd) === resolve(candidate.seat.worktree) && sessionId === candidate.live.pi_session;
 }
@@ -95,7 +95,7 @@ async function repairTask(root: string, candidate: Candidate, id: string) {
   if (await exists(file)) {
     const current = await readYaml<Task>(file);
     return current.schema === "atdd-workflow/task/v1" && current.assignee === candidate.seat.address
-      && current.coordinator === candidate.seat.address && current.status !== "done" ? true : false;
+      && current.coordinator === candidate.seat.address && !terminal(current) ? true : false;
   }
   await addTask(root, candidate.seat.project, id, [
     "--title", "Repair externally restarted main Pi native mail",
@@ -112,7 +112,7 @@ async function repairTask(root: string, candidate: Candidate, id: string) {
 async function reservePrompt(root: string, candidate: Candidate, at: Date) {
   const file = memoPath(root, candidate);
   const previous = await readYaml<Memo>(file).catch(() => undefined);
-  if (previous?.count === 2) return "exhausted" as const;
+  if (previous && previous.count >= 2) return "exhausted" as const;
   if (previous && at.getTime() - Date.parse(previous.at) < 300_000) return "cooldown" as const;
   await atomicYaml(file, { schema: "atdd-flow/main-mail-repair-notice/v1", at: at.toISOString(),
     count: (previous?.count ?? 0) + 1 } satisfies Memo);
