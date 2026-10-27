@@ -15,6 +15,7 @@ import { isRuntimeStateStale, readRuntimeState } from "./runtime-state";
 import { resolveExactSessionAdoptionAuthorization } from "./adoption-authorizations";
 import { projectCollaborationPolicy } from "./collaboration-policy";
 import { assertReplacementTarget, replacementForMainLaunch } from "./handover";
+import { addWorkspace, assertBranchReady, assertRepository, branchCommit, branchExists, commitExists, isAncestor, rollbackWorkspace, vcsMode } from "./vcs";
 
 const lifecycleConventionPath = "conventions/atdd-workflow.workflow/atdd-workflow.workflow.lifecycle.convention.yaml";
 
@@ -72,7 +73,7 @@ export async function initProject(root: string, name: string) {
   console.log(`Initialized project ${name}`);
 }
 
-const configureUsage = "Use `atdd-flow project configure <project> [--repository <primary-checkout>] [--worktree-root <directory>]`.";
+const configureUsage = "Use `atdd-flow project configure <project> [--vcs <git|jj>] [--repository <primary-checkout>] [--worktree-root <directory>]`.";
 
 /**
  * The supported way to declare an existing project's primary checkout and linked-worktree root.
@@ -179,18 +180,22 @@ export async function configureProject(root: string, name: string, args: string[
   const values = new Map<string, string>();
   for (let index = 0; index < args.length; index += 2) {
     const flag = args[index], value = args[index + 1];
-    if (!["--repository", "--worktree-root"].includes(flag) || values.has(flag) || !value || value.startsWith("--")) throw new Error(configureUsage);
+    if (!["--vcs", "--repository", "--worktree-root"].includes(flag) || values.has(flag) || !value || value.startsWith("--")) throw new Error(configureUsage);
     values.set(flag, value);
   }
   if (!values.size) throw new Error(configureUsage);
+  const selectedVcs = values.get("--vcs");
+  if (selectedVcs && selectedVcs !== "git" && selectedVcs !== "jj") throw new Error(configureUsage);
+  const mode = (selectedVcs ?? vcsMode(config)) as "git" | "jj";
   const repository = values.get("--repository"), worktreeRoot = values.get("--worktree-root");
-  if (repository) {
-    const path = resolve(repository);
-    const real = (value: string) => { try { return realpathSync(value); } catch { return value; } };
-    const top = existsSync(path) ? Bun.spawnSync(["git", "-C", path, "rev-parse", "--show-toplevel"], { stdout: "pipe", stderr: "pipe" }) : undefined;
-    if (!top || top.exitCode !== 0 || real(top.stdout.toString().trim()) !== real(path)) throw new Error(`${path} is not the top level of a Git repository.`);
-    config.repository = path;
+  const repositoryPath = resolve(repository ?? config.repository ?? "");
+  if ((repository || selectedVcs) && !repositoryPath) throw new Error("Project repository is required before selecting a VCS.");
+  if (repository || selectedVcs) {
+    try { await assertRepository(mode, repositoryPath); }
+    catch (error) { throw new Error((error as Error).message); }
+    config.repository = repositoryPath;
   }
+  if (selectedVcs) config.vcs = mode;
   if (worktreeRoot) config.worktree_root = resolve(worktreeRoot);
   await atomicYaml(paths(root).projectFile(name), config);
   for (const entry of await misplacedSeats(root, name)) console.log(`unprojected  ${entry.address}: ${entry.reason}`);
@@ -200,18 +205,13 @@ export async function configureProject(root: string, name: string, args: string[
 async function ensureWorktree(config: Project, role: Role, worktree: string, branch: string) {
   if (!config.repository || worktree === resolve(config.repository) || await exists(worktree)) return;
   await mkdir(dirname(worktree), { recursive: true });
-  const ref = `refs/heads/${branch}`;
-  const probe = Bun.spawn(["git", "-C", config.repository, "show-ref", "--verify", "--quiet", ref]);
-  const branchExists = await probe.exited === 0;
-  const command = branchExists
-    ? ["git", "-C", config.repository, "worktree", "add", worktree, branch]
-    : ["git", "-C", config.repository, "worktree", "add", "-b", branch, worktree, role.base ?? "HEAD"];
-  await run(command, true);
+  await addWorkspace(vcsMode(config), config.repository, worktree, branch, role.base ?? "HEAD");
 }
 
 async function noBranch(config: Project, branch: string) {
-  const probe = Bun.spawn(["git", "-C", required(config.repository, "project repository"), "show-ref", "--verify", "--quiet", `refs/heads/${branch}`]);
-  if (await probe.exited === 0) throw new Error(`Driver branch ${branch} already exists; refusing to reuse it.`);
+  if (await branchExists(vcsMode(config), required(config.repository, "project repository"), branch)) {
+    throw new Error(`Driver branch ${branch} already exists; refusing to reuse it.`);
+  }
 }
 
 async function taskCoordinatorBase(root: string, config: Project, task: Task, requireCleanCheckout = true) {
@@ -236,16 +236,11 @@ async function taskCoordinatorBase(root: string, config: Project, task: Task, re
     throw new Error(`Task coordinator ${coordinator.address} must be main or a named coordinator.`);
   }
   if (coordinator.project !== config.project) throw new Error(`Task coordinator ${coordinator.address} is outside project ${config.project}.`);
-  const repository = required(config.repository, "project repository");
-  const branchHead = await runOutput(["git", "-C", repository, "rev-parse", branch]);
+  const mode = vcsMode(config);
+  const branchHead = await branchCommit(mode, coordinator.worktree, branch);
   if (!requireCleanCheckout) return { coordinator, branch, commit: branchHead };
-  if (await runOutput(["git", "-C", coordinator.worktree, "status", "--porcelain"])) {
-    throw new Error(`Coordinator ${coordinator.address} worktree is dirty.`);
-  }
-  const checkedOut = await runOutput(["git", "-C", coordinator.worktree, "branch", "--show-current"]);
-  if (checkedOut !== branch) throw new Error(`Coordinator ${coordinator.address} is not checked out at ${branch}.`);
-  const head = await runOutput(["git", "-C", coordinator.worktree, "rev-parse", "HEAD"]);
-  if (head !== branchHead) throw new Error(`Coordinator ${coordinator.address} head is stale relative to ${branch}.`);
+  try { await assertBranchReady(mode, coordinator.worktree, branch); }
+  catch (error) { throw new Error(`Coordinator ${coordinator.address} is not ready: ${(error as Error).message}`); }
   return { coordinator, branch, commit: branchHead };
 }
 
@@ -288,10 +283,9 @@ async function spawnTaskDriver(root: string, config: Project, role: Role, name: 
   const coordinatorBase = await taskCoordinatorBase(root, config, task, !baseArgument);
   let base = coordinatorBase;
   if (baseArgument) {
-    try { await runOutput(["git", "-C", required(config.repository, "project repository"), "cat-file", "-e", `${baseArgument}^{commit}`]); }
-    catch { throw new Error(`Explicit base ${baseArgument} does not exist locally in the configured repository.`); }
-    try { await run(["git", "-C", required(config.repository, "project repository"), "merge-base", "--is-ancestor", coordinatorBase.commit, baseArgument], true); }
-    catch { throw new Error(`Explicit base ${baseArgument} does not descend ${coordinatorBase.branch}.`); }
+    const repository = required(config.repository, "project repository");
+    if (!await commitExists(repository, baseArgument)) throw new Error(`Explicit base ${baseArgument} does not exist locally in the configured repository.`);
+    if (!await isAncestor(repository, coordinatorBase.commit, baseArgument)) throw new Error(`Explicit base ${baseArgument} does not descend ${coordinatorBase.branch}.`);
     base = { ...coordinatorBase, commit: baseArgument };
   }
   if (dryRun) {
@@ -311,23 +305,22 @@ async function spawnTaskDriver(root: string, config: Project, role: Role, name: 
   task.assignee = address;
   task.governed_base = { coordinator: base.coordinator.address, branch: base.branch, commit: base.commit };
   let created = false;
+  const mode = vcsMode(config);
+  const repository = required(config.repository, "project repository");
   try {
     await mkdir(dirname(worktree), { recursive: true });
-    await run(["git", "-C", required(config.repository, "project repository"), "worktree", "add", "-b", branch, worktree, base.commit], true);
+    await addWorkspace(mode, repository, worktree, branch, base.commit);
     created = true;
-    const currentBranch = await runOutput(["git", "-C", required(config.repository, "project repository"), "rev-parse", coordinatorBase.branch]);
+    const currentBranch = await branchCommit(mode, base.coordinator.worktree, coordinatorBase.branch);
     if (currentBranch !== coordinatorBase.commit) throw new Error(`Coordinator ${base.coordinator.address} advanced during driver provisioning.`);
     if (!baseArgument) {
-      const current = await runOutput(["git", "-C", base.coordinator.worktree, "rev-parse", "HEAD"]);
+      const current = await assertBranchReady(mode, base.coordinator.worktree, coordinatorBase.branch);
       if (current !== coordinatorBase.commit) throw new Error(`Coordinator ${base.coordinator.address} advanced during driver provisioning.`);
     }
     await atomicYaml(paths(root).seatFile(address), record);
     await atomicYaml(paths(root).taskFile(config.project, id), task);
   } catch (error) {
-    if (created) {
-      await run(["git", "-C", required(config.repository, "project repository"), "worktree", "remove", "--force", worktree], true).catch(() => undefined);
-      await run(["git", "-C", required(config.repository, "project repository"), "branch", "-D", branch], true).catch(() => undefined);
-    }
+    if (created) await rollbackWorkspace(mode, repository, worktree, branch);
     await rm(paths(root).seat(address), { recursive: true, force: true });
     throw error;
   }
