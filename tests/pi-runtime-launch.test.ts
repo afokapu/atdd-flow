@@ -6,6 +6,7 @@ import { atomicYaml, paths, readYaml } from "../src/core";
 import { launchPiRuntime } from "../src/seats";
 import { createExactSessionAdoptionAuthorization } from "../src/adoption-authorizations";
 import { block, unblock } from "../src/tasks";
+import { recordHandover, showHandover } from "../src/handover";
 
 const roots: string[] = [];
 const seat = "driver.runtime@demo";
@@ -479,4 +480,60 @@ test("dry-run reads installed reports only and does not write, start, or bind", 
   expect(herdr.calls).toHaveLength(5);
   expect(await Bun.file(plan.receipt).exists()).toBe(false);
   expect((await readYaml<Record<string, any>>(paths(root).seatFile(seat))).runtime).toBeUndefined();
+});
+
+// RED: operator@desk launch eligibility and the generated canonical relaunch command.
+const operatorSeat = "operator@desk";
+const operatorPrimary = "/work/desk-primary";
+const canonicalOperatorCommand = "atdd-flow pi runtime launch operator@desk --herdr-session forge";
+
+async function operatorDesk(change: Record<string, unknown> = {}, task?: Record<string, unknown>) {
+  const root = await desk();
+  await atomicYaml(paths(root).projectFile("desk"), { schema: "atdd-workflow/project/v1", project: "desk", repository: operatorPrimary, roles: { main: { address: "main@{project}", branch: "main", worktree: "{repository}" } } });
+  await atomicYaml(paths(root).seatFile(operatorSeat), { schema: "atdd-workflow/seat/v2", address: operatorSeat, role: "operator", project: "desk", worktree: operatorPrimary, branch: "main", ...change });
+  if (task) await atomicYaml(paths(root).taskFile("desk", "operate"), { schema: "atdd-workflow/task/v1", title: "Operate the Desk", status: "in_progress", coordinator: "main@desk", assignee: operatorSeat, done_when: [{ text: "Desk is operated." }], ...task });
+  return root;
+}
+const operatorHerdr = () => fakeHerdr({ seat: operatorSeat, primary: operatorPrimary, worktree: operatorPrimary });
+const launchOperator = (root: string, flags: string[] = ["--dry-run"]) => launchPiRuntime(root, operatorSeat, ["--herdr-session", "forge", ...flags], { select: selectEconomy, command: operatorHerdr().command, sessionId: () => sessionId });
+
+test("RED: the exact operator@desk seat launches through the supported launcher with no task", async () => {
+  await expect(launchOperator(await operatorDesk())).resolves.toMatchObject({ dryRun: true, piSession: sessionId });
+});
+
+test("RED: the exact operator@desk seat launches with an assigned in_progress task, which is currently refused", async () => {
+  await expect(launchOperator(await operatorDesk({}, {}))).resolves.toMatchObject({ dryRun: true });
+});
+
+test("RED: a live operator launch persists an immutable receipt, native binding, and the injected extension", async () => {
+  const root = await operatorDesk();
+  const herdr = operatorHerdr();
+  const plan = await launchPiRuntime(root, operatorSeat, ["--herdr-session", "forge"], { select: selectEconomy, command: herdr.command, sessionId: () => sessionId, at: () => "2026-10-27T15:00:00.000Z" });
+  const receipt = await readYaml<Record<string, unknown>>(plan.receipt);
+  expect(receipt).toMatchObject({ seat: operatorSeat, tasks: [], pi_session: sessionId, pane: "w1:p2" });
+  expect((await readYaml<any>(paths(root).seatFile(operatorSeat))).runtime).toMatchObject({ wake: "native", pi_session: sessionId, launch_receipt: plan.receipt });
+  expect(plan.command.join(" ")).toContain("--extension");
+});
+
+test("operator eligibility is exact: non-primary placement, other roles, and a driver without a task stay refused", async () => {
+  await expect(launchOperator(await operatorDesk({ worktree: "/work/elsewhere" }))).rejects.toThrow("no launch-eligible task");
+  await expect(launchOperator(await operatorDesk({ branch: "feature" }))).rejects.toThrow("no launch-eligible task");
+  await expect(launchOperator(await operatorDesk({ role: "driver" }))).rejects.toThrow("no launch-eligible task");
+  const root = await desk();
+  await rm(paths(root).taskFile("demo", "runtime"));
+  await expect(launchPiRuntime(root, seat, ["--pane", "w1:p2", "--herdr-session", "forge", "--dry-run"], { select: selectEconomy, command: fakeHerdr().command, sessionId: () => sessionId })).rejects.toThrow("no launch-eligible task");
+});
+
+test("RED: the launcher plan and pre-exit handover show carry the same generated canonical relaunch command", async () => {
+  const root = await operatorDesk();
+  expect(await launchOperator(root)).toMatchObject({ canonicalCommand: canonicalOperatorCommand });
+  const file = join(root, "handover.txt");
+  await writeFile(file, ["HANDOVER operator@desk | 2026-10-27T15:00:00Z | handover-id H-operator-1 | supersedes none", "Runtime: pi | s1 | model claude/opus | context 81%",
+    "1. SEAT, AUTHORITY, TOOLKIT AND HAZARDS", "x", "2. OPEN WORK AND IN-FLIGHT OPERATIONS", "x", "3. DEPENDENCIES", "x", "4. RESUME PROCEDURE AND NEXT ACTIONS", "x", ""].join("\n"));
+  await recordHandover(root, operatorSeat, ["--file", file]);
+  let shown = "";
+  const write = process.stdout.write.bind(process.stdout);
+  process.stdout.write = ((chunk: string | Uint8Array) => { shown += String(chunk); return true; }) as typeof process.stdout.write;
+  try { await showHandover(root, operatorSeat); } finally { process.stdout.write = write; }
+  expect(shown).toContain(canonicalOperatorCommand);
 });
