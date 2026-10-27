@@ -14,6 +14,7 @@ import { isRuntimeStateStale, readRuntimeState, withOwnedRuntimeState } from "./
 type Outcome = "woke" | "dry_run" | "cooldown" | "exhausted" | "inactive" | "unverified" | "busy" | "replaced" | "wake_failed";
 export type Reconciliation = { seat: string; task: string; outcome: Outcome };
 export type ReconcileOptions = {
+  skipSeats?: ReadonlySet<string>;
   now?: Date;
   dryRun?: boolean;
   cooldownMs?: number;
@@ -87,7 +88,7 @@ async function target(root: string, owner: Seat, directive: TaskDirective, at: D
   const locator = runtime?.addresses.herdr;
   if (runtime?.application !== "herdr" || !locator || typeof locator === "string") return;
   const active = await readRuntimeState(root, owner.address);
-  if (!active) return;
+  if (!active || active.handoff_only) return;
   if (isRuntimeStateStale(active, 60_000, at)) return;
   if (runtime.pi_session && active.pi_session !== runtime.pi_session) return;
   return { owner, directive, locator, token: active.owner_token };
@@ -144,6 +145,7 @@ export async function reconcileOnce(root: string, options: ReconcileOptions = {}
   const config = settings(options);
   const results: Reconciliation[] = [];
   for (const owner of await seats(root)) {
+    if (options.skipSeats?.has(owner.address)) continue;
     const result = await reconcileSeat(root, owner, config);
     if (result) results.push(result);
   }

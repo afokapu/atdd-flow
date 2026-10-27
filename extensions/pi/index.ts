@@ -10,6 +10,9 @@ import { type NoticeState, createNoticeState, refreshDelivered, sendSettledDirec
 import { handoverThresholdInstruction, runtimeStartupInstruction, successorInstruction } from "../../src/collaboration-policy";
 import { type RecoveryMode, recoveryFor } from "../../src/recovery-bundle";
 import { contextHandoverThreshold, readHandoverReplacement } from "../../src/handover";
+import { requestSessionRotation } from "../../src/session-rotation";
+import { markHandoffOnly } from "../../src/runtime-state";
+import { quotaHandoffInstruction, selectQuotaHandoffModel } from "../../src/quota-handoff";
 
 type Thread = { id?: unknown; participants?: unknown; subject?: unknown };
 export type Mail = { id?: unknown; from?: unknown; to?: unknown; subject?: unknown; created_at?: unknown };
@@ -372,6 +375,10 @@ export default function (pi: ExtensionAPI) {
   if (!root || !seat) return;
   let runtime: ReturnType<typeof createPiRuntime> | undefined;
   let handoverPrompted = false;
+  let thresholdAt: Date | undefined;
+  let rateLimited = false;
+  let quotaRescueAt: Date | undefined;
+  let quotaReminderSent = false;
   // Host-attach only: mail older than this activation is consumed without a prompt, so a long backlog cannot trigger one turn per message.
   let hostActivatedAt: number | undefined;
   const notices: NoticeState = createNoticeState();
@@ -381,10 +388,65 @@ export default function (pi: ExtensionAPI) {
     const message = await refreshDelivered(root, seat, notices, event.message as Parameters<typeof refreshDelivered>[3]);
     return message ? { message: message as typeof event.message } : undefined;
   });
-  // Nothing queued survives a settled run, so a pending flag left by a cleared queue cannot suppress future notices.
-  pi.on("agent_settled", async () => {
+  // A provider quota is not context exhaustion: it may arrive at any token usage.
+  // Pi already retries transient provider errors within its own bounded policy.
+  // Observe the final failure only; do not switch models during those retries.
+  // Do not parse ordinary assistant prose as proof of a quota failure.
+  // The fallback must already be configured in the authoritative Desk.
+  // A fresh session uses the previous source receipt and recovery evidence.
+  // The extension records intent but never launches a second writer itself.
+  // Main-seat replacement remains on its existing authorized Path-A.
+  // A host invocation of reconcile --once completes the released-seat takeover.
+  // No per-turn model selection, secondary inbox, or autonomous authority is added.
+  // A failed provider retry is distinguishable from a context handover threshold.
+  const quotaFailure = (value: unknown) => typeof value === "string"
+    && /\\b429\\b|rate[- ]limit|quota (?:exceeded|exhausted)|resource.?exhausted/i.test(value);
+  pi.on("auto_retry_end", (event) => {
+    if (event.success) rateLimited = false;
+    else if (quotaFailure(event.finalError)) rateLimited = true;
+  });
+  pi.on("turn_end", (event) => {
+    if (event.message?.stopReason === "error" && quotaFailure(event.message.errorMessage)) rateLimited = true;
+    else if (event.message?.stopReason !== "error") rateLimited = false;
+  });
+  // A validated handover or exhausted fallback is a handoff to the external
+  // reconciler; only that actor may launch once the old process is released.
+  pi.on("agent_settled", async (_event, ctx) => {
     notices.pending = false;
-    // Run completion is not task completion; one bounded continuation per unchanged directive.
+    const token = runtime?.ownerToken;
+    if (token && quotaRescueAt) {
+      if (await requestSessionRotation(root, seat, token, "rate_limit", quotaRescueAt).catch(() => false)) {
+        ctx.shutdown();
+        return;
+      }
+      if (!quotaReminderSent) {
+        quotaReminderSent = true;
+        pi.sendMessage({
+          customType: "atdd-flow-quota-handoff",
+          content: quotaHandoffInstruction(seat),
+          display: true, details: { seat, authority: "handover-only", reminder: true },
+        }, { triggerTurn: true, deliverAs: "followUp" });
+      }
+      return; // Never return a rescue model to ordinary task execution.
+    }
+    if (rateLimited) {
+      const switched = token && await selectQuotaHandoffModel(root, seat, ctx, pi).catch(() => false);
+      if (!switched || !token) return; // Never infer an available independent quota.
+      quotaRescueAt = new Date();
+      if (!(await markHandoffOnly(root, seat, token, quotaRescueAt.toISOString())).owned) return;
+      const bundle = await recovery(root, seat, "threshold", process.env.ATDD_FLOW_PI_SESSION);
+      pi.sendMessage({
+        customType: "atdd-flow-quota-handoff",
+        content: quotaHandoffInstruction(seat, bundle),
+        display: true, details: { seat, authority: "handover-only" },
+      }, { triggerTurn: true, deliverAs: "followUp" });
+      return;
+    }
+    if (token && thresholdAt && await requestSessionRotation(root, seat, token, "context", thresholdAt).catch(() => false)) {
+      ctx.shutdown();
+      return;
+    }
+    if (thresholdAt) return; // The source must finish its validated handover first.
     await sendSettledDirective(host, root, seat, notices);
   });
   pi.on("turn_end", async (_event, ctx) => {
@@ -395,6 +457,7 @@ export default function (pi: ExtensionAPI) {
       const threshold = await contextHandoverThreshold(root);
       if (percent < threshold) return;
       handoverPrompted = true;
+      thresholdAt = new Date();
       const bundle = await recovery(root, seat, "threshold", process.env.ATDD_FLOW_PI_SESSION);
       pi.sendMessage({
         customType: "atdd-flow-context-handover-replacement",

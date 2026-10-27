@@ -1,0 +1,8 @@
+urn: acc:flow:E015-UNIT-001
+phase: UNIT
+description: >-
+  A main Pi that was restarted outside Flow with the same exact Herdr pane,
+  worktree and seat but a new verified live session must receive a task-scoped
+  repair prompt directly through Herdr when its native mail cannot activate.
+  Repair is idempotent and bounded, never silently rewrites the seat binding,
+  invents owner authorization, or prompts mismatched or unverified processes.
