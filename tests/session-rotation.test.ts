@@ -6,7 +6,7 @@ import { afterEach, expect, test } from "bun:test";
 import { chmod, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { atomicYaml, paths } from "../src/core";
+import { atomicYaml, paths, readYaml } from "../src/core";
 import { clearRuntimeState, registerRuntimeState } from "../src/runtime-state";
 import { selectQuotaHandoffModel } from "../src/quota-handoff";
 import { requestSessionRotation, reconcileRotations } from "../src/session-rotation";
@@ -195,4 +195,27 @@ test("quota fallback is not considered an execution model or proof of independen
     model: { provider: "openai-codex", id: "gpt-6-luna" } } as never, host as never)).toBe(false);
   expect(await selectQuotaHandoffModel(root, address, { ...context,
     modelRegistry: { find() { return undefined; } } } as never, host as never)).toBe(false);
+});
+
+test("ordinary launch fallback cannot silently become the quota handoff model", async () => {
+  const root = await fixture();
+  const config = await readYaml<Record<string, any>>(paths(root).desk);
+  delete config.quota_handoff_model;
+  config.fallback_model = { driver: "standby" };
+  await atomicYaml(paths(root).desk, config);
+  const context = { model: { provider: "failed-provider", id: "active" },
+    modelRegistry: { find(provider: string, id: string) { return { provider, id }; } } };
+  const host = { async setModel() { throw new Error("must not switch"); } };
+  expect(await selectQuotaHandoffModel(root, address, context as never, host as never)).toBe(false);
+  await handover(root);
+  expect(await requestSessionRotation(root, address, token, "rate_limit", before)).toBe(false);
+});
+
+test("quota recovery refuses to execute work on its handoff-only fallback", async () => {
+  const root = await fixture();
+  const portfolio = await readYaml<Record<string, any>>(paths(root).models);
+  portfolio.models = portfolio.models.filter((model: { id: string }) => model.id !== "alternative");
+  await atomicYaml(paths(root).models, portfolio);
+  await handover(root);
+  expect(await requestSessionRotation(root, address, token, "rate_limit", before)).toBe(false);
 });
