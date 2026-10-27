@@ -1,0 +1,7 @@
+urn: acc:flow:E011-UNIT-001
+phase: UNIT
+description: >-
+  A Flow project may explicitly select a colocated Jujutsu repository without changing
+  the default Git path; coordinator and driver workspaces use JJ workspaces and bookmarks,
+  exact lineage remains Git-compatible, and a rewritten JJ working-copy revision is
+  reflected by the governed delivery bookmark.

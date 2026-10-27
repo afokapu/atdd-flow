@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { vcsMode } from "../src/vcs";
 import { parse, stringify } from "yaml";
 import { projectHerdrSeat } from "../src/multiplexer";
 
@@ -49,6 +50,11 @@ test("RED: project configure sets repository and worktree root so named coordina
   expect(await run(site, "spawn", "demo", "coordinator", "payments")).toBe("coordinator.payments@demo");
 });
 
+test("persisted project VCS fails closed on unsupported values", () => {
+  expect(vcsMode({ vcs: undefined })).toBe("git");
+  expect(() => vcsMode({ vcs: "fossil" as never })).toThrow("Unsupported project VCS: fossil");
+});
+
 test("RED: project configure fails closed for non-repository paths and malformed flags without changing the project", async () => {
   const { root, site, repository, worktrees, projectFile } = await fixture();
   const before = await readFile(projectFile, "utf8");
@@ -59,6 +65,8 @@ test("RED: project configure fails closed for non-repository paths and malformed
   expect(await fail(site, "project", "configure", "demo", "--repository", join(repository, "nested"))).toContain("is not the top level of a Git repository");
   expect(await fail(site, "project", "configure", "demo", "--repository", join(root, "missing"))).toContain("is not the top level of a Git repository");
   expect(await fail(site, "project", "configure", "demo", "--repo", repository)).toContain(usage);
+  expect(await fail(site, "project", "configure", "demo", "--vcs", "fossil")).toContain(usage);
+  expect(await fail(site, "project", "configure", "demo", "--vcs", "jj")).toContain("Project repository is required before selecting a VCS.");
   expect(await fail(site, "project", "configure", "demo", "--repository", repository, "--worktree-root", worktrees, "--force")).toContain(usage);
   expect(await fail(site, "project", "configure", "demo", "--repository")).toContain(usage);
   expect(await fail(site, "project", "configure", "demo", "--repository", repository, "--repository", repository)).toContain(usage);
@@ -77,6 +85,18 @@ test("RED: one misplaced seat is left unprojected without aborting projection of
   const reachedHerdr = async (): Promise<string> => { throw new Error("reached herdr"); };
   await expect(projectHerdrSeat(site, "coordinator.payments@demo", "fake", reachedHerdr)).rejects.toThrow("reached herdr");
   await expect(projectHerdrSeat(site, "coordinator@demo", "fake", reachedHerdr)).rejects.toThrow("mismatched placement");
+});
+
+test("project VCS cannot change after seats exist, while redeclaring the effective mode is harmless", async () => {
+  const { site, repository, worktrees, projectFile } = await fixture();
+  await run(site, "project", "configure", "demo", "--repository", repository, "--worktree-root", worktrees);
+  await run(site, "spawn", "demo", "main", "primary");
+  const before = await readFile(projectFile, "utf8");
+
+  expect(await fail(site, "project", "configure", "demo", "--vcs", "jj")).toContain("Project VCS cannot change from git to jj after seats exist.");
+  expect(await readFile(projectFile, "utf8")).toBe(before);
+
+  expect(await run(site, "project", "configure", "demo", "--vcs", "git")).toContain("demo  configured");
 });
 
 test("RED: project configure reports seats whose recorded placement violates the configured topology", async () => {

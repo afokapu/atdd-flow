@@ -3,6 +3,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import {
   type Checkpoint, type Seat, atomicYaml, canonicalAddress, exists, now, paths, project, readYaml, required, runOutput, seat, taskId, values, words,
 } from "./core";
+import { branchCommit, currentCommit, isAncestor, vcsMode, type VcsMode } from "./vcs";
 
 export type TaskStatus = "todo" | "in_progress" | "review" | "done" | "superseded" | "rejected";
 /** An optional, descriptive implementation phase; task status remains the lifecycle authority. */
@@ -124,15 +125,18 @@ async function governedBase(root: string, projectName: string, coordinatorAddres
 }
 
 /** The recorded branch when it resolves; otherwise the driver worktree HEAD; otherwise fail closed. */
-async function driverLineageRef(driver: Seat): Promise<LineageRef> {
-  const resolveRef = (ref: string) => runOutput(["git", "-C", driver.worktree, "rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
-  try { return { ref: driver.branch, commit: await resolveRef(driver.branch) }; }
+async function driverLineageRef(mode: VcsMode, driver: Seat): Promise<LineageRef> {
+  try { return { ref: driver.branch, commit: await branchCommit(mode, driver.worktree, driver.branch) }; }
   catch {
     if (!await exists(driver.worktree)) {
       throw new Error(`Driver ${driver.address} branch ${driver.branch} no longer resolves and its worktree ${driver.worktree} is missing; cannot verify lineage.`);
     }
-    try { return { ref: "HEAD", commit: await resolveRef("HEAD"), reason: `recorded branch ${driver.branch} no longer resolves; used worktree HEAD` }; }
-    catch { throw new Error(`Driver ${driver.address} branch ${driver.branch} no longer resolves and worktree ${driver.worktree} has no valid HEAD.`); }
+    try {
+      const commit = await currentCommit(mode, driver.worktree);
+      return { ref: mode === "git" ? "HEAD" : "@", commit, reason: `recorded branch ${driver.branch} no longer resolves; used worktree ${mode === "git" ? "HEAD" : "@"}` };
+    } catch {
+      throw new Error(`Driver ${driver.address} branch ${driver.branch} no longer resolves and worktree ${driver.worktree} has no valid current revision.`);
+    }
   }
 }
 
@@ -165,10 +169,10 @@ async function governedLineage(root: string, projectName: string, coordinatorAdd
   } else {
     throw new Error(`Task coordinator ${coordinator.address} must be main or a named coordinator.`);
   }
-  const commit = await runOutput(["git", "-C", coordinator.worktree, "rev-parse", branch]);
-  const lineage = await driverLineageRef(driver);
-  const common = await runOutput(["git", "-C", driver.worktree, "merge-base", commit, lineage.commit]);
-  if (common !== commit) throw new Error(`Driver ${driver.address} is not based on the exact coordinator head ${commit}.`);
+  const mode = vcsMode(config);
+  const commit = await branchCommit(mode, coordinator.worktree, branch);
+  const lineage = await driverLineageRef(mode, driver);
+  if (!await isAncestor(driver.worktree, commit, lineage.commit)) throw new Error(`Driver ${driver.address} is not based on the exact coordinator head ${commit}.`);
   return { base: { coordinator: coordinator.address, branch, commit }, lineage };
 }
 
@@ -248,7 +252,7 @@ async function retireDriver(root: string, projectName: string, assignee: string,
   if (owner.retired) throw new Error(`Seat ${assignee} is already retired.`);
   try {
     const summary = (allowAbsentWorktree ? await absentUnregisteredWorktree(root, projectName, owner) : undefined)
-      ?? await runOutput([...await retirementBun(root, projectName), "worktree", "finish", "--delete-branch"], owner.worktree);
+      ?? await runOutput([...await retirementBun(root, projectName), "worktree", "finish", "--delete-branch", "--vcs", vcsMode(await project(root, projectName))], owner.worktree);
     owner.retired = { task: `${projectName}/${id}`, completed_at: now(), summary };
     await atomicYaml(paths(root).seatFile(assignee), owner);
     const checkpoint: Checkpoint = {
