@@ -186,7 +186,11 @@ export async function configureProject(root: string, name: string, args: string[
   if (!values.size) throw new Error(configureUsage);
   const selectedVcs = values.get("--vcs");
   if (selectedVcs && selectedVcs !== "git" && selectedVcs !== "jj") throw new Error(configureUsage);
-  const mode = (selectedVcs ?? vcsMode(config)) as "git" | "jj";
+  const currentMode = vcsMode(config);
+  const mode = (selectedVcs ?? currentMode) as "git" | "jj";
+  if (selectedVcs && selectedVcs !== currentMode && (await migrationSeats(root, config)).length) {
+    throw new Error(`Project VCS cannot change from ${currentMode} to ${selectedVcs} after seats exist.`);
+  }
   const repository = values.get("--repository"), worktreeRoot = values.get("--worktree-root");
   const configuredRepository = repository ?? config.repository;
   if (selectedVcs && !configuredRepository) throw new Error("Project repository is required before selecting a VCS.");
