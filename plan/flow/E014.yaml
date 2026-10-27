@@ -1,0 +1,9 @@
+urn: acc:flow:E014-UNIT-001
+phase: UNIT
+description: >-
+  A live driver or coordinator may request a bounded fresh Pi session after a
+  validated context handover or an exhausted rate limit with an explicitly
+  configured different fallback model. The existing runtime must release first.
+  A reconciler uses the canonical seat, receipt, and launch guard to start a
+  replacement without Jev, while main Path-A authorization, task ownership,
+  and native Desk mail remain unchanged.
