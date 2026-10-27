@@ -21,6 +21,7 @@ import * as ownerAlerts from "./owner-escalations";
 import { recoveryFor } from "./recovery-bundle";
 import { reconcileOnce } from "./reconcile";
 import { reconcileRotations } from "./session-rotation";
+import { reconcileMainMailRepairs } from "./main-mail-repair";
 import { recordHandover, requestHandoverReplacement, resumedHandoverReplacement, showHandover } from "./handover";
 import { migrateProjectVcs } from "./vcs-migration";
 
@@ -178,9 +179,11 @@ async function main() {
       const dryRun = rest.includes("--dry-run");
       const rotations = await reconcileRotations(root, { dryRun });
       const continued = await reconcileOnce(root, { dryRun, skipSeats: new Set(rotations.filter((entry) => entry.outcome !== "stale").map((entry) => entry.seat)) });
+      const repairs = await reconcileMainMailRepairs(root, { dryRun });
       process.stdout.write(Bun.YAML.stringify([
         ...rotations.map((entry) => ({ seat: entry.seat, task: "runtime", outcome: entry.outcome,
           ...(entry.detail ? { detail: entry.detail } : {}) })), ...continued,
+        ...repairs.map((entry) => ({ ...entry, task: entry.task ?? "runtime" })),
       ]));
       return;
     },
