@@ -177,7 +177,7 @@ async function main() {
         throw new Error("Use `atdd-flow reconcile --once [--dry-run]`.");
       const dryRun = rest.includes("--dry-run");
       const rotations = await reconcileRotations(root, { dryRun });
-      const continued = await reconcileOnce(root, { dryRun, skipSeats: new Set(rotations.map((entry) => entry.seat)) });
+      const continued = await reconcileOnce(root, { dryRun, skipSeats: new Set(rotations.filter((entry) => entry.outcome !== "stale").map((entry) => entry.seat)) });
       process.stdout.write(Bun.YAML.stringify([
         ...rotations.map((entry) => ({ seat: entry.seat, task: "runtime", outcome: entry.outcome,
           ...(entry.detail ? { detail: entry.detail } : {}) })), ...continued,
