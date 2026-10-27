@@ -28,7 +28,9 @@ import { run, runOutput } from "./core";
 export type VcsMode = "git" | "jj";
 
 export function vcsMode(config: Pick<Project, "vcs">): VcsMode {
-  return config.vcs ?? "git";
+  const mode = config.vcs ?? "git";
+  if (mode !== "git" && mode !== "jj") throw new Error(`Unsupported project VCS: ${String(mode)}`);
+  return mode;
 }
 
 export function workspaceName(branch: string) {
