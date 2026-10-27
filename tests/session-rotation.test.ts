@@ -143,7 +143,7 @@ test("Pi reacts to exhausted quota by releasing its seat, never by relaunching",
     "await emit('agent_settled', { aborted: false }, { shutdown: () => { shutdown += 1; } });",
     "process.stdout.write(JSON.stringify({ shutdown }));",
     "await emit('session_shutdown', {});",
-  ].join("\\n");
+  ].join("\n");
   const runner = join(root, "simulate-pi.ts");
   await writeFile(runner, script);
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
