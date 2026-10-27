@@ -2,6 +2,7 @@
 // Tested-By:
 // - test:flow:jj-vcs-migration:E013-UNIT-001
 // - test:flow:jj-vcs-migration:E014-UNIT-001
+// - test:flow:jj-vcs-migration:E017-UNIT-001
 // Runtime: bun
 // Purpose: Migrate one legacy Flow Git project to colocated JJ without losing lineage.
 //
@@ -21,7 +22,7 @@
 // state from a partial JJ conversion. The durable project VCS is written last.
 
 import { lstat, readFile, readdir, readlink, realpath, rename, rm, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, normalize, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import {
   type Project, type Seat, atomicYaml, exists, paths, project, readYaml, required, yaml,
@@ -37,12 +38,17 @@ type ReviewsLite = { attempts?: Array<{ delivery_head?: string }> };
 /** JJ silently skips new files above this size (snapshot.max-new-file-size default). */
 const SNAPSHOT_MAX_NEW_FILE_BYTES = 1048576;
 const DIRTY_PRIMARY_FLAG = "--allow-dirty-primary";
+const RETAIN_LARGE_FLAG = "--retain-large-primary-file";
+const USAGE = `Use \`atdd-flow project migrate-vcs <project> --to jj [--allow-dirty-primary [${RETAIN_LARGE_FLAG} <path>:<sha256>:<bytes>:<mode> ...]] [--dry-run]\`.`;
+
+/** One operator-authorized over-limit primary file, matched against disk exactly. */
+type LargeFile = { path: string; sha256: string; bytes: number; mode: string };
 
 type DiskState =
   | { kind: "absent" }
   | { kind: "file"; sha256: string; exec: boolean }
   | { kind: "symlink"; target: string };
-type DirtyEntry = { path: string; status: string; disk: DiskState };
+type DirtyEntry = { path: string; status: string; disk: DiskState; retained?: LargeFile };
 
 export type VcsMigrationPlan = {
   schema: "atdd-flow/vcs-migration-plan/v1";
@@ -53,6 +59,7 @@ export type VcsMigrationPlan = {
   workspaces: SeatState[];
   lineage: { tasks_checked: number; reviews_checked: number };
   dirty_primary?: { entries: Array<{ path: string; status: string }> };
+  large_primary?: LargeFile[];
 };
 
 type PreparedMigration = {
@@ -63,6 +70,31 @@ type PreparedMigration = {
   dirty: DirtyEntry[];
   index: Buffer | null;
 };
+
+/** Parse `<path>:<sha256>:<bytes>:<mode>` from the right so the path alone may contain colons. */
+function parseLargeFile(spec: string): LargeFile {
+  const match = spec.match(/^(.+):([0-9a-f]{64}):(\d+):([0-7]{4})$/);
+  if (!match) throw new Error(`${RETAIN_LARGE_FLAG} expects <path>:<sha256>:<bytes>:<mode> (lowercase 64-hex sha256, decimal bytes, four-digit octal mode); got ${spec}.`);
+  const [, path, sha256, bytes, mode] = match as unknown as [string, string, string, string, string];
+  if (isAbsolute(path) || path.split("/").includes("..") || normalize(path) !== path || path.endsWith("/")) {
+    throw new Error(`${RETAIN_LARGE_FLAG} path must be a normalized repository-relative path with no '..' (outside the primary checkout is refused): ${path}`);
+  }
+  return { path, sha256, bytes: Number(bytes), mode };
+}
+
+/** Every authorization must name a path that is actually dirty in the primary checkout. */
+function assertAuthorizationsDirty(authorized: LargeFile[], dirty: DirtyEntry[]) {
+  for (const auth of authorized) {
+    if (!dirty.some(entry => entry.path === auth.path)) throw new Error(`Authorized large file ${auth.path} is not a dirty primary path (it does not exist or is unchanged).`);
+  }
+}
+
+/** Compare one over-limit new file with its authorization; every field must match exactly. */
+function assertAuthorizedLarge(auth: LargeFile, size: number, mode: string, sha256: string) {
+  if (size !== auth.bytes) throw new Error(`Authorized large file ${auth.path} is ${size} bytes on disk, not the authorized ${auth.bytes} bytes.`);
+  if (sha256 !== auth.sha256) throw new Error(`Authorized large file ${auth.path} sha256 ${sha256} does not match the authorized sha256 ${auth.sha256}.`);
+  if (mode !== auth.mode) throw new Error(`Authorized large file ${auth.path} has mode ${mode} on disk, not the authorized mode ${auth.mode}.`);
+}
 
 /** Run one external VCS command without throwing so rollback can inspect failures. */
 async function command(cwd: string, executable: string, args: string[]): Promise<CommandResult> {
@@ -123,30 +155,48 @@ async function diskState(worktree: string, path: string): Promise<DiskState> {
   return { kind: "file", sha256, exec: (info.mode & 0o111) !== 0 };
 }
 
+/** Classify one dirty path: retained exactly, plain, or an unauthorized over-limit refusal. */
+async function classifyDirty(worktree: string, flags: string, path: string, authorized: LargeFile[]) {
+  const disk = await diskState(worktree, path);
+  const auth = authorized.find(item => item.path === path);
+  const info = disk.kind === "file" ? await lstat(join(worktree, path)) : null;
+  const isNew = flags.includes("?") || flags.includes("A");
+  const overLimit = isNew && info !== null && info.size > SNAPSHOT_MAX_NEW_FILE_BYTES;
+  const entry: DirtyEntry = { path, status: flags, disk };
+  if (auth) {
+    if (!overLimit || disk.kind !== "file" || !info) {
+      throw new Error(`Authorized file ${path} does not exceed the JJ snapshot size limit of ${SNAPSHOT_MAX_NEW_FILE_BYTES} bytes as a new regular file; the authorization is refused.`);
+    }
+    assertAuthorizedLarge(auth, info.size, (info.mode & 0o777).toString(8).padStart(4, "0"), disk.sha256);
+    entry.retained = auth;
+  }
+  const refusal = overLimit && !auth
+    ? `Dirty primary file ${path} (${info!.size} bytes) exceeds the JJ snapshot size limit of ${SNAPSHOT_MAX_NEW_FILE_BYTES} bytes and would not be retained; commit it, move it, ignore it, or authorize it exactly with ${RETAIN_LARGE_FLAG}.`
+    : undefined;
+  return { entry, refusal };
+}
+
 /** Capture the primary's uncommitted paths read-only, refusing anything JJ would drop. */
-async function captureDirtyPrimary(worktree: string): Promise<DirtyEntry[]> {
+async function captureDirtyPrimary(worktree: string, authorized: LargeFile[]): Promise<DirtyEntry[]> {
   // Raw, untrimmed: the first record's leading status space is significant.
   const status = await Bun.spawn(["git", "status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames"], { cwd: worktree, stdout: "pipe", stderr: "pipe" });
   const [raw, failure, code] = await Promise.all([new Response(status.stdout).text(), new Response(status.stderr).text(), status.exited]);
   if (code !== 0) throw new Error(`git status failed: ${failure.trim()}`);
   const entries: DirtyEntry[] = [];
+  const refused: string[] = [];
   for (const record of raw.split("\0").filter(Boolean)) {
-    const flags = record.slice(0, 2), path = record.slice(3);
-    const disk = await diskState(worktree, path);
-    const isNew = flags.includes("?") || flags.includes("A");
-    if (isNew && disk.kind === "file") {
-      const size = (await lstat(join(worktree, path))).size;
-      if (size > SNAPSHOT_MAX_NEW_FILE_BYTES) {
-        throw new Error(`Dirty primary file ${path} (${size} bytes) exceeds the JJ snapshot size limit of ${SNAPSHOT_MAX_NEW_FILE_BYTES} bytes and would not be retained; commit it, move it, or ignore it first.`);
-      }
-    }
-    entries.push({ path, status: flags, disk });
+    const { entry, refusal } = await classifyDirty(worktree, record.slice(0, 2), record.slice(3), authorized);
+    entries.push(entry);
+    if (refusal) refused.push(refusal);
   }
+  // Report a stale authorization before an unauthorized file so the operator fixes the spec first.
+  assertAuthorizationsDirty(authorized, entries);
+  if (refused.length) throw new Error(refused[0]!);
   return entries;
 }
 
 /** Capture the exact clean Git tuple that migration must preserve or parent. */
-async function inspectSeat(repository: string, record: Seat, allowDirtyPrimary: boolean): Promise<{ state: SeatState; dirty: DirtyEntry[] }> {
+async function inspectSeat(repository: string, record: Seat, allowDirtyPrimary: boolean, authorized: LargeFile[]): Promise<{ state: SeatState; dirty: DirtyEntry[] }> {
   const worktree = await realpath(resolve(record.worktree)).catch(() => null);
   if (!worktree) throw new Error(`Seat ${record.address} worktree does not exist: ${record.worktree}`);
   const top = await realpath(await output(worktree, "git", ["rev-parse", "--show-toplevel"]));
@@ -156,7 +206,7 @@ async function inspectSeat(repository: string, record: Seat, allowDirtyPrimary: 
   if (await output(worktree, "git", ["status", "--porcelain"])) {
     if (!primary) throw new Error(`Seat ${record.address} worktree is dirty: ${worktree}`);
     if (!allowDirtyPrimary) throw new Error(`Seat ${record.address} worktree is dirty: ${worktree}. Pass ${DIRTY_PRIMARY_FLAG} to retain the primary checkout's uncommitted changes as JJ working-copy state.`);
-    dirty = await captureDirtyPrimary(worktree);
+    dirty = await captureDirtyPrimary(worktree, authorized);
   }
   const branch = await output(worktree, "git", ["branch", "--show-current"]);
   if (branch !== record.branch) throw new Error(`Seat ${record.address} is checked out at ${branch || "detached HEAD"}, not ${record.branch}.`);
@@ -249,7 +299,7 @@ async function assertLineage(root: string, name: string, repository: string, sta
 }
 
 /** Build the complete deterministic migration plan before creating .jj metadata. */
-async function prepare(root: string, name: string, allowDirtyPrimary: boolean): Promise<PreparedMigration> {
+async function prepare(root: string, name: string, allowDirtyPrimary: boolean, authorized: LargeFile[]): Promise<PreparedMigration> {
   const config = await project(root, name);
   if (vcsMode(config) !== "git") throw new Error(`Project ${name} is not a Git project.`);
   const repository = await realpath(resolve(required(config.repository, `project ${name} repository`))).catch(() => null);
@@ -259,9 +309,10 @@ async function prepare(root: string, name: string, allowDirtyPrimary: boolean): 
   await assertToolVersions(repository);
   const records = await activeSeats(root, name);
   if (!records.length) throw new Error("Project has no active seats; configure vcs: jj directly before creating seats.");
-  const inspected = await Promise.all(records.map(record => inspectSeat(repository, record, allowDirtyPrimary)));
+  const inspected = await Promise.all(records.map(record => inspectSeat(repository, record, allowDirtyPrimary, authorized)));
   const states = inspected.map(entry => entry.state);
   const dirty = inspected.flatMap(entry => entry.dirty);
+  assertAuthorizationsDirty(authorized, dirty);
   const primary = states.filter(state => state.primary);
   if (primary.length !== 1) throw new Error(`Migration requires exactly one active seat in the primary checkout; found ${primary.length}.`);
   if (new Set(states.map(state => state.worktree)).size !== states.length) throw new Error("Active Flow seats must have distinct worktree paths before migration.");
@@ -272,6 +323,8 @@ async function prepare(root: string, name: string, allowDirtyPrimary: boolean): 
   const index = await readIndex(repository);
   const plan: VcsMigrationPlan = { schema: "atdd-flow/vcs-migration-plan/v1", project: name, from: "git", to: "jj", primary: primary[0]!, workspaces, lineage };
   if (dirty.length) plan.dirty_primary = { entries: dirty.map(({ path, status }) => ({ path, status })) };
+  const large = dirty.flatMap(entry => entry.retained ? [entry.retained] : []);
+  if (large.length) plan.large_primary = large;
   return { config, repository, states, plan, dirty, index };
 }
 
@@ -309,6 +362,17 @@ async function verifyDirtyPath(state: SeatState, head: string, entry: DirtyEntry
   const found = await treeEntry(state, head, entry.path);
   const retained = entry.disk.kind === "absent" ? found === null : found !== null && await entryMatches(state, entry, found);
   if (!retained) throw new Error(`Primary path ${entry.path} was not retained exactly in the JJ working copy.`);
+  if (entry.retained) await verifyLargeBlob(state, head, entry.retained);
+}
+
+/** Hash-preservation: the bytes stored in the JJ working-copy commit equal the authorization. */
+async function verifyLargeBlob(state: SeatState, head: string, auth: LargeFile) {
+  const child = Bun.spawn(["git", "cat-file", "blob", `${head}:${auth.path}`], { cwd: state.worktree, stdout: "pipe", stderr: "pipe" });
+  const [bytes, code] = await Promise.all([new Response(child.stdout).arrayBuffer(), child.exited]);
+  const digest = createHash("sha256").update(new Uint8Array(bytes)).digest("hex");
+  if (code !== 0 || bytes.byteLength !== auth.bytes || digest !== auth.sha256) {
+    throw new Error(`Authorized large file ${auth.path} in the JJ working copy does not match the authorized sha256 ${auth.sha256} and ${auth.bytes} bytes.`);
+  }
 }
 
 /** A dirty primary must be exactly `main` plus the captured manifest, nothing more. */
@@ -399,35 +463,63 @@ async function rollback(repository: string, primary: SeatState, displaced: SeatS
   for (const state of [...displaced].reverse()) await removePartialWorkspace(repository, state);
   await rm(join(repository, ".jj"), { recursive: true, force: true }).catch(error => errors.push(String(error)));
   await removeJjRefs(repository).catch(error => errors.push(String(error)));
-  const switched = await command(repository, "git", ["switch", primary.branch]);
-  if (switched.code) errors.push(switched.err || switched.out);
+  // Skip the switch when HEAD already names the branch so rollback adds no HEAD reflog entry.
+  const onBranch = await command(repository, "git", ["symbolic-ref", "-q", "HEAD"]);
+  if (onBranch.out !== `refs/heads/${primary.branch}`) {
+    const switched = await command(repository, "git", ["switch", primary.branch]);
+    if (switched.code) errors.push(switched.err || switched.out);
+  }
   for (const state of displaced) errors.push(...await restoreGitWorkspace(repository, state));
   await restoreIndex(repository, index).catch(error => errors.push(String(error)));
   return errors;
 }
 
-/** Accept exactly `--to jj` plus at most one each of the known flags. */
+/** Require exactly one `--to jj` pair and return the remaining arguments. */
+function withoutTarget(args: string[]) {
+  const toIndex = args.indexOf("--to");
+  const valid = toIndex >= 0 && args[toIndex + 1] === "jj" && args.filter(arg => arg === "--to").length === 1;
+  if (!valid) throw new Error(USAGE);
+  return args.filter((_arg, index) => index !== toIndex && index !== toIndex + 1);
+}
+
+/** Parse the value after one `--retain-large-primary-file`, refusing duplicates. */
+function parseRetainValue(value: string | undefined, authorized: LargeFile[]) {
+  if (value === undefined || value.startsWith("--")) throw new Error(USAGE);
+  const file = parseLargeFile(value);
+  if (authorized.some(item => item.path === file.path)) throw new Error(`${RETAIN_LARGE_FLAG} names ${file.path} more than once (duplicate authorization).`);
+  return file;
+}
+
+/** Accept exactly `--to jj`, at most one each of the known flags, and any number of distinct file authorizations. */
 function parseMigrationArgs(args: string[]) {
-  const toIndex = args.indexOf("--to"), to = toIndex < 0 ? undefined : args[toIndex + 1];
-  const flags = ["--dry-run", DIRTY_PRIMARY_FLAG];
-  const rest = args.filter((_arg, index) => index !== toIndex && index !== toIndex + 1);
-  const valid = toIndex >= 0 && to === "jj"
-    && args.filter(arg => arg === "--to").length === 1
-    && rest.every(arg => flags.includes(arg))
-    && new Set(rest).size === rest.length;
-  if (!valid) throw new Error("Use `atdd-flow project migrate-vcs <project> --to jj [--allow-dirty-primary] [--dry-run]`.");
-  return { dryRun: rest.includes("--dry-run"), allowDirtyPrimary: rest.includes(DIRTY_PRIMARY_FLAG) };
+  const rest = withoutTarget(args);
+  const flags = new Set<string>();
+  const authorized: LargeFile[] = [];
+  for (let index = 0; index < rest.length; index += 1) {
+    const arg = rest[index]!;
+    if (arg === RETAIN_LARGE_FLAG) {
+      authorized.push(parseRetainValue(rest[index + 1], authorized));
+      index += 1;
+    } else if (["--dry-run", DIRTY_PRIMARY_FLAG].includes(arg) && !flags.has(arg)) flags.add(arg);
+    else throw new Error(USAGE);
+  }
+  if (authorized.length && !flags.has(DIRTY_PRIMARY_FLAG)) throw new Error(`${RETAIN_LARGE_FLAG} requires ${DIRTY_PRIMARY_FLAG}.`);
+  return { dryRun: flags.has("--dry-run"), allowDirtyPrimary: flags.has(DIRTY_PRIMARY_FLAG), authorized };
 }
 
 /** Execute the only supported legacy conversion: Git project to colocated JJ. */
 export async function migrateProjectVcs(root: string, name: string, args: string[]) {
-  const { dryRun, allowDirtyPrimary } = parseMigrationArgs(args);
-  const prepared = await prepare(root, name, allowDirtyPrimary);
+  const { dryRun, allowDirtyPrimary, authorized } = parseMigrationArgs(args);
+  const prepared = await prepare(root, name, allowDirtyPrimary, authorized);
   if (dryRun) { process.stdout.write(yaml.print(prepared.plan)); return; }
 
   const displaced: SeatState[] = [];
   try {
-    await output(prepared.repository, "jj", ["git", "init", "--colocate"]);
+    // The raised snapshot limit is scoped to this one command and equals the largest authorized file;
+    // preflight proved every over-limit new file is authorized and verification rejects any extra path.
+    const limit = Math.max(0, ...(prepared.plan.large_primary ?? []).map(file => file.bytes));
+    const config = limit > SNAPSHOT_MAX_NEW_FILE_BYTES ? [`--config=snapshot.max-new-file-size=${limit}`] : [];
+    await output(prepared.repository, "jj", [...config, "git", "init", "--colocate"]);
     await assertRepository("jj", prepared.repository);
     await verifyPrimary(prepared.plan.primary, prepared.dirty);
     for (const state of prepared.plan.workspaces) {

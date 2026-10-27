@@ -115,7 +115,8 @@ async function gitHistory(repository: string) {
     head: await exec(repository, "git", "symbolic-ref", "HEAD"),
     main: await exec(repository, "git", "rev-parse", "refs/heads/main"),
     commits: await exec(repository, "git", "rev-list", "--count", "refs/heads/main"),
-    branches: await exec(repository, "git", "for-each-ref", "--format=%(refname) %(objectname)", "refs/heads", "refs/tags"),
+    // Secondary branches intentionally gain a JJ working-copy anchor child; main and tags must not move.
+    refs: await exec(repository, "git", "for-each-ref", "--format=%(refname) %(objectname)", "refs/heads/main", "refs/tags"),
     reflog: await exec(repository, "git", "reflog", "--format=%H %gs"),
     stash: await exec(repository, "git", "stash", "list"),
   };
