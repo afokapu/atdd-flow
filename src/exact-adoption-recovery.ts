@@ -10,6 +10,7 @@ import { basename, join, resolve } from "node:path";
 import { type Seat, paths, readYaml, yaml } from "./core";
 import type { HandoverReplacementRequest } from "./handover";
 import { readRuntimeState } from "./runtime-state";
+import { archivedReceiptMatches, recoveryEvidenceMatches } from "./stale-main-recovery";
 import type { Task } from "./tasks";
 
 type ReplacementLaunchReceipt = {
@@ -90,6 +91,9 @@ function validConsumedRequest(request: HandoverReplacementRequest, seat: string)
 
 /** Rebuild and compare every archived supersession byte and identity. */
 async function exactArchiveMatches(request: HandoverReplacementRequest) {
+  // Stale-main recovery proves its evidence by the hash-archived stale receipt, not a consumed request.
+  const recovery = request.stale_main_recovery;
+  if (recovery) return recoveryEvidenceMatches(request, recovery) && await archivedReceiptMatches(request, recovery);
   const proof = request.supersession;
   if (!proof) return false;
   try {
@@ -147,7 +151,7 @@ async function uniqueAdoptionReceipt(root: string, authorizationId: string, expe
 function exactAdoptionRuntimeMatches(record: Seat, request: HandoverReplacementRequest) {
   const runtime = record.runtime, locator = runtime?.addresses.herdr;
   const observed = {
-    supersession: Boolean(request.supersession), application: runtime?.application, wake: runtime?.wake,
+    supersession: Boolean(request.supersession || request.stale_main_recovery), application: runtime?.application, wake: runtime?.wake,
     session: runtime?.pi_session, sessionPath: runtime?.pi_session_path,
     herdrSession: typeof locator === "string" ? undefined : locator?.session,
     pane: typeof locator === "string" ? undefined : locator?.pane,

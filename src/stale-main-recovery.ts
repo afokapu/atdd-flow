@@ -1,6 +1,7 @@
 // URN: component:flow:e021:stale-main-recovery:backend:integration
 // Tested-By:
 // - test:atdd-flow:stale-main-binding-recovery
+// - test:atdd-flow:stale-main-recovery-resumed
 // Runtime: bun
 // Purpose: Evidence rules for operator-authorized stale-main Pi binding recovery.
 
