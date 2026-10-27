@@ -44,6 +44,8 @@ type LegacyCoordination = { schema: "atdd-workflow/coordination/v2"; site: strin
 export type Project = {
   schema: string;
   project: string;
+  /** Repository VCS. Omitted preserves the historical Git behavior. */
+  vcs?: "git" | "jj";
   repository?: string;
   worktree_root?: string;
   roles: Record<string, Role>;
