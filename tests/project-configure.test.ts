@@ -59,6 +59,8 @@ test("RED: project configure fails closed for non-repository paths and malformed
   expect(await fail(site, "project", "configure", "demo", "--repository", join(repository, "nested"))).toContain("is not the top level of a Git repository");
   expect(await fail(site, "project", "configure", "demo", "--repository", join(root, "missing"))).toContain("is not the top level of a Git repository");
   expect(await fail(site, "project", "configure", "demo", "--repo", repository)).toContain(usage);
+  expect(await fail(site, "project", "configure", "demo", "--vcs", "fossil")).toContain(usage);
+  expect(await fail(site, "project", "configure", "demo", "--vcs", "jj")).toContain("Project repository is required before selecting a VCS.");
   expect(await fail(site, "project", "configure", "demo", "--repository", repository, "--worktree-root", worktrees, "--force")).toContain(usage);
   expect(await fail(site, "project", "configure", "demo", "--repository")).toContain(usage);
   expect(await fail(site, "project", "configure", "demo", "--repository", repository, "--repository", repository)).toContain(usage);
