@@ -4,15 +4,12 @@
 // Runtime: bun
 // Purpose: Select an authenticated quota rescue model for handoff-only work.
 import { basename } from "node:path";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { desk, modelPortfolio, seat } from "./core";
 import { availableModelCandidates, resolveModelCommand } from "./pi-runtime-launch";
 
-type Model = { provider: string; id: string };
-export type RescueContext = {
-  model?: Model;
-  modelRegistry: { find(provider: string, id: string): Model | undefined };
-};
-export type RescueHost = { setModel(model: Model): Promise<boolean> };
+export type RescueContext = Pick<ExtensionContext, "model" | "modelRegistry">;
+export type RescueHost = Pick<ExtensionAPI, "setModel">;
 
 /** A fallback_model role entry is only a rescue candidate, not an assurance
  * of quota independence. The Pi registry and authentication must accept it.
