@@ -164,3 +164,13 @@ test("Pi reacts to exhausted quota by releasing its seat, never by relaunching",
 test("replacement startup explicitly points at the durable handover", () => {
   expect(runtimeStartupInstruction(address)).toContain(`atdd-flow handover show ${address}`);
 });
+
+test("a truncated rotation intent is isolated from the rest of fleet reconciliation", async () => {
+  const root = await fixture();
+  const folder = join(root, ".atdd-flow", "session-rotations");
+  await mkdir(folder, { recursive: true });
+  await writeFile(join(folder, "partial.yaml"), "[not-valid-yaml");
+  const report = await reconcileRotations(root);
+  expect(report).toHaveLength(1);
+  expect(report[0]?.outcome).toBe("refused");
+});
