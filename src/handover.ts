@@ -12,6 +12,7 @@ import { type Runtime, type Seat, atomicYaml, canonicalAddress, desk, exists, ha
 import { type Task, terminal } from "./tasks";
 import { resolveExactSessionAdoptionAuthorization } from "./adoption-authorizations";
 import { exactFailedAdoptionProof } from "./exact-adoption-recovery";
+import { isExactOperatorSeat, operatorActivation, operatorRelaunchSection } from "./operator-launch";
 import { readRuntimeState } from "./runtime-state";
 
 export type Handover = {
@@ -96,10 +97,11 @@ export async function recordHandover(root: string, address: string, args: string
 
 export async function showHandover(root: string, address: string) {
   const resolved = await canonicalAddress(root, address);
-  await seat(root, resolved);
+  const seatRecord = await seat(root, resolved);
   const record = await recorded(root, resolved);
   if (!record) throw new Error(`No handover is recorded for ${resolved}.`);
-  process.stdout.write(record.text.endsWith("\n") ? record.text : `${record.text}\n`);
+  const relaunch = await isExactOperatorSeat(root, seatRecord, resolved) ? await operatorRelaunchSection(root, seatRecord) : "";
+  process.stdout.write((record.text.endsWith("\n") ? record.text : `${record.text}\n`) + relaunch);
 }
 
 export type HandoverReplacementRequest = {
@@ -749,6 +751,18 @@ export async function readHandoverReplacement(root: string, address: string) {
   const request = await readYaml<HandoverReplacementRequest>(handoverReplacementPath(root, address));
   if (request.schema !== "atdd-flow/context-handover-replacement-request/v1" || request.seat !== address) throw new Error(`Invalid Path-A replacement request for ${address}.`);
   return request;
+}
+
+async function operatorResumed(root: string, record: Seat) {
+  const { verified, total, discrepancies } = await operatorActivation(root, record, await recorded(root, record.address));
+  console.log(`RESUMED; verified ${verified}/${total}; discrepancies: ${discrepancies.join(", ") || "none"}.`);
+  if (discrepancies.length) throw new Error("Operator successor is not reconciled against the live Desk.");
+}
+
+/** Operator successors report through the launcher-activation check; every other seat keeps the Path-A reconciliation. */
+export async function resumedHandover(root: string, address: string) {
+  const resolved = await canonicalAddress(root, address), record = await seat(root, resolved);
+  return await isExactOperatorSeat(root, record, resolved) ? operatorResumed(root, record) : resumedHandoverReplacement(root, resolved);
 }
 
 export async function resumedHandoverReplacement(root: string, address: string) {

@@ -6,7 +6,7 @@ import { atomicYaml, paths, readYaml } from "../src/core";
 import { launchPiRuntime } from "../src/seats";
 import { createExactSessionAdoptionAuthorization } from "../src/adoption-authorizations";
 import { block, unblock } from "../src/tasks";
-import { recordHandover, resumedHandoverReplacement, showHandover } from "../src/handover";
+import { recordHandover, resumedHandover, showHandover } from "../src/handover";
 import { registerRuntimeState } from "../src/runtime-state";
 
 const roots: string[] = [];
@@ -53,7 +53,7 @@ async function priorRuntime(root: string) {
   await atomicYaml(paths(root).seatFile(seat), saved);
 }
 
-function fakeHerdr(options: { released?: boolean; sourceLive?: boolean; verifiedPath?: string; seat?: string; primary?: string; worktree?: string; agentLifecycle?: { key?: "agent_status" | "status" | "state"; value?: string } } = {}) {
+function fakeHerdr(options: { project?: string; released?: boolean; sourceLive?: boolean; verifiedPath?: string; seat?: string; primary?: string; worktree?: string; agentLifecycle?: { key?: "agent_status" | "status" | "state"; value?: string } } = {}) {
   const calls: string[][] = [];
   let started = false;
   let requestedId = sessionId;
@@ -71,7 +71,7 @@ function fakeHerdr(options: { released?: boolean; sourceLive?: boolean; verified
       const session = command[2];
       const args = command.slice(3);
       if (args[0] === "workspace" && args[1] === "list") return JSON.stringify({ result: { workspaces: [
-        { workspace_id: "w1", label: "demo", worktree: { checkout_path: primary } },
+        { workspace_id: "w1", label: options.project ?? "demo", worktree: { checkout_path: primary } },
         { workspace_id: "w2", label: targetSeat, worktree: { checkout_path: worktree } },
       ] } });
       if (args[0] === "tab" && args[1] === "list") return JSON.stringify({ result: { tabs: [{ tab_id: "w2:t1", workspace_id: "w2", label: targetSeat }] } });
@@ -496,7 +496,7 @@ async function operatorDesk(change: Record<string, unknown> = {}, task?: Record<
   if (task) await atomicYaml(paths(root).taskFile("desk", "operate"), { schema: "atdd-workflow/task/v1", title: "Operate the Desk", status: "in_progress", coordinator: "main@desk", assignee: operatorSeat, done_when: [{ text: "Desk is operated." }], ...task });
   return root;
 }
-const operatorHerdr = () => fakeHerdr({ seat: operatorSeat, primary: operatorPrimary, worktree: operatorPrimary });
+const operatorHerdr = () => fakeHerdr({ project: "desk", seat: operatorSeat, primary: operatorPrimary, worktree: operatorPrimary });
 const launchOperator = (root: string, flags: string[] = ["--dry-run"]) => launchPiRuntime(root, operatorSeat, ["--herdr-session", "forge", ...flags], { select: selectEconomy, command: operatorHerdr().command, sessionId: () => sessionId });
 
 test("RED: the exact operator@desk seat launches through the supported launcher with no task", async () => {
@@ -564,11 +564,11 @@ async function launchedOperator() {
 test("RED: operator resumed reconciles only a fresh launcher receipt, native-wake binding, and matching heartbeat", async () => {
   const root = await launchedOperator();
   await operatorHeartbeat(root);
-  expect(await captureStdout(() => resumedHandoverReplacement(root, operatorSeat))).toContain("RESUMED; verified 6/6; discrepancies: none.");
+  expect(await captureStdout(() => resumedHandover(root, operatorSeat))).toContain("RESUMED; verified 6/6; discrepancies: none.");
 });
 
 test("RED: operator resumed fails closed without verified activation", async () => {
-  const resumed = (root: string) => resumedHandoverReplacement(root, operatorSeat);
+  const resumed = (root: string) => resumedHandover(root, operatorSeat);
   // No launch at all: a bare Pi, or the pre-exit runtime, cannot be reported resumed.
   const bare = await operatorDesk();
   await recordOperatorHandover(bare);
@@ -584,7 +584,7 @@ test("RED: operator resumed fails closed without verified activation", async () 
   await operatorHeartbeat(stale);
   const record = await readYaml<any>(paths(stale).seatFile(operatorSeat));
   const receipt = await readYaml<Record<string, unknown>>(record.runtime.launch_receipt);
-  await atomicYaml(record.runtime.launch_receipt, { ...receipt, created_at: "2026-10-27T14:00:00.000Z" });
+  await atomicYaml(record.runtime.launch_receipt, { ...receipt, created_at: "2000-01-01T00:00:00.000Z" });
   await expect(resumed(stale)).rejects.toThrow("not reconciled");
   // Binding lost native wake.
   const host = await launchedOperator();

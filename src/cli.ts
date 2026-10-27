@@ -21,7 +21,7 @@ import { linearCommand } from "./linear-cli";
 import * as ownerAlerts from "./owner-escalations";
 import { recoveryFor } from "./recovery-bundle";
 import { reconcileOnce } from "./reconcile";
-import { recordHandover, requestHandoverReplacement, resumedHandoverReplacement, showHandover } from "./handover";
+import { recordHandover, requestHandoverReplacement, resumedHandover, showHandover } from "./handover";
 import { migrateProjectVcs } from "./vcs-migration";
 
 const usage = `atdd-flow — filesystem-first agent seats and tasks
@@ -140,7 +140,7 @@ async function main() {
     checkpoint: () => checkpoint(root, required(rest[0], "address"), rest.slice(1)),
     handover: () => rest[0] === "show" ? showHandover(root, required(rest[1], "address"))
       : rest[0] === "replace" ? requestHandoverReplacement(root, required(rest[1], "address"), rest.slice(2))
-      : rest[0] === "resumed" ? resumedHandoverReplacement(root, required(rest[1], "address"))
+      : rest[0] === "resumed" ? resumedHandover(root, required(rest[1], "address"))
       : recordHandover(root, required(rest[0], "address"), rest.slice(1)),
     task: async () => {
       const [subcommand, projectName, taskId, ...tail] = rest;

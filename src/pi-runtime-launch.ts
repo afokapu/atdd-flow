@@ -32,6 +32,7 @@ import { type Task, seatTasks, terminal } from "./tasks";
 import { projectHerdrSeat } from "./multiplexer";
 import { resolveExactSessionAdoptionAuthorization } from "./adoption-authorizations";
 import { assertReplacementTarget, replacementForMainLaunch } from "./handover";
+import { canonicalLaunchCommand, isExactOperatorSeat } from "./operator-launch";
 
 export type PiRuntimeLaunchDependencies = {
   select?: (input: ModelSelectionInput) => Promise<ModelSelectionResponse>;
@@ -96,9 +97,10 @@ async function isExactNamedCoordinator(root: string, record: Seat, address: stri
 
 async function launchEligibleTasks(root: string, record: Seat, address: string) {
   const coordinator = await isExactNamedCoordinator(root, record, address);
+  const operator = await isExactOperatorSeat(root, record, address);
   const tasks = await seatTasks(root, record.project, record.address);
   const eligible = await Promise.all(tasks.map(async (entry) => {
-    const accountable = record.role === "driver" ? entry.task.assignee === record.address
+    const accountable = record.role === "driver" || operator ? entry.task.assignee === record.address
       : coordinator && entry.task.coordinator === record.address;
     if (!accountable || entry.task.blocker) return undefined;
     if (entry.task.status === "in_progress") return entry;
@@ -282,7 +284,8 @@ async function prepareLaunch(root: string, address: string, args: string[], depe
   const options = parseLaunchOptions(args), existingPane = existingPaneForResume(record, options);
   const replacement = await replacementForMainLaunch(root, record, resolved);
   const active = replacement ? [{ id: replacement.request.task, task: replacement.task }] : await launchEligibleTasks(root, record, resolved);
-  if (!active.length) throw new Error(`${resolved} has no launch-eligible task; refusing runtime launch.`);
+  const operator = await isExactOperatorSeat(root, record, resolved);
+  if (!active.length && !operator) throw new Error(`${resolved} has no launch-eligible task; refusing runtime launch.`);
   const selection = await chooseLaunchModel(root, config, record, required(await modelPortfolio(root), "models.yaml for Pi runtime launch"), dependencies.select);
   const model = resolveModelCommand(config, selection.candidate);
   if (basename(model.agent) !== "pi") throw new Error(`Pi runtime launch requires a Pi candidate, received ${selection.candidate.id}.`);
@@ -291,7 +294,7 @@ async function prepareLaunch(root: string, address: string, args: string[], depe
   if (!piSession) throw new Error("Resume requires the exact Pi session stored on the seat.");
   const adoptedPath = options.adopting ? resolve(required(options.adoptedSessionPath, "an exact adopted Pi session path")) : undefined;
   const authorizationRecord = await adoptionAuthorization(root, resolved, record, options, piSession, adoptedPath);
-  return { root, resolved, record, options, existingPane, replacement, active, selection, model, command, piSession, adoptedPath, authorizationRecord, dependencies };
+  return { root, resolved, record, operator, options, existingPane, replacement, active, selection, model, command, piSession, adoptedPath, authorizationRecord, dependencies };
 }
 
 /** Match the seat-scoped projection to all caller and replacement assertions. */
@@ -357,7 +360,8 @@ function buildLaunchPlan(launch: PreparedLaunch, pane: string, sessionPath?: str
   const request: HerdrRequest = { session: options.herdrSession, pane, seat: resolved, root, piSession,
     ...(sessionPath ? { sessionPath } : {}), resume: options.resume || options.adopting, args: [...model.args, "--extension", piExtensionPath()] };
   const plan = { candidate: selection.candidate.id, piSession, pane, herdrSession: options.herdrSession,
-    receipt: receiptPath(root, piSession), command: startCommand(request), ...(options.dryRun ? { dryRun: true } : {}) };
+    receipt: receiptPath(root, piSession), command: startCommand(request),
+    ...(launch.operator ? { canonicalCommand: canonicalLaunchCommand(resolved, options.herdrSession) } : {}), ...(options.dryRun ? { dryRun: true } : {}) };
   return { request, plan };
 }
 
