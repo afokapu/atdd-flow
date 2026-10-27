@@ -28,9 +28,3 @@ jobs:
           jj version
       - name: Real colocated Jujutsu integration and legacy migration
         run: bun test tests/jj-vcs.integration.test.ts tests/jj-vcs-migration.integration.test.ts
-      - name: Temporary focused continuation and repair proof
-        run: bun test tests/session-rotation.test.ts tests/main-mail-repair.test.ts
-      - name: Temporary ATDD diagnostics
-        if: always()
-        continue-on-error: true
-        run: bun run atdd-bun all
