@@ -1,0 +1,7 @@
+= Flow documentation
+:doc-id: purpose.index
+:status: current
+
+Authored documentation for ATDD Flow.
+
+* xref:linear-one-way-mirror-pilot.adoc[Linear one-way mirror: discovery and pilot plan]
