@@ -74,7 +74,9 @@ test("dry-run has no side effects; notice is bounded by cooldown and retry ceili
   const next = new Date(start.getTime() + 6 * 60_000);
   await heartbeatRuntimeState(root, address, "live-pi", next.toISOString());
   expect((await reconcileMainMailRepairs(root, config(root, next)))[0]?.outcome).toBe("reached");
-  expect((await reconcileMainMailRepairs(root, config(root, new Date(start.getTime() + 7 * 60_000))))[0]?.outcome).toBe("exhausted");
+  const later = new Date(start.getTime() + 7 * 60_000);
+  await heartbeatRuntimeState(root, address, "live-pi", later.toISOString());
+  expect((await reconcileMainMailRepairs(root, config(root, later)))[0]?.outcome).toBe("exhausted");
   expect(calls).toHaveLength(2);
 });
 
