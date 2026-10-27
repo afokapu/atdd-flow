@@ -14,6 +14,7 @@ import { isRuntimeStateStale, readRuntimeState, withOwnedRuntimeState } from "./
 type Outcome = "woke" | "dry_run" | "cooldown" | "exhausted" | "inactive" | "unverified" | "busy" | "replaced" | "wake_failed";
 export type Reconciliation = { seat: string; task: string; outcome: Outcome };
 export type ReconcileOptions = {
+  skipSeats?: ReadonlySet<string>;
   now?: Date;
   dryRun?: boolean;
   cooldownMs?: number;
@@ -144,6 +145,7 @@ export async function reconcileOnce(root: string, options: ReconcileOptions = {}
   const config = settings(options);
   const results: Reconciliation[] = [];
   for (const owner of await seats(root)) {
+    if (options.skipSeats?.has(owner.address)) continue;
     const result = await reconcileSeat(root, owner, config);
     if (result) results.push(result);
   }
