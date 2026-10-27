@@ -11,7 +11,7 @@ import { availableModelCandidates, resolveModelCommand } from "./pi-runtime-laun
 export type RescueContext = Pick<ExtensionContext, "model" | "modelRegistry">;
 export type RescueHost = Pick<ExtensionAPI, "setModel">;
 
-/** A fallback_model role entry is only a rescue candidate, not an assurance
+/** A quota_handoff_model role entry is only a rescue candidate, not an assurance
  * of quota independence. The Pi registry and authentication must accept it.
  */
 export async function selectQuotaHandoffModel(root: string, address: string,
@@ -19,7 +19,7 @@ export async function selectQuotaHandoffModel(root: string, address: string,
   const owner = await seat(root, address);
   if (owner.role === "main" || !["driver", "coordinator"].includes(owner.role)) return false;
   const config = await desk(root);
-  const candidateId = config.fallback_model?.[owner.role];
+  const candidateId = config.quota_handoff_model?.[owner.role];
   const portfolio = await modelPortfolio(root);
   if (!candidateId || !portfolio) return false;
   const candidate = availableModelCandidates(config, portfolio).find((entry) => entry.id === candidateId);
