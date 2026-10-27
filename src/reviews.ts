@@ -106,17 +106,13 @@ export async function behavioralReviewRequired(root: string, task: Task) {
   return explicitWorkflowProfile(policyRoot);
 }
 
-async function currentHead(mode: VcsMode, worktree: string) {
-  return currentCommit(mode, worktree);
-}
-
-async function assertCleanDelivery(mode: VcsMode, worktree: string, branch: string) {
+async function cleanDeliveryRevision(mode: VcsMode, worktree: string, branch: string) {
   if (mode === "git") {
     const dirty = await runOutput(["git", "status", "--porcelain"], worktree);
     if (dirty) throw new Error("Final behavioral review requires a clean committed delivery worktree.");
-    return;
+    return currentCommit(mode, worktree);
   }
-  try { await assertBranchReady(mode, worktree, branch); }
+  try { return await assertBranchReady(mode, worktree, branch); }
   catch (error) {
     throw new Error(`Final behavioral review requires a clean committed delivery worktree: ${(error as Error).message}`);
   }
@@ -239,7 +235,7 @@ export async function launchBehavioralReview(
 
   const owner = await ownerForTask(root, task);
   const mode = vcsMode(await project(root, projectName));
-  await assertCleanDelivery(mode, owner.worktree, owner.branch);
+  const head = await cleanDeliveryRevision(mode, owner.worktree, owner.branch);
 
   let gateOutput: string;
   try {
@@ -283,7 +279,6 @@ export async function launchBehavioralReview(
   }
 
   const reviewer = await writeReviewerSeat(root, projectName, taskId, owner);
-  const head = await currentHead(mode, owner.worktree);
   const history = await readBehavioralReviews(root, projectName, taskId) ?? {
     schema: "atdd-workflow/behavioral-reviews/v1" as const,
     task: `${projectName}/${taskId}`,
@@ -410,8 +405,8 @@ export async function recordBehavioralReview(root: string, projectName: string, 
   if (actor !== attempt.reviewer.address) throw new Error(`Only ${attempt.reviewer.address} may record review ${attempt.id}.`);
   const owner = await ownerForTask(root, task);
   const mode = vcsMode(await project(root, projectName));
-  await assertCleanDelivery(mode, owner.worktree, owner.branch);
-  if (await currentHead(mode, owner.worktree) !== attempt.delivery_head) throw new Error(mode === "git" ? "Delivery HEAD changed during behavioral review; launch a new review against the current delivery." : "Delivery revision changed during behavioral review; launch a new review against the current delivery.");
+  const head = await cleanDeliveryRevision(mode, owner.worktree, owner.branch);
+  if (head !== attempt.delivery_head) throw new Error(mode === "git" ? "Delivery HEAD changed during behavioral review; launch a new review against the current delivery." : "Delivery revision changed during behavioral review; launch a new review against the current delivery.");
   const file = required(words(args, "--file"), "--file");
   const result = validateResult(yaml.parse(await readFile(file, "utf8")));
   attempt.status = "complete";
@@ -434,6 +429,6 @@ export async function assertAcceptedBehavioralReview(root: string, projectName: 
   if (latest.result.decision !== "APPROVE") throw new Error(`Task ${taskId} final behavioral review is ${latest.result.decision}, not APPROVE.`);
   const owner = await ownerForTask(root, task);
   const mode = vcsMode(await project(root, projectName));
-  await assertCleanDelivery(mode, owner.worktree, owner.branch);
-  if (await currentHead(mode, owner.worktree) !== latest.delivery_head) throw new Error(`Task ${taskId} changed after final behavioral review; review the current delivery before completion.`);
+  const head = await cleanDeliveryRevision(mode, owner.worktree, owner.branch);
+  if (head !== latest.delivery_head) throw new Error(`Task ${taskId} changed after final behavioral review; review the current delivery before completion.`);
 }
