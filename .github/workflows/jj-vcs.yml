@@ -26,5 +26,5 @@ jobs:
           tar -xzf /tmp/jj.tar.gz -C /tmp/jj-bin
           sudo install /tmp/jj-bin/jj /usr/local/bin/jj
           jj version
-      - name: Real colocated Jujutsu integration
-        run: bun test tests/jj-vcs.integration.test.ts
+      - name: Real colocated Jujutsu integration and legacy migration
+        run: bun test tests/jj-vcs.integration.test.ts tests/jj-vcs-migration.integration.test.ts
