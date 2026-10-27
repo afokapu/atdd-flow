@@ -72,7 +72,14 @@ export async function projectCollaborationPolicy(root: string) {
 
 const withBundle = (text: string, bundle?: string) => bundle ? `${text}\n${bundle}` : text;
 
-/** The one startup handoff for supported Flow-managed runtimes, resolved from the canonical convention. */
+/** The one startup handoff for supported Flow-managed runtimes, resolved from the canonical convention.
+ * A fresh session cannot assume the previous Pi transcript is its active context.
+ * The validated handover remains a lightweight pointer, not a replayed dialogue.
+ * Only the Desk task, checkpoint and evidence determine current obligations.
+ * The handover is read opportunistically because quota recovery can occur before
+ * the former agent was able to write a new handover at all.
+ * This instruction is the shared startup path, not a second mailbox or scheduler.
+ */
 export function runtimeStartupInstruction(seat: string, bundle?: string) {
   return withBundle(`SYSTEM: you are ${seat}. Collaboration policy: ${canonicalCollaborationPolicy()} Canonical convention: ${collaborationConventionPath}. Read your durable seat and assigned work with: atdd-flow open ${seat}. If a recorded handover exists, read it with: atdd-flow handover show ${seat}. Reconcile that handover against current task and repository evidence. Continue assigned in_progress work until it is review-ready or explicitly blocked.`, bundle);
 }
