@@ -36,5 +36,14 @@ export async function selectQuotaHandoffModel(root: string, address: string,
   return model ? host.setModel(model) : false;
 }
 
+/** The fallback's authority is constrained to producing a handover record.
+ * Use ordinary string concatenation here: this text is a Pi prompt, not HTML.
+ */
 export const quotaHandoffInstruction = (address: string, bundle?: string) =>
-  `SYSTEM: The former provider quota is exhausted for ${address}. You are the configured fallback model and are authorized ONLY to produce a validated Flow handover. Do not implement code, modify tasks, mark work complete, or change delegation authority. Read 'atdd-flow open ${address}', inspect the Desk, current worktree and last session, write the four-section handover using the canonical Flow lifecycle convention, validate and record it with 'atdd-flow handover ${address} --file <exact-path>'. State unresolved dependencies and exact next actions. Stop once the handover is recorded. The existing supervisor will select a separate work model from models.yaml and restart only after your session releases.${bundle ? "\n" + bundle : ""}`;
+  "SYSTEM: Provider quota exhausted for " + address + ". You are the configured fallback model and may ONLY produce a validated Flow handover. "
+  + "Do not implement code, modify tasks, mark work complete, or alter delegation. "
+  + "Read 'atdd-flow open " + address + "', inspect the Desk and current worktree, and write the four-section handover "
+  + "using the canonical Flow lifecycle convention. Validate and record it with 'atdd-flow handover " + address
+  + " --file <exact-path>'. State unresolved dependencies and precise next actions. "
+  + "Stop after the handover is recorded. Flow will relaunch an eligible execution model from models.yaml after release."
+  + (bundle ? "\\n" + bundle : "");
