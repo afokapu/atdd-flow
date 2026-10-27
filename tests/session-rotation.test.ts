@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { atomicYaml, paths } from "../src/core";
 import { clearRuntimeState, registerRuntimeState } from "../src/runtime-state";
+import { selectQuotaHandoffModel } from "../src/quota-handoff";
 import { requestSessionRotation, reconcileRotations } from "../src/session-rotation";
 import type { launchPiRuntime } from "../src/seats";
 import { runtimeStartupInstruction } from "../src/collaboration-policy";
@@ -30,7 +31,8 @@ async function fixture(role: "driver" | "main" = "driver") {
   });
   await atomicYaml(paths(root).models, { schema: "atdd-workflow/models/v1", models: [
     { id: "primary", executable: "pi", args: ["--model", "primary"] },
-    { id: "standby", executable: "pi", args: ["--model", "standby"] },
+    { id: "standby", executable: "pi", args: ["--model", "openai-codex/gpt-6-luna"] },
+    { id: "alternative", executable: "pi", args: ["--model", "independent-provider/worker"] },
   ] });
   await atomicYaml(paths(root).projectFile("demo"), { schema: "atdd-workflow/project/v1", project: "demo", roles: {} });
   const receipt = join(root, ".atdd-flow", "runtime-launch", "source.yaml");
@@ -91,9 +93,11 @@ test("release allows one deterministic new-session launch without invoking Jev",
   expect(await reconcileRotations(root, { launch: mockLaunch })).toEqual([]);
 });
 
-test("explicitly configured different fallback is required after provider quota failure", async () => {
+test("quota rescue writes a validated handover before resuming on a third candidate", async () => {
   const root = await fixture();
-  expect(await requestSessionRotation(root, address, token, "rate_limit")).toBe(true);
+  expect(await requestSessionRotation(root, address, token, "rate_limit", before)).toBe(false);
+  await handover(root);
+  expect(await requestSessionRotation(root, address, token, "rate_limit", before)).toBe(true);
   await clearRuntimeState(root, address, token);
   const picked: string[] = [];
   const stub = (async (_root: string, _seat: string, _args: string[], deps: Parameters<typeof launchPiRuntime>[3]) => {
@@ -103,7 +107,7 @@ test("explicitly configured different fallback is required after provider quota 
     return {} as Awaited<ReturnType<typeof launchPiRuntime>>;
   }) as typeof launchPiRuntime;
   expect((await reconcileRotations(root, { launch: stub }))[0]?.outcome).toBe("launched");
-  expect(picked).toEqual(["standby"]);
+  expect(picked).toEqual(["alternative"]);
 });
 
 test("main remains governed by Path-A rather than autonomous session rotation", async () => {
@@ -126,7 +130,7 @@ test("changed binding or failed launcher is fail-closed and preserves the recove
   expect((await reconcileRotations(root, { launch: broken }))[0]?.outcome).toBe("stale");
 });
 
-test("Pi reacts to exhausted quota by releasing its seat, never by relaunching", async () => {
+test("Pi hands exhausted quota to Luna for handoff-only, without releasing early", async () => {
   const root = await fixture();
   // A separate Bun process owns its environment and Pi lifecycle, as in production.
   // The parent test and any parallel tests retain their own environment unchanged.
@@ -134,14 +138,15 @@ test("Pi reacts to exhausted quota by releasing its seat, never by relaunching",
   const script = [
     `import installFlowExtension from ${JSON.stringify(extension)};`,
     "const listeners = new Map();",
-    "installFlowExtension({ on(event, fn) { listeners.set(event, [...(listeners.get(event) ?? []), fn]); }, sendMessage() {} });",
+    "const sent = []; const selected = [];",
+    "installFlowExtension({ on(event, fn) { listeners.set(event, [...(listeners.get(event) ?? []), fn]); }, sendMessage(message) { sent.push(message); }, async setModel(model) { selected.push(model); return true; } });",
     "const emit = async (event, value, ctx) => Promise.all((listeners.get(event) ?? []).map(fn => fn(value, ctx)));",
     `const session = ${JSON.stringify(session)};`,
     "let shutdown = 0;",
     "await emit('session_start', {}, { sessionManager: { getSessionId: () => session, getSessionFile: () => '/tmp/observed.jsonl' }, hasUI: false });",
     "await emit('auto_retry_end', { success: false, attempt: 3, finalError: 'HTTP 429 rate limit reached' });",
-    "await emit('agent_settled', { aborted: false }, { shutdown: () => { shutdown += 1; } });",
-    "process.stdout.write(JSON.stringify({ shutdown }));",
+    "await emit('agent_settled', { aborted: false }, { shutdown: () => { shutdown += 1; }, model: { provider: 'failed-provider', id: 'failed-model' }, modelRegistry: { find(provider, id) { return { provider, id }; } } });",
+    "process.stdout.write(JSON.stringify({ shutdown, selected, sent: sent.map(message => message.customType) }));",
     "await emit('session_shutdown', {});",
   ].join("\n");
   const runner = join(root, "simulate-pi.ts");
@@ -157,8 +162,12 @@ test("Pi reacts to exhausted quota by releasing its seat, never by relaunching",
     new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited,
   ]);
   expect(code, stderr).toBe(0);
-  expect(JSON.parse(stdout)).toEqual({ shutdown: 1 });
-  expect((await reconcileRotations(root, { dryRun: true })).map((item) => item.outcome)).toEqual(["ready"]);
+  expect(JSON.parse(stdout)).toEqual({
+    shutdown: 0,
+    selected: [{ provider: "openai-codex", id: "gpt-6-luna" }],
+    sent: ["atdd-flow-quota-handoff"],
+  });
+  expect(await reconcileRotations(root, { dryRun: true })).toEqual([]);
 });
 
 test("replacement startup explicitly points at the durable handover", () => {
@@ -173,4 +182,18 @@ test("a truncated rotation intent is isolated from the rest of fleet reconciliat
   const report = await reconcileRotations(root);
   expect(report).toHaveLength(1);
   expect(report[0]?.outcome).toBe("refused");
+});
+
+test("quota fallback is not considered an execution model or proof of independent quota", async () => {
+  const root = await fixture();
+  const selected: string[] = [];
+  const context = { model: { provider: "failed-provider", id: "active" },
+    modelRegistry: { find(provider: string, id: string) { return { provider, id }; } } };
+  const host = { async setModel(model: { provider: string; id: string }) { selected.push(model.id); return true; } };
+  expect(await selectQuotaHandoffModel(root, address, context as never, host as never)).toBe(true);
+  expect(selected).toEqual(["gpt-6-luna"]);
+  expect(await selectQuotaHandoffModel(root, address, { ...context,
+    model: { provider: "openai-codex", id: "gpt-6-luna" } } as never, host as never)).toBe(false);
+  expect(await selectQuotaHandoffModel(root, address, { ...context,
+    modelRegistry: { find() { return undefined; } } } as never, host as never)).toBe(false);
 });
