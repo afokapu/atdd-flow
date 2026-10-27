@@ -27,6 +27,8 @@ export type Desk = {
   aliases?: Record<string, string>;
   /** Model id used for a role when launch model selection falls back; unlisted roles use the strongest candidate. */
   fallback_model?: Record<string, string>;
+  /** Handoff-only emergency model; distinct from the normal Jev launch fallback. */
+  quota_handoff_model?: Record<string, string>;
 };
 export type ModelCandidate = {
   id: string;
