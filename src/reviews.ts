@@ -411,7 +411,7 @@ export async function recordBehavioralReview(root: string, projectName: string, 
   const owner = await ownerForTask(root, task);
   const mode = vcsMode(await project(root, projectName));
   await assertCleanDelivery(mode, owner.worktree, owner.branch);
-  if (await currentHead(mode, owner.worktree) !== attempt.delivery_head) throw new Error("Delivery revision changed during behavioral review; launch a new review against the current delivery.");
+  if (await currentHead(mode, owner.worktree) !== attempt.delivery_head) throw new Error(mode === "git" ? "Delivery HEAD changed during behavioral review; launch a new review against the current delivery." : "Delivery revision changed during behavioral review; launch a new review against the current delivery.");
   const file = required(words(args, "--file"), "--file");
   const result = validateResult(yaml.parse(await readFile(file, "utf8")));
   attempt.status = "complete";
