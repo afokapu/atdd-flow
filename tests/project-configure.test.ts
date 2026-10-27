@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { vcsMode } from "../src/vcs";
 import { parse, stringify } from "yaml";
 import { projectHerdrSeat } from "../src/multiplexer";
 
@@ -47,6 +48,11 @@ test("RED: project configure sets repository and worktree root so named coordina
   expect(config).toContain(`repository: ${repository}`);
   expect(config).toContain(`worktree_root: ${worktrees}`);
   expect(await run(site, "spawn", "demo", "coordinator", "payments")).toBe("coordinator.payments@demo");
+});
+
+test("persisted project VCS fails closed on unsupported values", () => {
+  expect(vcsMode({ vcs: undefined })).toBe("git");
+  expect(() => vcsMode({ vcs: "fossil" as never })).toThrow("Unsupported project VCS: fossil");
 });
 
 test("RED: project configure fails closed for non-repository paths and malformed flags without changing the project", async () => {
