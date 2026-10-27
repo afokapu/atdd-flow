@@ -32,6 +32,9 @@ const fingerprint = (target: Target) =>
 const attemptFile = (root: string, address: string) =>
   join(root, ".atdd-flow", "continuation", `${encodeURIComponent(address)}.yaml`);
 
+/** Read Herdr status without treating missing or mismatched identities as healthy.
+ * The live host is an observation surface, never a seat registry.
+ */
 async function inspectHerdr(locator: HerdrLocator, address: string) {
   const raw = JSON.parse(await runOutput(["herdr", "--session", locator.session, "agent", "get", agentName(address)]));
   const envelope = raw?.result ?? raw;
@@ -40,6 +43,9 @@ async function inspectHerdr(locator: HerdrLocator, address: string) {
   return String(agent?.agent_status ?? agent?.status ?? agent?.state ?? "unverified").toLowerCase();
 }
 
+/** Discover durable seat identity from the existing Desk directories.
+ * No second fleet registry is created or synchronized.
+ */
 async function seats(root: string): Promise<Seat[]> {
   const found: Seat[] = [];
   for (const project of await readdir(paths(root).work, { withFileTypes: true })) {
@@ -52,11 +58,15 @@ async function seats(root: string): Promise<Seat[]> {
   return found;
 }
 
+function validateLimits(cooldownMs: number, maxNudges: number) {
+  if (!Number.isFinite(cooldownMs) || cooldownMs < 0) throw new Error("Invalid continuation cooldown.");
+  if (!Number.isInteger(maxNudges) || maxNudges < 1) throw new Error("Invalid maximum nudge count.");
+}
+
 function settings(options: ReconcileOptions): Settings {
   const cooldownMs = options.cooldownMs ?? 5 * 60_000;
   const maxNudges = options.maxNudges ?? 2;
-  if (!Number.isFinite(cooldownMs) || cooldownMs < 0) throw new Error("Invalid continuation cooldown.");
-  if (!Number.isInteger(maxNudges) || maxNudges < 1) throw new Error("Invalid maximum nudge count.");
+  validateLimits(cooldownMs, maxNudges);
   return {
     now: options.now ?? new Date(),
     dryRun: options.dryRun ?? false,
@@ -69,6 +79,9 @@ function settings(options: ReconcileOptions): Settings {
 const outcome = (owner: Seat, directive: TaskDirective, status: Outcome): Reconciliation =>
   ({ seat: owner.address, task: `${directive.project}/${directive.task}`, outcome: status });
 
+/** An actionable target also needs a live, matching runtime observation.
+ * This deliberately refuses an unknown or stale session rather than guessing.
+ */
 async function target(root: string, owner: Seat, directive: TaskDirective, at: Date): Promise<Target | undefined> {
   const runtime = owner.runtime;
   const locator = runtime?.addresses.herdr;
@@ -80,6 +93,9 @@ async function target(root: string, owner: Seat, directive: TaskDirective, at: D
   return { owner, directive, locator, token: active.owner_token };
 }
 
+/** The per-seat retry memo is advisory: changing work or replacing an agent
+ * starts a new key, while unchanged instructions have bounded retries.
+ */
 function attemptDisposition(previous: Attempt | undefined, key: string, config: Settings): Outcome | undefined {
   if (previous?.schema !== "atdd-flow/continuation-attempt/v1") return;
   if (previous.key !== key) return;
@@ -87,6 +103,9 @@ function attemptDisposition(previous: Attempt | undefined, key: string, config: 
   if (config.now.getTime() - Date.parse(previous.at) < config.cooldownMs) return "cooldown";
 }
 
+/** Write the attempt before contacting Herdr, so a transient host failure
+ * cannot turn repeated reconciliation into a prompt storm.
+ */
 async function wakeOnce(root: string, candidate: Target, config: Settings): Promise<Outcome> {
   const file = attemptFile(root, candidate.owner.address);
   const key = fingerprint(candidate);
