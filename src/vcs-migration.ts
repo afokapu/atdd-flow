@@ -39,7 +39,9 @@ type ReviewsLite = { attempts?: Array<{ delivery_head?: string }> };
 const SNAPSHOT_MAX_NEW_FILE_BYTES = 1048576;
 const DIRTY_PRIMARY_FLAG = "--allow-dirty-primary";
 const RETAIN_LARGE_FLAG = "--retain-large-primary-file";
-const USAGE = `Use \`atdd-flow project migrate-vcs <project> --to jj [--allow-dirty-primary [${RETAIN_LARGE_FLAG} <path>:<sha256>:<bytes>:<mode> ...]] [--dry-run]\`.`;
+/** Plain literals (no interpolation): angle-bracket placeholders must never look like an HTML fragment. */
+const SPEC_FORMAT = "<path>:<sha256>:<bytes>:<mode>";
+const USAGE = "Use `atdd-flow project migrate-vcs <project> --to jj [--allow-dirty-primary [--retain-large-primary-file <path>:<sha256>:<bytes>:<mode> ...]] [--dry-run]`.";
 
 /** One operator-authorized over-limit primary file, matched against disk exactly. */
 type LargeFile = { path: string; sha256: string; bytes: number; mode: string };
@@ -74,7 +76,7 @@ type PreparedMigration = {
 /** Parse `<path>:<sha256>:<bytes>:<mode>` from the right so the path alone may contain colons. */
 function parseLargeFile(spec: string): LargeFile {
   const match = spec.match(/^(.+):([0-9a-f]{64}):(\d+):([0-7]{4})$/);
-  if (!match) throw new Error(`${RETAIN_LARGE_FLAG} expects <path>:<sha256>:<bytes>:<mode> (lowercase 64-hex sha256, decimal bytes, four-digit octal mode); got ${spec}.`);
+  if (!match) throw new Error(`${RETAIN_LARGE_FLAG} expects ${SPEC_FORMAT} (lowercase 64-hex sha256, decimal bytes, four-digit octal mode); got ${spec}.`);
   const [, path, sha256, bytes, mode] = match as unknown as [string, string, string, string, string];
   if (isAbsolute(path) || path.split("/").includes("..") || normalize(path) !== path || path.endsWith("/")) {
     throw new Error(`${RETAIN_LARGE_FLAG} path must be a normalized repository-relative path with no '..' (outside the primary checkout is refused): ${path}`);
