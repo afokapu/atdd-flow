@@ -10,7 +10,6 @@ import { atomicYaml, paths } from "../src/core";
 import { clearRuntimeState, registerRuntimeState } from "../src/runtime-state";
 import { requestSessionRotation, reconcileRotations } from "../src/session-rotation";
 import type { launchPiRuntime } from "../src/seats";
-import installFlowExtension from "../extensions/pi/index";
 import { runtimeStartupInstruction } from "../src/collaboration-policy";
 
 const roots: string[] = [];
@@ -127,38 +126,39 @@ test("changed binding or failed launcher is fail-closed and preserves the recove
   expect((await reconcileRotations(root, { launch: broken }))[0]?.outcome).toBe("stale");
 });
 
-test("Pi reacts to exhausted quota by releasing its seat, never by directly relaunching", async () => {
+test("Pi reacts to exhausted quota by releasing its seat, never by relaunching", async () => {
   const root = await fixture();
-  const names = ["ATDD_WORKFLOW_ROOT", "ATDD_WORKFLOW_SEAT", "ATDD_FLOW_PI_SESSION",
-    "ATDD_FLOW_HERDR_SESSION", "ATDD_FLOW_HERDR_PANE", "HERDR_SESSION", "HERDR_PANE_ID"] as const;
-  const saved = names.map((name) => [name, process.env[name]] as const);
-  const listeners = new Map<string, Array<(event?: unknown, context?: unknown) => Promise<void> | void>>();
-  let shutdown = 0;
-  try {
-    process.env.ATDD_WORKFLOW_ROOT = root;
-    process.env.ATDD_WORKFLOW_SEAT = address;
-    for (const name of names.slice(2)) delete process.env[name];
-    installFlowExtension({
-      on(event: string, listener: (event?: unknown, context?: unknown) => Promise<void> | void) {
-        listeners.set(event, [...(listeners.get(event) ?? []), listener]);
-      },
-      sendMessage() {},
-    } as never);
-    const invoke = async (event: string, value: unknown, context?: unknown) =>
-      Promise.all((listeners.get(event) ?? []).map((handler) => handler(value, context)));
-    await invoke("session_start", {}, { sessionManager: { getSessionId: () => session, getSessionFile: () => "/tmp/observed.jsonl" }, hasUI: false });
-    await invoke("auto_retry_end", { success: false, attempt: 3, finalError: "HTTP 429 rate limit reached" });
-    await invoke("agent_settled", { aborted: false }, { shutdown: () => { shutdown += 1; } });
-    expect(shutdown).toBe(1);
-    expect((await reconcileRotations(root, { dryRun: true })).map((item) => item.outcome)).toEqual(["running"]);
-    await invoke("session_shutdown", {});
-  } finally {
-    await Promise.all((listeners.get("session_shutdown") ?? []).map((handler) => handler({})));
-    for (const [name, value] of saved) {
-      if (value === undefined) delete process.env[name];
-      else process.env[name] = value;
-    }
-  }
+  // A separate Bun process owns its environment and Pi lifecycle, as in production.
+  // The parent test and any parallel tests retain their own environment unchanged.
+  const extension = join(import.meta.dir, "..", "extensions", "pi", "index.ts");
+  const script = [
+    `import installFlowExtension from ${JSON.stringify(extension)};`,
+    "const listeners = new Map();",
+    "installFlowExtension({ on(event, fn) { listeners.set(event, [...(listeners.get(event) ?? []), fn]); }, sendMessage() {} });",
+    "const emit = async (event, value, ctx) => Promise.all((listeners.get(event) ?? []).map(fn => fn(value, ctx)));",
+    `const session = ${JSON.stringify(session)};`,
+    "let shutdown = 0;",
+    "await emit('session_start', {}, { sessionManager: { getSessionId: () => session, getSessionFile: () => '/tmp/observed.jsonl' }, hasUI: false });",
+    "await emit('auto_retry_end', { success: false, attempt: 3, finalError: 'HTTP 429 rate limit reached' });",
+    "await emit('agent_settled', { aborted: false }, { shutdown: () => { shutdown += 1; } });",
+    "process.stdout.write(JSON.stringify({ shutdown }));",
+    "await emit('session_shutdown', {});",
+  ].join("\\n");
+  const runner = join(root, "simulate-pi.ts");
+  await writeFile(runner, script);
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
+    !["ATDD_WORKFLOW_ROOT", "ATDD_WORKFLOW_SEAT", "ATDD_FLOW_PI_SESSION",
+      "ATDD_FLOW_HERDR_SESSION", "ATDD_FLOW_HERDR_PANE", "HERDR_SESSION", "HERDR_PANE_ID"].includes(key)));
+  const child = Bun.spawn([process.execPath, runner], {
+    cwd: join(import.meta.dir, ".."), env: { ...env, ATDD_WORKFLOW_ROOT: root, ATDD_WORKFLOW_SEAT: address },
+    stdout: "pipe", stderr: "pipe",
+  });
+  const [stdout, stderr, code] = await Promise.all([
+    new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited,
+  ]);
+  expect(code, stderr).toBe(0);
+  expect(JSON.parse(stdout)).toEqual({ shutdown: 1 });
+  expect((await reconcileRotations(root, { dryRun: true })).map((item) => item.outcome)).toEqual(["ready"]);
 });
 
 test("replacement startup explicitly points at the durable handover", () => {
