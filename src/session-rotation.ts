@@ -71,7 +71,7 @@ async function pinnedCandidate(root: string, source: Source, reason: Reason) {
   if (!portfolio) return;
   const candidates = availableModelCandidates(config, portfolio);
   if (reason === "context") return candidates.some((entry) => entry.id === original) ? original : undefined;
-  const fallback = config.fallback_model?.[source.record.role];
+  const fallback = config.quota_handoff_model?.[source.record.role];
   if (!fallback || fallback === original) return;
   if (!candidates.some((entry) => entry.id === fallback)) return;
   return candidates.find((entry) => entry.id !== original && entry.id !== fallback)?.id;
