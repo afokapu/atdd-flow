@@ -1,9 +1,10 @@
 urn: acc:flow:E014-UNIT-001
 phase: UNIT
 description: >-
-  A live driver or coordinator may request a bounded fresh Pi session after a
-  validated context handover or an exhausted rate limit with an explicitly
-  configured different fallback model. The existing runtime must release first.
-  A reconciler uses the canonical seat, receipt, and launch guard to start a
-  replacement without Jev, while main Path-A authorization, task ownership,
-  and native Desk mail remain unchanged.
+  A driver or coordinator at the context threshold records a validated
+  source-session handover and may rotate through the existing guarded launcher.
+  After a final provider quota error, Pi switches to a separately configured
+  authenticated handoff-only rescue model, records a validated handover, and
+  then selects a distinct eligible execution candidate from models.yaml.
+  No Jev decision, premature writer replacement, or change to task/Desk
+  authority is allowed. Main retains its separately authorized Path-A.
