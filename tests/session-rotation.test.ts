@@ -10,6 +10,7 @@ import { atomicYaml, paths } from "../src/core";
 import { clearRuntimeState, registerRuntimeState } from "../src/runtime-state";
 import { requestSessionRotation, reconcileRotations } from "../src/session-rotation";
 import type { launchPiRuntime } from "../src/seats";
+import installFlowExtension from "../extensions/pi/index";
 
 const roots: string[] = [];
 const address = "driver.delivery@demo", session = "01a12345-6789-7abc-8def-0123456789ab";
@@ -123,4 +124,38 @@ test("changed binding or failed launcher is fail-closed and preserves the recove
   const old = Bun.YAML.parse(await Bun.file(paths(root).seatFile(address)).text());
   await atomicYaml(paths(root).seatFile(address), { ...old, runtime: { ...old.runtime, pi_session: "successor" } });
   expect((await reconcileRotations(root, { launch: broken }))[0]?.outcome).toBe("stale");
+});
+
+test("Pi reacts to exhausted quota by releasing its seat, never by directly relaunching", async () => {
+  const root = await fixture();
+  const names = ["ATDD_WORKFLOW_ROOT", "ATDD_WORKFLOW_SEAT", "ATDD_FLOW_PI_SESSION",
+    "ATDD_FLOW_HERDR_SESSION", "ATDD_FLOW_HERDR_PANE", "HERDR_SESSION", "HERDR_PANE_ID"] as const;
+  const saved = names.map((name) => [name, process.env[name]] as const);
+  const listeners = new Map<string, Array<(event?: unknown, context?: unknown) => Promise<void> | void>>();
+  let shutdown = 0;
+  try {
+    process.env.ATDD_WORKFLOW_ROOT = root;
+    process.env.ATDD_WORKFLOW_SEAT = address;
+    for (const name of names.slice(2)) delete process.env[name];
+    installFlowExtension({
+      on(event: string, listener: (event?: unknown, context?: unknown) => Promise<void> | void) {
+        listeners.set(event, [...(listeners.get(event) ?? []), listener]);
+      },
+      sendMessage() {},
+    } as never);
+    const invoke = async (event: string, value: unknown, context?: unknown) =>
+      Promise.all((listeners.get(event) ?? []).map((handler) => handler(value, context)));
+    await invoke("session_start", {}, { sessionManager: { getSessionId: () => session, getSessionFile: () => "/tmp/observed.jsonl" }, hasUI: false });
+    await invoke("auto_retry_end", { success: false, attempt: 3, finalError: "HTTP 429 rate limit reached" });
+    await invoke("agent_settled", { aborted: false }, { shutdown: () => { shutdown += 1; } });
+    expect(shutdown).toBe(1);
+    expect((await reconcileRotations(root, { dryRun: true })).map((item) => item.outcome)).toEqual(["running"]);
+    await invoke("session_shutdown", {});
+  } finally {
+    await Promise.all((listeners.get("session_shutdown") ?? []).map((handler) => handler({})));
+    for (const [name, value] of saved) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
 });
