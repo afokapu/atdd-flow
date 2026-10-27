@@ -11,6 +11,7 @@ import { clearRuntimeState, registerRuntimeState } from "../src/runtime-state";
 import { requestSessionRotation, reconcileRotations } from "../src/session-rotation";
 import type { launchPiRuntime } from "../src/seats";
 import installFlowExtension from "../extensions/pi/index";
+import { runtimeStartupInstruction } from "../src/collaboration-policy";
 
 const roots: string[] = [];
 const address = "driver.delivery@demo", session = "01a12345-6789-7abc-8def-0123456789ab";
@@ -158,4 +159,8 @@ test("Pi reacts to exhausted quota by releasing its seat, never by directly rela
       else process.env[name] = value;
     }
   }
+});
+
+test("replacement startup explicitly points at the durable handover", () => {
+  expect(runtimeStartupInstruction(address)).toContain(`atdd-flow handover show ${address}`);
 });
