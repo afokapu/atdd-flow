@@ -27,7 +27,7 @@ async function fixture(role: "driver" | "main" = "driver") {
   await chmod(executable, 0o755);
   await atomicYaml(paths(root).desk, {
     schema: "atdd-workflow/desk/v1", desk: "demo", application: "herdr",
-    executables: { pi: executable }, fallback_model: { driver: "standby" },
+    executables: { pi: executable }, quota_handoff_model: { driver: "standby" },
   });
   await atomicYaml(paths(root).models, { schema: "atdd-workflow/models/v1", models: [
     { id: "primary", executable: "pi", args: ["--model", "primary"] },
