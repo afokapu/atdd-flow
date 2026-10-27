@@ -171,7 +171,8 @@ async function main() {
     reconcile: async () => {
       if (!rest.includes("--once") || rest.some((value) => value !== "--once" && value !== "--dry-run"))
         throw new Error("Use `atdd-flow reconcile --once [--dry-run]`.");
-      return console.log(Bun.YAML.stringify(await reconcileOnce(root, { dryRun: rest.includes("--dry-run") })));
+      process.stdout.write(Bun.YAML.stringify(await reconcileOnce(root, { dryRun: rest.includes("--dry-run") })));
+      return;
     },
     "owner-alert": async () => {
       const [subcommand, alertId, ...tail] = rest;
