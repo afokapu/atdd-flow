@@ -240,8 +240,16 @@ async function taskCoordinatorBase(root: string, config: Project, task: Task, re
   const mode = vcsMode(config);
   const branchHead = await branchCommit(mode, coordinator.worktree, branch);
   if (!requireCleanCheckout) return { coordinator, branch, commit: branchHead };
-  try { await assertBranchReady(mode, coordinator.worktree, branch); }
-  catch (error) { throw new Error(`Coordinator ${coordinator.address} is not ready: ${(error as Error).message}`); }
+  if (mode === "git") {
+    if (await runOutput(["git", "-C", coordinator.worktree, "status", "--porcelain"])) throw new Error(`Coordinator ${coordinator.address} worktree is dirty.`);
+    const checkedOut = await runOutput(["git", "-C", coordinator.worktree, "branch", "--show-current"]);
+    if (checkedOut !== branch) throw new Error(`Coordinator ${coordinator.address} is not checked out at ${branch}.`);
+    const head = await runOutput(["git", "-C", coordinator.worktree, "rev-parse", "HEAD"]);
+    if (head !== branchHead) throw new Error(`Coordinator ${coordinator.address} head is stale relative to ${branch}.`);
+  } else {
+    try { await assertBranchReady(mode, coordinator.worktree, branch); }
+    catch (error) { throw new Error(`Coordinator ${coordinator.address} is not ready: ${(error as Error).message}`); }
+  }
   return { coordinator, branch, commit: branchHead };
 }
 
