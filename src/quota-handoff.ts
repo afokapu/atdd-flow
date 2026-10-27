@@ -46,4 +46,4 @@ export const quotaHandoffInstruction = (address: string, bundle?: string) =>
   + "using the canonical Flow lifecycle convention. Validate and record it with 'atdd-flow handover " + address
   + " --file <exact-path>'. State unresolved dependencies and precise next actions. "
   + "Stop after the handover is recorded. Flow will relaunch an eligible execution model from models.yaml after release."
-  + (bundle ? "\\n" + bundle : "");
+  + (bundle ? "\n" + bundle : "");
