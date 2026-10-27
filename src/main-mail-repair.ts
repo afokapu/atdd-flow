@@ -32,10 +32,14 @@ const unwrap = (value: unknown) => {
 /** The Herdr process itself must match the recorded seat, not just its pane. */
 async function inspectHerdr(session: string, pane: string, name: string) {
   const command = (kind: string, target: string) => ["herdr", "--session", session, kind, "get", target];
-  const raw = JSON.parse(await runOutput(command("agent", name)));
-  const item = unwrap(raw) as Record<string, any>;
+  const [agentRaw, paneRaw] = await Promise.all([
+    runOutput(command("agent", name)), runOutput(command("pane", pane)),
+  ]);
+  const item = unwrap(JSON.parse(agentRaw)) as Record<string, any>;
+  const paneInfo = (JSON.parse(paneRaw)?.result?.pane ?? JSON.parse(paneRaw)?.pane) as Record<string, unknown> | undefined;
+  const validPane = paneInfo?.pane_id === pane && paneInfo?.cwd === item?.cwd;
   const path = item?.agent_session?.kind === "path" ? item.agent_session.value : undefined;
-  return { name: String(item?.name ?? ""), pane: String(item?.pane_id ?? ""),
+  return { name: validPane ? String(item?.name ?? "") : "", pane: String(item?.pane_id ?? ""),
     cwd: String(item?.cwd ?? ""), sessionPath: typeof path === "string" ? path : "" };
 }
 
@@ -142,7 +146,8 @@ async function inspectMain(root: string, seat: Seat, options: MainRepairOptions)
     if (!await confirm(root, candidate, options.inspect ?? inspectHerdr))
       return { seat: seat.address, task, outcome: "unverified" };
     if (options.dryRun) return { seat: seat.address, task, outcome: "ready" };
-    const fenced = await withOwnedRuntimeState(root, seat.address, live.owner_token, () => sendRepair(root, candidate, options));
+    const fenced = await withOwnedRuntimeState(root, seat.address, live.owner_token, async () =>
+      await confirm(root, candidate, options.inspect ?? inspectHerdr) ? sendRepair(root, candidate, options) : "unverified" as const);
     return { seat: seat.address, task, outcome: fenced.owned ? fenced.value : "unverified" };
   } catch { return { seat: seat.address, task, outcome: "unverified" }; }
 }
