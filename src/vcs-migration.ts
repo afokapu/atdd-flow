@@ -415,7 +415,7 @@ function parseMigrationArgs(args: string[]) {
     && args.filter(arg => arg === "--to").length === 1
     && rest.every(arg => flags.includes(arg))
     && new Set(rest).size === rest.length;
-  if (!valid) throw new Error(`Use \`atdd-flow project migrate-vcs <project> --to jj [${DIRTY_PRIMARY_FLAG}] [--dry-run]\`.`);
+  if (!valid) throw new Error("Use `atdd-flow project migrate-vcs <project> --to jj [--allow-dirty-primary] [--dry-run]`.");
   return { dryRun: rest.includes("--dry-run"), allowDirtyPrimary: rest.includes(DIRTY_PRIMARY_FLAG) };
 }
 
