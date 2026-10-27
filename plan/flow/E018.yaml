@@ -1,0 +1,10 @@
+urn: acc:flow:E018-UNIT-001
+phase: UNIT
+description: >-
+  Immediate task assignment natively delivers one task-specific dispatch (task, priority, mutation
+  boundary, exact assignee-only start command) whose exact message id is in the assignee's native
+  queue, and fails closed with no dispatched or delivered claim when the assignee has no native
+  queue. Only a typed acknowledgement bound to that dispatch and assignee can acknowledge it;
+  messages, receipts, and heartbeats cannot, repeats are idempotent and immutable, and start
+  evidence is separate from acknowledgement. An on-demand observer raises exactly one
+  missing-acknowledgement and one missing-start alert, each persisted once.

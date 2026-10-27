@@ -1,3 +1,7 @@
+// URN: test:flow:assignment-dispatch:E018-UNIT-001
+// Acceptance: acc:flow:E018-UNIT-001
+// Phase: UNIT
+// Layer: integration
 import { afterEach, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -127,7 +131,7 @@ test("RED: unacknowledged and acknowledged-but-TODO dispatches each raise exactl
 
   const first = await observe(root);
   const missingAck = first.alerts.missing_acknowledgement;
-  expect(missingAck).toMatchObject({ key: `${message}/missing_acknowledgement`, message: expect.stringMatching(/^M-/), observed_at: expect.any(String) });
+  expect(structuredClone(missingAck)).toMatchObject({ key: `${message}/missing_acknowledgement`, message: expect.stringMatching(/^M-/), observed_at: expect.any(String) });
   expect(first.alerts.missing_start).toBeUndefined();
   expect(await threadMessages(root, thread)).toEqual([...dispatchOnly, `${missingAck.message}.yaml`].sort());
   const alert = Bun.YAML.parse(await readFile(join(root, "threads", thread, `${missingAck.message}.yaml`), "utf8")) as Record<string, any>;
@@ -144,7 +148,7 @@ test("RED: unacknowledged and acknowledged-but-TODO dispatches each raise exactl
   expect(acknowledged.code, acknowledged.output).toBe(0);
   const afterAck = await observe(root);
   expect(afterAck.alerts.missing_acknowledgement).toEqual(missingAck);
-  expect(afterAck.alerts.missing_start).toMatchObject({ key: `${message}/missing_start`, message: expect.stringMatching(/^M-/), observed_at: expect.any(String) });
+  expect(structuredClone(afterAck.alerts.missing_start)).toMatchObject({ key: `${message}/missing_start`, message: expect.stringMatching(/^M-/), observed_at: expect.any(String) });
   expect(await threadMessages(root, thread)).toHaveLength(dispatchOnly.length + 2);
 
   expect((await observe(root)).alerts).toEqual(afterAck.alerts);
