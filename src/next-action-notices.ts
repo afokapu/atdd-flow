@@ -14,6 +14,8 @@ export type NoticeState = {
   /** A next-action follow-up has been queued and not yet delivered. */
   pending: boolean;
   lastDelivered?: string;
+  /** One automatic post-settlement continuation per unchanged directive. */
+  settledNudged?: string;
   /** Blocker notices already delivered this session, keyed by task and blocker text. */
   blockers: Set<string>;
   /** Mail ids already notified this session. */
@@ -50,19 +52,46 @@ export async function sendTaskDirective(host: NoticeHost, root: string, seat: st
   }
 }
 
+/** A settled model turn is not task completion. Give one additional nudge for a
+ * still-actionable directive, but never loop on unchanged task state. */
+export async function sendSettledDirective(host: NoticeHost, root: string, seat: string, state: NoticeState) {
+  if (state.pending) return;
+  try {
+    const directive = await nextDirective(root, seat);
+    if (!directive?.command) return; // Waiting for an authority or dependency is not work for this seat.
+    const key = directiveKey(directive);
+    if (key !== state.lastDelivered) return sendTaskDirective(host, root, seat, state);
+    if (state.settledNudged === key) return;
+    state.settledNudged = key;
+    state.pending = true;
+    host.sendMessage({
+      customType: "atdd-flow-next-action",
+      content: directiveNotice(seat, directive),
+      display: true,
+      details: { ...directiveDetails(directive), continuation: true },
+    }, { triggerTurn: true, deliverAs: "followUp" });
+  } catch { state.pending = false; }
+}
+
 /** Re-derives a held next-action follow-up when Pi delivers it; a queued message cannot be dropped, so it is replaced by the shortest truthful text. */
 async function currentDirective(root: string, seat: string, state: NoticeState, message: NoticeMessage): Promise<NoticeMessage> {
   state.pending = false;
   const directive = await nextDirective(root, seat).catch(() => undefined);
   if (!directive) {
     state.lastDelivered = undefined;
+    state.settledNudged = undefined;
     return { ...message, content: `SYSTEM: next-action notice for ${seat} withdrawn: task state has no actionable step. Task state outranks mail.`, details: { authority: "task", lifecycle: "NONE" } };
   }
   const key = directiveKey(directive);
   if (key === state.lastDelivered) {
+    if (message.details?.continuation === true && directive.command) {
+      return { ...message, content: `${directiveNotice(seat, directive)} The task remains open. Continue or escalate a real blocker; do not stop merely because this turn ended.`,
+        details: { ...directiveDetails(directive), continuation: true } };
+    }
     return { ...message, content: `SYSTEM: next action for ${seat} unchanged on ${directive.project}/${directive.task} [${directive.lifecycle}]; see the previous notice.`, details: directiveDetails(directive) };
   }
   state.lastDelivered = key;
+  state.settledNudged = undefined;
   if (directive.lifecycle === "BLOCKED") state.blockers.add(key);
   return { ...message, content: directiveNotice(seat, directive), details: directiveDetails(directive) };
 }

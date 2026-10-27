@@ -1,0 +1,7 @@
+urn: acc:flow:E012-UNIT-001
+phase: UNIT
+description: >-
+  An existing unfinished Flow obligation is re-derived from authoritative task
+  state, notified to its authorized idle actor, and nudged at most a bounded
+  number of times. Waiting, completed, deferred, unverified, and productive
+  work is never treated as abandoned, and a superseded runtime cannot wake.

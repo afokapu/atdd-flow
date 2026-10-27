@@ -19,6 +19,7 @@ import { multiplexer } from "./multiplexer";
 import * as cleanup from "./ephemeral-resources";
 import * as ownerAlerts from "./owner-escalations";
 import { recoveryFor } from "./recovery-bundle";
+import { reconcileOnce } from "./reconcile";
 import { recordHandover, requestHandoverReplacement, resumedHandoverReplacement, showHandover } from "./handover";
 
 const usage = `atdd-flow — filesystem-first agent seats and tasks
@@ -65,6 +66,7 @@ Usage:
   atdd-flow task open <project> <task-id>
   atdd-flow cleanup status <project>
   atdd-flow cleanup checklist <project> <task-id>
+  atdd-flow reconcile --once [--dry-run]
   atdd-flow owner-alert scan --by <coordinator-or-main> [--re-notify-after-ms <milliseconds>]
   atdd-flow owner-alert deliver|acknowledge|execute|resolve <alert-id> --by <address> [--note <text>|--option <id>|--reason <text>]
   atdd-flow thread start --with <address,...> --subject <text> [--task <project/task-id>]
@@ -165,6 +167,12 @@ async function main() {
       if (subcommand === "status") return console.log(Bun.YAML.stringify(await cleanup.coordinatorStatus(root, required(projectName, "project"))));
       if (subcommand === "checklist") return console.log(await cleanup.checklist(root, { project: required(projectName, "project"), task: required(taskId, "task id") }));
       throw new Error("Use `atdd-flow cleanup status <project>` or `atdd-flow cleanup checklist <project> <task-id>`.");
+    },
+    reconcile: async () => {
+      if (!rest.includes("--once") || rest.some((value) => value !== "--once" && value !== "--dry-run"))
+        throw new Error("Use `atdd-flow reconcile --once [--dry-run]`.");
+      process.stdout.write(Bun.YAML.stringify(await reconcileOnce(root, { dryRun: rest.includes("--dry-run") })));
+      return;
     },
     "owner-alert": async () => {
       const [subcommand, alertId, ...tail] = rest;
