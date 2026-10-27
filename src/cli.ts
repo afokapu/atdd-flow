@@ -20,6 +20,7 @@ import * as cleanup from "./ephemeral-resources";
 import * as ownerAlerts from "./owner-escalations";
 import { recoveryFor } from "./recovery-bundle";
 import { reconcileOnce } from "./reconcile";
+import { reconcileRotations } from "./session-rotation";
 import { recordHandover, requestHandoverReplacement, resumedHandoverReplacement, showHandover } from "./handover";
 import { migrateProjectVcs } from "./vcs-migration";
 
@@ -174,7 +175,13 @@ async function main() {
     reconcile: async () => {
       if (!rest.includes("--once") || rest.some((value) => value !== "--once" && value !== "--dry-run"))
         throw new Error("Use `atdd-flow reconcile --once [--dry-run]`.");
-      process.stdout.write(Bun.YAML.stringify(await reconcileOnce(root, { dryRun: rest.includes("--dry-run") })));
+      const dryRun = rest.includes("--dry-run");
+      const rotations = await reconcileRotations(root, { dryRun });
+      const continued = await reconcileOnce(root, { dryRun, skipSeats: new Set(rotations.map((entry) => entry.seat)) });
+      process.stdout.write(Bun.YAML.stringify([
+        ...rotations.map((entry) => ({ seat: entry.seat, task: "runtime", outcome: entry.outcome,
+          ...(entry.detail ? { detail: entry.detail } : {}) })), ...continued,
+      ]));
       return;
     },
     "owner-alert": async () => {
