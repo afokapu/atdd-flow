@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { atomicYaml } from "../src/core";
 import { reconcileOnce } from "../src/reconcile";
-import { registerRuntimeState } from "../src/runtime-state";
+import { heartbeatRuntimeState, registerRuntimeState } from "../src/runtime-state";
 import { createNoticeState, refreshDelivered, sendSettledDirective, sendTaskDirective } from "../src/next-action-notices";
 
 const roots: string[] = [];
@@ -58,10 +58,13 @@ test("same obligation is rate-limited, eventually exhausted, and a changed oblig
   const woken: string[] = [];
   expect((await reconcileOnce(root, options(woken))).map((x) => x.outcome)).toEqual(["woke"]);
   expect((await reconcileOnce(root, options(woken))).map((x) => x.outcome)).toEqual(["cooldown"]);
+  await heartbeatRuntimeState(root, driver, driver, new Date(clock.getTime() + 6 * 60_000).toISOString());
   expect((await reconcileOnce(root, options(woken, new Date(clock.getTime() + 6 * 60_000)))).map((x) => x.outcome)).toEqual(["woke"]);
+  await heartbeatRuntimeState(root, driver, driver, new Date(clock.getTime() + 12 * 60_000).toISOString());
   expect((await reconcileOnce(root, options(woken, new Date(clock.getTime() + 12 * 60_000)))).map((x) => x.outcome)).toEqual(["exhausted"]);
   expect(woken).toHaveLength(2);
   await task(root, { phase: "green" });
+  await heartbeatRuntimeState(root, driver, driver, new Date(clock.getTime() + 13 * 60_000).toISOString());
   expect((await reconcileOnce(root, options(woken, new Date(clock.getTime() + 13 * 60_000)))).map((x) => x.outcome)).toEqual(["woke"]);
 });
 
