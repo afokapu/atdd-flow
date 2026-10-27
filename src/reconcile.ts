@@ -88,7 +88,7 @@ async function target(root: string, owner: Seat, directive: TaskDirective, at: D
   const locator = runtime?.addresses.herdr;
   if (runtime?.application !== "herdr" || !locator || typeof locator === "string") return;
   const active = await readRuntimeState(root, owner.address);
-  if (!active) return;
+  if (!active || active.handoff_only) return;
   if (isRuntimeStateStale(active, 60_000, at)) return;
   if (runtime.pi_session && active.pi_session !== runtime.pi_session) return;
   return { owner, directive, locator, token: active.owner_token };
