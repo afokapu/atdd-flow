@@ -74,7 +74,7 @@ const withBundle = (text: string, bundle?: string) => bundle ? `${text}\n${bundl
 
 /** The one startup handoff for supported Flow-managed runtimes, resolved from the canonical convention. */
 export function runtimeStartupInstruction(seat: string, bundle?: string) {
-  return withBundle(`SYSTEM: you are ${seat}. Collaboration policy: ${canonicalCollaborationPolicy()} Canonical convention: ${collaborationConventionPath}. Read your durable seat and assigned work with: atdd-flow open ${seat}. Continue assigned in_progress work until it is review-ready or explicitly blocked.`, bundle);
+  return withBundle(`SYSTEM: you are ${seat}. Collaboration policy: ${canonicalCollaborationPolicy()} Canonical convention: ${collaborationConventionPath}. Read your durable seat and assigned work with: atdd-flow open ${seat}. If a recorded handover exists, read it with: atdd-flow handover show ${seat}. Reconcile that handover against current task and repository evidence. Continue assigned in_progress work until it is review-ready or explicitly blocked.`, bundle);
 }
 
 /** The 80% handover prompt; the computed bundle gives the handover record exact current state. */
