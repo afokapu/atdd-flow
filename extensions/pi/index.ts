@@ -6,7 +6,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { clearStaleRuntimeState, clearRuntimeState, heartbeatRuntimeState, ownsRuntimeState, recordMailActivation, registerRuntimeState, runtimeOwnerToken, withOwnedRuntimeState } from "../../src/runtime-state";
 import { paths, readYaml, type Seat } from "../../src/core";
 import { activationNotice, diagnoseMailActivation, expectsNativeMail } from "../../src/mail-activation-notice";
-import { type NoticeState, createNoticeState, refreshDelivered, sendTaskDirective, shouldNotifyMail } from "../../src/next-action-notices";
+import { type NoticeState, createNoticeState, refreshDelivered, sendSettledDirective, sendTaskDirective, shouldNotifyMail } from "../../src/next-action-notices";
 import { handoverThresholdInstruction, runtimeStartupInstruction, successorInstruction } from "../../src/collaboration-policy";
 import { type RecoveryMode, recoveryFor } from "../../src/recovery-bundle";
 import { contextHandoverThreshold, readHandoverReplacement } from "../../src/handover";
@@ -382,7 +382,11 @@ export default function (pi: ExtensionAPI) {
     return message ? { message: message as typeof event.message } : undefined;
   });
   // Nothing queued survives a settled run, so a pending flag left by a cleared queue cannot suppress future notices.
-  pi.on("agent_settled", () => { notices.pending = false; });
+  pi.on("agent_settled", async () => {
+    notices.pending = false;
+    // Run completion is not task completion; one bounded continuation per unchanged directive.
+    await sendSettledDirective(host, root, seat, notices);
+  });
   pi.on("turn_end", async (_event, ctx) => {
     if (handoverPrompted) return;
     const percent = ctx.getContextUsage()?.percent;
