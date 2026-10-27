@@ -1,0 +1,7 @@
+urn: acc:flow:E015-UNIT-001
+phase: UNIT
+description: >-
+  Commands whose stdout is the CLI's user interface write that output with process.stdout.write
+  instead of console.log: the address book table and the exact-session adoption authorization id
+  are byte-identical to their console.log output (each line newline-terminated), and neither
+  command calls console.log.
