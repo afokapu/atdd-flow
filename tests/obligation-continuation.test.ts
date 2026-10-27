@@ -1,5 +1,7 @@
-// URN: test:flow:obligation-continuation
-// Acceptance: unfinished authorized work is reawakened without duplicate execution or invented authority.
+// URN: test:flow:continuation:E012-UNIT-001
+// Acceptance: acc:flow:E012-UNIT-001
+// Phase: UNIT
+// Layer: integration
 import { afterEach, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
