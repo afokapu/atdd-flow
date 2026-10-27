@@ -4,9 +4,10 @@ import { basename, dirname, join } from "node:path";
 import { parse, stringify } from "yaml";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { clearStaleRuntimeState, clearRuntimeState, heartbeatRuntimeState, ownsRuntimeState, recordMailActivation, registerRuntimeState, runtimeOwnerToken, withOwnedRuntimeState } from "../../src/runtime-state";
-import { paths, readYaml, type Seat } from "../../src/core";
+import { modelPortfolio, paths, piModel, readYaml, type Seat } from "../../src/core";
+import { type TranscriptEntry, customEntries, wakeCapabilityType, wakeRequestIdPattern, wakeRequestType, wakeResultType, wakeStartType } from "../../src/pi-wake-protocol";
 import { activationNotice, diagnoseMailActivation, expectsNativeMail } from "../../src/mail-activation-notice";
-import { type NoticeState, createNoticeState, refreshDelivered, sendSettledDirective, sendTaskDirective, shouldNotifyMail } from "../../src/next-action-notices";
+import { type NoticeState, createNoticeState, deliveredDirectiveText, refreshDelivered, sendSettledDirective, sendTaskDirective, shouldNotifyMail } from "../../src/next-action-notices";
 import { handoverThresholdInstruction, runtimeStartupInstruction, successorInstruction } from "../../src/collaboration-policy";
 import { type RecoveryMode, recoveryFor } from "../../src/recovery-bundle";
 import { contextHandoverThreshold, readHandoverReplacement } from "../../src/handover";
@@ -362,6 +363,49 @@ const unsetOrEqual = (recorded: string | undefined, live: string | undefined) =>
 const sessionUnsetOrEqual = (runtime: Seat["runtime"], piSession?: string, piSessionPath?: string) =>
   unsetOrEqual(runtime?.pi_session, piSession) && unsetOrEqual(runtime?.pi_session_path, piSessionPath);
 
+
+type WakeIdentity = { seat: string; pi_session?: string; pi_session_path?: string; herdr_session?: string; pane?: string };
+type WakeContext = {
+  model?: { provider: string; id: string };
+  thinkingLevel?: string;
+  modelRegistry?: { find(provider: string, id: string): unknown; hasConfiguredAuth(model: never): boolean };
+  sessionManager?: { getSessionId?: () => string; getSessionFile?: () => string | undefined; getBranch?: () => unknown[] };
+  reload?: () => Promise<void>;
+};
+
+/** The live Pi/Herdr identity: launcher variables first, then Herdr's host-injected pane identity. */
+function wakeIdentity(seat: string, ctx: WakeContext): WakeIdentity {
+  const manager = ctx.sessionManager;
+  return {
+    seat,
+    pi_session: process.env.ATDD_FLOW_PI_SESSION ?? manager?.getSessionId?.(),
+    pi_session_path: manager?.getSessionFile?.(),
+    herdr_session: process.env.ATDD_FLOW_HERDR_SESSION ?? process.env.HERDR_SESSION,
+    pane: process.env.ATDD_FLOW_HERDR_PANE ?? process.env.HERDR_PANE_ID,
+  };
+}
+
+/** A wake may act only for the exact seat, Pi session and Herdr pane that the Desk binds together. */
+async function boundToLiveIdentity(root: string, identity: WakeIdentity) {
+  if (!identity.pi_session || !identity.herdr_session || !identity.pane) return false;
+  try {
+    const runtime = (await readYaml<Seat>(paths(root).seatFile(identity.seat))).runtime;
+    const locator = runtime?.addresses.herdr;
+    return runtime?.application === "herdr" && typeof locator === "object" && locator.session === identity.herdr_session && locator.pane === identity.pane
+      && unsetOrEqual(runtime.pi_session, identity.pi_session);
+  } catch { return false; }
+}
+
+const branchOf = (ctx: WakeContext) => (ctx.sessionManager?.getBranch?.() ?? []) as TranscriptEntry[];
+
+/** The single unmatched request on the active branch that was issued for this exact live identity. */
+function unmatchedWakeRequest(branch: TranscriptEntry[], identity: WakeIdentity) {
+  const matched = new Set(customEntries(branch, wakeResultType).map((entry) => entry.data?.request_id));
+  const request = customEntries(branch, wakeRequestType).map((entry) => entry.data).filter((data) => data && !matched.has(data.request_id)).at(-1);
+  if (!request || typeof request.request_id !== "string") return undefined;
+  return request.seat === identity.seat && request.pi_session === identity.pi_session && request.pane === identity.pane ? request : undefined;
+}
+
 /** The recovery bundle is advisory; any failure falls back to the plain prompt. */
 const recovery = (root: string, seat: string, mode: RecoveryMode, session?: string) => recoveryFor(root, seat, mode, session).catch(() => undefined);
 
@@ -417,7 +461,75 @@ export default function (pi: ExtensionAPI) {
       ctx.shutdown();
     } catch { /* No validated replacement request exists for this source session. */ }
   });
+  const safeThinking = (ctx?: WakeContext) => ctx?.thinkingLevel ?? (typeof pi.getThinkingLevel === "function" ? pi.getThinkingLevel() : undefined);
+  const wakeResult = (requestId: string, outcome: string, extra: Record<string, unknown> = {}) => pi.appendEntry(wakeResultType, { request_id: requestId, outcome, ...extra });
+  // Request, optional authenticated model swap, thinking restore, then reload; the post-reload session_start writes the result and the one resumed-work turn.
+  // The command is registered only on hosts that expose it; `/reload` keeps the old instance terminal, so nothing runs after it here.
+  (pi as { registerCommand?: ExtensionAPI["registerCommand"] }).registerCommand?.("flow-wake", {
+    description: "Flow: optionally swap to a mapped model, reload, reconcile, and wake this seat once",
+    handler: async (args: string, rawContext: unknown) => {
+      const ctx = rawContext as WakeContext & { hasUI?: boolean; ui?: { notify(message: string, level: string): void } };
+      const words = args.trim().split(/\s+/).filter(Boolean);
+      const requestId = words.at(-1);
+      if (words.length < 1 || words.length > 2 || !requestId || !wakeRequestIdPattern.test(requestId)) {
+        if (ctx.hasUI) ctx.ui?.notify("Usage: /flow-wake [portfolio-candidate] <request-id>", "error");
+        return;
+      }
+      const candidate = words.length === 2 ? words[0]! : undefined;
+      const identity = wakeIdentity(seat, ctx);
+      if (customEntries(branchOf(ctx), wakeRequestType).some((entry) => entry.data?.request_id === requestId)) {
+        wakeResult(requestId, "failed", { reason: "duplicate request id" });
+        return;
+      }
+      const source = { provider: ctx.model?.provider, model: ctx.model?.id, thinking: safeThinking(ctx) };
+      pi.appendEntry(wakeRequestType, { request_id: requestId, ...identity, ...(candidate ? { candidate } : {}), source });
+      try {
+        if (!await boundToLiveIdentity(root, identity)) return wakeResult(requestId, "failed", { reason: "Desk binding does not match the live seat, session and pane" });
+        if (candidate) {
+          const entry = (await modelPortfolio(root))?.models.find((model) => model.id === candidate);
+          const exact = entry && entry.enabled !== false ? piModel(entry) : undefined;
+          if (!exact) return wakeResult(requestId, "failed", { reason: `candidate ${candidate} is not an enabled exact Pi model` });
+          const model = ctx.modelRegistry?.find(exact.provider, exact.model);
+          if (!model || !ctx.modelRegistry!.hasConfiguredAuth(model as never)) return wakeResult(requestId, "failed", { reason: `${exact.provider}/${exact.model} is not available and authenticated in Pi` });
+          const thinking = pi.getThinkingLevel();
+          if (!await pi.setModel(model as never)) return wakeResult(requestId, "failed", { reason: `Pi did not accept ${exact.provider}/${exact.model}` });
+          pi.setThinkingLevel(thinking);
+        }
+        await ctx.reload?.();
+      } catch (error) {
+        wakeResult(requestId, "failed", { reason: error instanceof Error ? error.message : String(error) });
+      }
+    },
+  });
   pi.on("session_start", async (_event, ctx) => {
+    const wakeContext = ctx as unknown as WakeContext;
+    const identity = wakeIdentity(seat, wakeContext);
+    const wake = unmatchedWakeRequest(branchOf(wakeContext), identity);
+    // Capability is evidence of a verified activation under this extension version; it never lives in runtime state.
+    const announceCapability = () => { try { pi.appendEntry(wakeCapabilityType, { seat, pi_session: identity.pi_session, pane: identity.pane }); } catch { /* The host re-checks capability; absence only forces a reload. */ } };
+    // One reload-reconstructed result and one combined recovery + task-directive turn replace the plain startup message.
+    let wakeSettled = false;
+    const completeWake = async () => {
+      if (!wake) return false;
+      wakeSettled = true;
+      const requestId = String(wake.request_id), candidate = typeof wake.candidate === "string" ? wake.candidate : undefined;
+      const target = { provider: wakeContext.model?.provider, model: wakeContext.model?.id, thinking: safeThinking(wakeContext) };
+      if (candidate) {
+        const entry = (await modelPortfolio(root).catch(() => undefined))?.models.find((model) => model.id === candidate);
+        const exact = entry && entry.enabled !== false ? piModel(entry) : undefined;
+        if (!exact || exact.provider !== target.provider || exact.model !== target.model) { wakeResult(requestId, "failed", { reason: "model after reload is not the requested candidate", target }); return true; }
+      }
+      const bundle = await recovery(root, seat, "start", identity.pi_session);
+      const directive = await deliveredDirectiveText(root, seat, notices);
+      wakeResult(requestId, candidate ? "swapped+woke" : "woke", { target });
+      pi.sendMessage({
+        customType: wakeStartType,
+        content: `${runtimeStartupInstruction(seat, bundle)}${directive ? `\n${directive}` : ""}`,
+        display: true, details: { seat, root, request_id: requestId, wake: true },
+      }, { triggerTurn: true, deliverAs: "followUp" });
+      return true;
+    };
+    const failWake = (reason: string) => { if (wake && !wakeSettled) { wakeSettled = true; wakeResult(String(wake.request_id), "failed", { reason }); } };
     const sessionManager = (ctx as { sessionManager?: { getSessionId?: () => string; getSessionFile?: () => string | undefined } }).sessionManager;
     const liveSession = process.env.ATDD_FLOW_PI_SESSION ?? sessionManager?.getSessionId?.();
     // One display-only notice per session: a refused, timed-out or failed activation must never be silent, and never wakes the agent.
@@ -456,10 +568,13 @@ export default function (pi: ExtensionAPI) {
       if (await hostAttachedActivation({ root, seat, herdrSession: process.env.HERDR_SESSION, pane: process.env.HERDR_PANE_ID, piSession: sessionManager?.getSessionId?.(), piSessionPath: sessionManager?.getSessionFile?.() })) {
         hostActivatedAt = Date.now();
         if (await runtime.activate()) {
+          announceCapability();
+          if (await completeWake()) return;
           const bundle = await recovery(root, seat, "start", sessionManager?.getSessionId?.());
           const notice = "Notices created before this session were not replayed; run atdd-flow status seat " + seat + " for unanswered mail.";
           pi.sendMessage({ customType: "atdd-flow-start", content: `${runtimeStartupInstruction(seat, bundle)} ${notice}`, display: true, details: { seat, root } }, { triggerTurn: true, deliverAs: "followUp" });
         }
+        else failWake("native mail activation was refused");
       } else if (await expectsNativeMail(root, seat)) await noticeActivation("inactive");
       return;
     }
@@ -468,7 +583,12 @@ export default function (pi: ExtensionAPI) {
     void awaitLaunchActivation({
       root, seat, piSession, herdrSession, pane,
       activate: async () => {
-        if (!await activateWithRetry(() => current.activate())) return;
+        if (!await activateWithRetry(() => current.activate())) return failWake("native mail activation was refused");
+        announceCapability();
+        if (await completeWake()) {
+          if (ctx.hasUI) ctx.ui.notify(`ATDD Flow native mail active for ${seat}`, "info");
+          return;
+        }
         const request = await readHandoverReplacement(root, seat).catch(() => undefined);
         const successor = request && request.source.pi_session !== piSession ? request : undefined;
         const bundle = await recovery(root, seat, successor ? "successor" : "start", piSession);
@@ -483,7 +603,7 @@ export default function (pi: ExtensionAPI) {
         await sendTaskDirective(host, root, seat, notices);
         if (ctx.hasUI) ctx.ui.notify(`ATDD Flow native mail active for ${seat}`, "info");
       },
-    }).catch((error) => error instanceof ActivationTimeout
+    }).catch((error) => (failWake(error instanceof Error ? error.message : String(error)), error instanceof ActivationTimeout)
       ? noticeActivation("inactive")
       : noticeActivation(current.active ? "active" : "inactive", error instanceof Error ? error.message : String(error)));
   });

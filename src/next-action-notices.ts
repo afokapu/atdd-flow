@@ -52,6 +52,22 @@ export async function sendTaskDirective(host: NoticeHost, root: string, seat: st
   }
 }
 
+/**
+ * The current task-derived action as text for a message the caller sends itself (a wake's single combined turn).
+ * Recording it as delivered keeps the settled-turn nudge from repeating the same directive.
+ */
+export async function deliveredDirectiveText(root: string, seat: string, state: NoticeState) {
+  try {
+    const directive = await nextDirective(root, seat);
+    if (!directive) return undefined;
+    const key = directiveKey(directive);
+    state.lastDelivered = key;
+    state.settledNudged = undefined;
+    if (directive.lifecycle === "BLOCKED") state.blockers.add(key);
+    return directiveNotice(seat, directive);
+  } catch { return undefined; }
+}
+
 /** A settled model turn is not task completion. Give one additional nudge for a
  * still-actionable directive, but never loop on unchanged task state. */
 export async function sendSettledDirective(host: NoticeHost, root: string, seat: string, state: NoticeState) {

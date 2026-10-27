@@ -39,6 +39,8 @@ export type ModelPortfolio = {
   schema: "atdd-workflow/models/v1";
   /** Ordered strongest to weakest. Workflow prefers the weakest sufficient enabled candidate. */
   models: ModelCandidate[];
+  /** Named, machine-readable migrations: profile -> source `provider/model` -> existing enabled candidate id. */
+  model_migrations?: Record<string, Record<string, string>>;
 };
 type LegacyCoordination = { schema: "atdd-workflow/coordination/v2"; site: string; application: string; aliases?: Record<string, string> };
 export type Project = {
@@ -262,6 +264,40 @@ export async function migrateDesk(root: string) {
   return true;
 }
 
+/** The one exact Pi provider/model a candidate selects; undefined when it is not Pi or is ambiguous. */
+export function piModel(candidate: ModelCandidate): { provider: string; model: string } | undefined {
+  if (basename(candidate.executable) !== "pi") return undefined;
+  const args = candidate.args ?? [];
+  const flagValues = (flag: string) => args.flatMap((argument, index) => argument === flag ? [args[index + 1]] : []);
+  const [provider, ...otherProviders] = flagValues("--provider"), [model, ...otherModels] = flagValues("--model");
+  if (otherProviders.length || otherModels.length) return undefined;
+  const exact = (value: string | undefined): value is string => Boolean(value?.trim()) && !value!.startsWith("--");
+  return exact(provider) && exact(model) ? { provider, model } : undefined;
+}
+
+function assertMigrationTarget(where: string, target: unknown, models: ModelCandidate[]) {
+  const candidate = models.find((entry) => entry.id === target);
+  if (!candidate) throw new Error(`${where} targets an unknown candidate: ${String(target)}`);
+  if (candidate.enabled === false) throw new Error(`${where} targets a disabled candidate: ${candidate.id}`);
+  if (!piModel(candidate)) throw new Error(`${where} targets a candidate without one exact Pi provider and model: ${candidate.id}`);
+}
+
+const isRecord = (entry: unknown): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object" && !Array.isArray(entry);
+
+function assertMigration(profile: string, migration: unknown, models: ModelCandidate[]) {
+  if (!profile.trim() || !isRecord(migration)) throw new Error(`model_migrations.${profile || "<empty>"} must be a named map of source provider/model to a candidate id.`);
+  for (const [source, target] of Object.entries(migration)) {
+    if (!/^[^/\s]+\/\S+$/.test(source)) throw new Error(`model_migrations.${profile}: source must be provider/model: ${source}`);
+    assertMigrationTarget(`model_migrations.${profile}.${source}`, target, models);
+  }
+}
+
+function assertModelMigrations(value: unknown, models: ModelCandidate[]) {
+  if (value === undefined) return;
+  if (!isRecord(value)) throw new Error("model_migrations must map profile names to migrations.");
+  for (const [profile, migration] of Object.entries(value)) assertMigration(profile, migration, models);
+}
+
 export async function modelPortfolio(root: string): Promise<ModelPortfolio | undefined> {
   const file = paths(root).models;
   if (!await exists(file)) return undefined;
@@ -274,6 +310,7 @@ export async function modelPortfolio(root: string): Promise<ModelPortfolio | und
     if (ids.has(model.id)) throw new Error(`Duplicate model id in models.yaml: ${model.id}`);
     ids.add(model.id);
   }
+  assertModelMigrations(value.model_migrations, value.models);
   return value;
 }
 
