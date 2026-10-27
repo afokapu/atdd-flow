@@ -30,7 +30,7 @@ Usage:
   atdd-flow init <desk-directory> [--git]
   atdd-flow desk migrate
   atdd-flow project init <project>
-  atdd-flow project configure <project> [--repository <primary-checkout>] [--worktree-root <directory>]
+  atdd-flow project configure <project> [--vcs <git|jj>] [--repository <primary-checkout>] [--worktree-root <directory>]
   atdd-flow project migrate-named-coordinator-topology <project> --baseline <40-lowercase-hex-remote-main-sha>
   atdd-flow spawn <project> <role> <name> [--worktree <path>] [--branch <branch>] [--agent <legacy-executable>]
   atdd-flow bind <address> [--application <application>] --address <native-address> [--session <name>] [--agent <executable>] [--worktree <path>] [--wake host|native]
