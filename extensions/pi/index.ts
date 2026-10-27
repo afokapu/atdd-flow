@@ -384,6 +384,16 @@ export default function (pi: ExtensionAPI) {
     const message = await refreshDelivered(root, seat, notices, event.message as Parameters<typeof refreshDelivered>[3]);
     return message ? { message: message as typeof event.message } : undefined;
   });
+  // A provider quota is not context exhaustion: it may arrive at any token usage.
+  // Pi already retries transient provider errors within its own bounded policy.
+  // Observe the final failure only; do not switch models during those retries.
+  // Do not parse ordinary assistant prose as proof of a quota failure.
+  // The fallback must already be configured in the authoritative Desk.
+  // A fresh session uses the previous source receipt and recovery evidence.
+  // The extension records intent but never launches a second writer itself.
+  // Main-seat replacement remains on its existing authorized Path-A.
+  // A host invocation of reconcile --once completes the released-seat takeover.
+  // No per-turn model selection, secondary inbox, or autonomous authority is added.
   // A failed provider retry is distinguishable from a context handover threshold.
   const quotaFailure = (value: unknown) => typeof value === "string"
     && /\\b429\\b|rate[- ]limit|quota (?:exceeded|exhausted)|resource.?exhausted/i.test(value);
