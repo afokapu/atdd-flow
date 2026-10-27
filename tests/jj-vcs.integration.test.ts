@@ -6,6 +6,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { assertBranchReady } from "../src/vcs";
 
 const roots: string[] = [];
 const cli = join(import.meta.dir, "..", "src", "cli.ts");
@@ -74,4 +75,11 @@ test("JJ integration: project selection provisions colocated workspaces and book
   const bookmark = await exec(driver, "jj", "log", "-r", "delivery/feature", "--no-graph", "-T", "commit_id");
   expect(bookmark).toBe(current);
   expect(await exec(driver, "git", "rev-parse", "refs/heads/delivery/feature")).toBe(current);
+
+  // A normal JJ workspace may advance to an empty @ child after the delivery
+  // bookmark. Readiness must canonicalize that state back to the governed bookmark.
+  await exec(driver, "jj", "new", "delivery/feature");
+  const emptyChild = await exec(driver, "jj", "log", "-r", "@", "--no-graph", "-T", "commit_id");
+  expect(emptyChild).not.toBe(current);
+  expect(await assertBranchReady("jj", driver, "delivery/feature")).toBe(current);
 });
