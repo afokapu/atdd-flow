@@ -26,8 +26,5 @@ jobs:
           tar -xzf /tmp/jj.tar.gz -C /tmp/jj-bin
           sudo install /tmp/jj-bin/jj /usr/local/bin/jj
           jj version
-      - name: Policy diagnostics
-        continue-on-error: true
-        run: bun run atdd-bun all
       - name: Real colocated Jujutsu integration
         run: bun test tests/jj-vcs.integration.test.ts
