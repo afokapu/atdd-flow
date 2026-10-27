@@ -46,9 +46,11 @@ async function jjVersion(cwd: string) {
 export async function assertRepository(mode: VcsMode, path: string) {
   const expected = await realpath(resolve(path));
   if (mode === "git") {
-    const top = await realpath(await runOutput(["git", "-C", expected, "rev-parse", "--show-toplevel"]));
-    if (top !== expected) throw new Error(`${expected} is not the top level of a Git repository.`);
-    return;
+    try {
+      const top = await realpath(await runOutput(["git", "-C", expected, "rev-parse", "--show-toplevel"]));
+      if (top === expected) return;
+    } catch { /* Preserve the established configuration diagnostic below. */ }
+    throw new Error(`${expected} is not the top level of a Git repository.`);
   }
   await jjVersion(expected);
   const top = await realpath(await runOutput(["jj", "root"], expected));
