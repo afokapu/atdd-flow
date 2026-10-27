@@ -1,3 +1,7 @@
+// URN: test:flow:jj-vcs:E011-UNIT-001
+// Acceptance: acc:flow:E011-UNIT-001
+// Phase: UNIT
+// Layer: integration
 import { afterEach, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
