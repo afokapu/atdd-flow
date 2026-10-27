@@ -1,0 +1,9 @@
+urn: acc:flow:E021-UNIT-001
+phase: UNIT
+description: >-
+  A main seat whose recorded Pi session/path is stale, while a newer Pi occupies the exact canonical
+  Herdr pane and worktree, is recovered only through an explicit operator-authorized request that
+  records the exact live source and the stale canonical source it supersedes, requires the stale
+  session to be absent from every live Pi agent, never edits the seat binding or Herdr, and leaves
+  source release and the verified new binding and receipt to the existing exact-adoption launch;
+  the adopted successor is verified RESUMED against that request with the stale receipt archived by hash.
