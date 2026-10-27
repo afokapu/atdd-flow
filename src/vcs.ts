@@ -76,8 +76,15 @@ export async function assertBranchReady(mode: VcsMode, cwd: string, branch: stri
     if (conflicts) throw new Error(`Jujutsu workspace ${cwd} has unresolved conflicts.`);
   }
   const [current, expected] = await Promise.all([currentCommit(mode, cwd), branchCommit(mode, cwd, branch)]);
-  if (current !== expected) throw new Error(`Worktree ${cwd} is stale relative to ${branch}.`);
-  return current;
+  if (current === expected) return expected;
+  if (mode === "jj") {
+    const [parent, changed] = await Promise.all([
+      runOutput(["jj", "log", "-r", "@-", "--no-graph", "-T", "commit_id"], cwd),
+      runOutput(["jj", "diff", "-r", "@", "--name-only"], cwd),
+    ]);
+    if (parent === expected && !changed) return expected;
+  }
+  throw new Error(`Worktree ${cwd} is stale relative to ${branch}.`);
 }
 
 export async function addWorkspace(mode: VcsMode, repository: string, worktree: string, branch: string, base: string) {
