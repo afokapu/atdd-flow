@@ -1,3 +1,25 @@
+// URN: component:flow:jj-vcs:vcs:backend:application
+// Tested-By:
+// - test:flow:jj-vcs:E011-UNIT-001
+// Runtime: bun
+// Purpose: Provide the narrow Git/Jujutsu repository capability used by Flow.
+//
+// VCS selection is deliberately project-scoped: one Desk may coordinate Git and
+// Jujutsu repositories at the same time. The durable Flow model keeps calling
+// the delivery reference a branch; in JJ mode that reference is a bookmark.
+//
+// JJ support is intentionally colocated-only. Git remains the interchange layer
+// for exact commit ancestry and remote-compatible refs, while JJ owns working
+// copies, workspace creation, and bookmark movement. This keeps the capability
+// additive and preserves existing Git review and publication assumptions.
+//
+// A JJ working copy is itself a commit. An untouched workspace may therefore sit
+// on an empty @ child whose parent is the governed bookmark. That is equivalent
+// to a clean Git checkout for readiness checks; a non-empty @ is real work and
+// must move the delivery bookmark before it can be considered ready.
+//
+// These helpers contain the VCS-specific mechanics so seats, tasks, and reviews
+// keep their existing responsibilities instead of growing parallel Git/JJ paths.
 import { realpath } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { Project } from "./core";
@@ -31,6 +53,10 @@ export async function assertRepository(mode: VcsMode, path: string) {
   await jjVersion(expected);
   const top = await realpath(await runOutput(["jj", "root"], expected));
   if (top !== expected) throw new Error(`${expected} is not the top level of a Jujutsu repository.`);
+  // Colocation must be concrete, not inferred from a successful JJ command:
+  // the same directory must also be the Git top level used for shared refs.
+  const gitTop = await realpath(await runOutput(["git", "-C", expected, "rev-parse", "--show-toplevel"]));
+  if (gitTop !== expected) throw new Error(`${expected} is not a colocated Git-backed Jujutsu repository.`);
   await runOutput(["jj", "git", "colocation", "status"], expected);
 }
 
