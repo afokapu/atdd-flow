@@ -59,20 +59,22 @@ async function freshHandover(root: string, address: string, session: string, aft
   return { id: record.handover_id, sha256: digest(record.text) };
 }
 
-/** Context rotation keeps the previous model. Quota rotation requires an
- * explicitly different configured role fallback; a different ID alone cannot
- * prove the provider quota is independent.
+/** Context rotation keeps the previous model. Quota recovery first uses
+ * the configured fallback ONLY to write the handover, then picks a different
+ * execution candidate from the existing ordered models.yaml portfolio.
  */
 async function pinnedCandidate(root: string, source: Source, reason: Reason) {
   const original = await originalCandidate(source);
   if (!original) return;
   const config = await desk(root);
-  const selected = reason === "context" ? original : config.fallback_model?.[source.record.role];
-  if (!selected) return;
-  if (reason === "rate_limit" && selected === original) return;
   const portfolio = await modelPortfolio(root);
-  if (!portfolio || !availableModelCandidates(config, portfolio).some((candidate) => candidate.id === selected)) return;
-  return selected;
+  if (!portfolio) return;
+  const candidates = availableModelCandidates(config, portfolio);
+  if (reason === "context") return candidates.some((entry) => entry.id === original) ? original : undefined;
+  const fallback = config.fallback_model?.[source.record.role];
+  if (!fallback || fallback === original) return;
+  if (!candidates.some((entry) => entry.id === fallback)) return;
+  return candidates.find((entry) => entry.id !== original && entry.id !== fallback)?.id;
 }
 
 /** The request is create-only, fenced by the original process owner token.
@@ -100,8 +102,8 @@ export async function requestSessionRotation(root: string, address: string, toke
   if (!source) return false;
   const candidate = await pinnedCandidate(root, source, reason);
   if (!candidate) return false;
-  const handover = reason === "context" ? await freshHandover(root, address, source.session, observedAt) : undefined;
-  if (reason === "context" && !handover) return false;
+  const handover = await freshHandover(root, address, source.session, observedAt);
+  if (!handover) return false;
   const intent: Intent = {
     schema: "atdd-flow/session-rotation/v1", seat: address, reason, source_session: source.session,
     source_receipt: source.receipt, ...(handover ? { source_handover: handover } : {}),
@@ -112,7 +114,6 @@ export async function requestSessionRotation(root: string, address: string, toke
 
 /** A replacement may not rely on a stale or forged handover ID/hash. */
 async function handoverMatches(root: string, intent: Intent) {
-  if (intent.reason !== "context") return true;
   const original = await readYaml<Handover>(paths(root).handoverFile(intent.seat)).catch(() => undefined);
   const proof = intent.source_handover;
   return Boolean(original && proof && proof.id === original.handover_id && proof.sha256 === digest(original.text));
