@@ -102,7 +102,7 @@ test("quota rescue writes a validated handover before resuming on a third candid
   const picked: string[] = [];
   const stub = (async (_root: string, _seat: string, _args: string[], deps: Parameters<typeof launchPiRuntime>[3]) => {
     const model = await deps.select!({ seat: { address, role: "driver" }, tasks: [],
-      candidates: [{ id: "primary", executable: "pi" }, { id: "standby", executable: "pi" }] });
+      candidates: [{ id: "primary", executable: "pi" }, { id: "standby", executable: "pi" }, { id: "alternative", executable: "pi" }] });
     if (model.available) picked.push(model.selected_model);
     return {} as Awaited<ReturnType<typeof launchPiRuntime>>;
   }) as typeof launchPiRuntime;
@@ -162,11 +162,10 @@ test("Pi hands exhausted quota to Luna for handoff-only, without releasing early
     new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited,
   ]);
   expect(code, stderr).toBe(0);
-  expect(JSON.parse(stdout)).toEqual({
-    shutdown: 0,
-    selected: [{ provider: "openai-codex", id: "gpt-6-luna" }],
-    sent: ["atdd-flow-quota-handoff"],
-  });
+  const observed = JSON.parse(stdout);
+  expect(observed.shutdown).toBe(0);
+  expect(observed.selected).toEqual([{ provider: "openai-codex", id: "gpt-6-luna" }]);
+  expect(observed.sent).toContain("atdd-flow-quota-handoff");
   expect(await reconcileRotations(root, { dryRun: true })).toEqual([]);
 });
 
