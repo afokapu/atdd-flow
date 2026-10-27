@@ -55,7 +55,10 @@ function harness(root: string, live: string) {
   return { command, release: () => { writerPath = undefined; } };
 }
 
-async function recovered() {
+/** An active Path-A request already on the Desk: "stale" names a Pi the runtime no longer records; "live" matches the recorded runtime. */
+type Existing = "stale" | "live";
+
+async function recovered(existing?: Existing) {
   const root = await mkdtemp(join(tmpdir(), "atdd-flow-stale-resumed-"));
   roots.push(root);
   const bin = join(root, "bin"), pi = join(bin, "pi");
@@ -83,14 +86,25 @@ async function recovered() {
     "--source-herdr-session", herdrSession, "--source-pane", pane, "--target-herdr-session", herdrSession, "--target-pane", pane, "--target-cwd", cwd,
   ]);
   const fake = harness(root, livePath);
+  if (existing) {
+    const session = existing === "live" ? staleSession : "33333333-3333-4333-8333-333333333333";
+    const path = existing === "live" ? stalePath : join(root, `old_${session}.jsonl`);
+    await atomicYaml(handoverReplacementPath(root, address), {
+      schema: "atdd-flow/context-handover-replacement-request/v1", seat: address, task: "older-takeover",
+      handover: { id: "H-older", sha256: "1".repeat(64) }, authorization: { id: "A-older", hash: "2".repeat(64) },
+      source: { pi_session: session, pi_session_path: path, herdr_session: herdrSession, pane },
+      target: { herdr_session: herdrSession, pane, cwd }, created_at: "2026-10-26T08:00:00.000Z",
+    });
+  }
+  const before = existing ? await readFile(handoverReplacementPath(root, address), "utf8") : undefined;
   await requestHandoverReplacement(root, address, [
     "--recover-stale-main", "--handover", handover, "--authorization", authorizationId, "--takeover-task", takeover,
     "--source-pi-session", liveSession, "--source-pi-session-path", livePath, "--source-herdr-session", herdrSession, "--source-pane", pane,
     "--herdr-session", herdrSession, "--target-pane", pane, "--target-cwd", cwd,
-  ], { command: fake.command, at: () => "2026-10-27T10:05:00.000Z" });
+  ], { command: fake.command, at: () => "2026-10-27T10:05:00.000Z" }).catch((error: Error) => { if (existing !== "live") throw error; });
   const active = handoverReplacementPath(root, address);
   const request = await readYaml<HandoverReplacementRequest>(active);
-  return { root, fake, livePath, staleReceipt, staleBytes: await readFile(staleReceipt, "utf8"), active, request };
+  return { root, fake, livePath, staleReceipt, before, staleBytes: await readFile(staleReceipt, "utf8"), active, request };
 }
 
 async function adopt(value: Awaited<ReturnType<typeof recovered>>) {
@@ -132,4 +146,22 @@ test("stale-main recovery cannot be verified RESUMED when the archived stale rec
     "--pane", pane, "--herdr-session", herdrSession, "--adopt-session", reused.livePath,
     "--source-herdr-session", herdrSession, "--source-pane", pane, "--authorization", authorizationId, "--dry-run",
   ], { command: reused.fake.command, select: selectEconomy })).rejects.toThrow();
+});
+
+test("stale-main recovery replaces a stale active request, archives it by hash, and still reconciles RESUMED 6/6", async () => {
+  const value = await recovered("stale");
+  const prior = value.request.stale_main_recovery!.prior_request!;
+  expect(prior.path).toBe(value.active);
+  expect(await readFile(prior.archive, "utf8")).toBe(value.before!);
+  expect(value.request).toMatchObject({ task: takeover, source: { pi_session: liveSession } });
+  await adopt(value);
+  const result = await resumed(value.root);
+  expect(result.output).toContain("RESUMED; verified 6/6; discrepancies: none.");
+  await writeFile(prior.archive, "tampered\n");
+  expect(await resumed(value.root)).toMatchObject({ exitCode: 1 });
+});
+
+test("stale-main recovery never replaces an active request that still matches the recorded runtime", async () => {
+  const value = await recovered("live");
+  expect(await readFile(value.active, "utf8")).toBe(value.before!);
 });

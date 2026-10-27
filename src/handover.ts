@@ -14,7 +14,7 @@ import { resolveExactSessionAdoptionAuthorization } from "./adoption-authorizati
 import { exactFailedAdoptionProof } from "./exact-adoption-recovery";
 import { isExactOperatorSeat, operatorActivation, operatorRelaunchSection } from "./operator-launch";
 import { readRuntimeState } from "./runtime-state";
-import { type StaleMainRecovery, buildStaleMainRecovery, staleRecoveryMatches } from "./stale-main-recovery";
+import { type StaleMainRecovery, buildStaleMainRecovery, replaceActiveRequest, staleRecoveryMatches } from "./stale-main-recovery";
 
 export type Handover = {
   schema: "atdd-workflow/handover/v1";
@@ -739,15 +739,15 @@ export async function requestHandoverReplacement(root: string, address: string, 
   const resolved = await canonicalAddress(root, address), intent = await prepareReplacement(root, resolved, args);
   const file = handoverReplacementPath(root, resolved);
   if (intent.supersede) return supersedeConsumedReplacement(root, resolved, file, intent, args, dependencies);
-  if (await exists(file)) throw new Error(`Path-A replacement request already exists for ${resolved}.`);
+  if (!intent.recover && await exists(file)) throw new Error(`Path-A replacement request already exists for ${resolved}.`);
   const authorization = await resolveExactSessionAdoptionAuthorization(root, nonEmpty(words(args, "--authorization"), "--authorization"), {
     seat: resolved, pi_session: intent.source.pi_session, pi_session_path: intent.source.pi_session_path,
     source: { herdr_session: intent.source.herdr_session, pane: intent.source.pane }, target: intent.target,
   });
   const legacySource = intent.legacy ? await verifyLegacySource(intent.source, intent.target, authorization.hash, dependencies) : undefined;
-  const recovery = intent.recover ? await buildStaleMainRecovery(root, resolved, intent, (canonical) => verifyLegacySource(intent.source, intent.target, authorization.hash, dependencies, canonical)) : undefined;
+  const recovery = intent.recover ? await buildStaleMainRecovery(root, resolved, intent, { file, isLive: (prior) => replacementMatchesRuntime(intent.record.runtime, prior) }, (canonical) => verifyLegacySource(intent.source, intent.target, authorization.hash, dependencies, canonical)) : undefined;
   const request = { ...replacementRequest(resolved, intent, authorization, legacySource, dependencies), ...(recovery ? { stale_main_recovery: recovery } : {}) };
-  await (dependencies.publish ?? publishCreateOnly)(file, yaml.print(request));
+  await (recovery?.prior_request ? replaceActiveRequest : dependencies.publish ?? publishCreateOnly)(file, yaml.print(request));
   console.log(`Recorded Path-A replacement request for ${resolved}.`);
 }
 

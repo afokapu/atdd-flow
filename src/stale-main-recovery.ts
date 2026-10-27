@@ -6,7 +6,7 @@
 // Purpose: Evidence rules for operator-authorized stale-main Pi binding recovery.
 
 import { createHash } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { type Runtime, type Seat, yaml } from "./core";
 import type { HandoverReplacementRequest, LiveSourceProof } from "./handover";
@@ -19,6 +19,8 @@ import type { HandoverReplacementRequest, LiveSourceProof } from "./handover";
 export type StaleMainRecovery = {
   canonical_source: { pi_session: string; pi_session_path: string; herdr_session: string; pane: string; cwd: string; launch_receipt: string };
   prior_receipt: { path: string; sha256: string; archive: string };
+  /** A superseded active request that no longer matches the recorded runtime, preserved by hash. */
+  prior_request?: { path: string; sha256: string; archive: string };
   live_source: LiveSourceProof;
 };
 
@@ -57,7 +59,7 @@ export function receiptProvesCanonical(receipt: PriorReceipt, seat: string, cano
     && receipt.herdr_session === canonical.herdr_session && receipt.pane === canonical.pane;
 }
 
-const archivePath = (root: string, seat: string, hash: string) => join(root, ".atdd-flow", "stale-main-receipt-archive", encodeURIComponent(seat), `${hash}.yaml`);
+const archivePath = (root: string, folder: string, seat: string, hash: string) => join(root, ".atdd-flow", folder, encodeURIComponent(seat), `${hash}.yaml`);
 
 async function publishOrVerify(file: string, bytes: string) {
   await mkdir(dirname(file), { recursive: true });
@@ -74,16 +76,45 @@ export async function archiveStaleReceipt(root: string, seat: string, canonical:
   if (!receiptProvesCanonical(yaml.parse<PriorReceipt>(bytes), seat, canonical)) {
     throw new Error("Stale main recovery recorded launch receipt does not prove the recorded canonical runtime.");
   }
-  const hash = sha256(bytes), archive = archivePath(root, seat, hash);
-  await publishOrVerify(archive, bytes);
-  return { path: canonical.launch_receipt, sha256: hash, archive };
+  return { path: canonical.launch_receipt, ...await archiveBytes(root, "stale-main-receipt-archive", seat, bytes) };
 }
 
-/** The archive bytes must still hash to the recorded digest and prove the canonical source. */
+async function archiveBytes(root: string, folder: string, seat: string, bytes: string) {
+  const hash = sha256(bytes), archive = archivePath(root, folder, seat, hash);
+  await publishOrVerify(archive, bytes);
+  return { sha256: hash, archive };
+}
+
+/**
+ * An existing active request may be replaced only when it no longer matches the recorded runtime;
+ * a request that still matches is live and must go through the ordinary flow. The old bytes are archived by hash.
+ */
+async function archivePriorRequest(root: string, seat: string, file: string, isLive: (request: HandoverReplacementRequest) => boolean) {
+  let bytes: string;
+  try { bytes = await readFile(file, "utf8"); } catch { return undefined; }
+  const prior = yaml.parse<HandoverReplacementRequest>(bytes);
+  if (prior.seat !== seat || isLive(prior)) throw new Error("A live Path-A replacement request already exists; stale main recovery only replaces a request that no longer matches the recorded runtime.");
+  return { path: file, ...await archiveBytes(root, "stale-main-request-archive", seat, bytes) };
+}
+
+/** Swap the active request through a staged file so readers never observe a partial request. */
+export async function replaceActiveRequest(file: string, content: string) {
+  const staged = `${file}.${crypto.randomUUID()}.tmp`;
+  try { await writeFile(staged, content, { encoding: "utf8", flag: "wx" }); await rename(staged, file); }
+  finally { await rm(staged, { force: true }); }
+}
+
+/** An archive file must still hash to its recorded digest. */
+async function archiveIntact(prior: { sha256: string; archive: string }) {
+  try { return sha256(await readFile(prior.archive, "utf8")) === prior.sha256; } catch { return false; }
+}
+
+/** The archived receipt must prove the canonical source, and any archived prior request must be intact. */
 export async function archivedReceiptMatches(request: HandoverReplacementRequest, recovery: StaleMainRecovery) {
   try {
     const bytes = await readFile(recovery.prior_receipt.archive, "utf8");
-    return sha256(bytes) === recovery.prior_receipt.sha256 && receiptProvesCanonical(yaml.parse<PriorReceipt>(bytes), request.seat, recovery.canonical_source);
+    const priorRequest = !recovery.prior_request || await archiveIntact(recovery.prior_request);
+    return priorRequest && await archiveIntact(recovery.prior_receipt) && receiptProvesCanonical(yaml.parse<PriorReceipt>(bytes), request.seat, recovery.canonical_source);
   } catch { return false; }
 }
 
@@ -110,13 +141,13 @@ function snapshotMatches(request: HandoverReplacementRequest, live: LiveSourcePr
     && live.pane === request.source.pane && live.cwd === request.target.cwd && Boolean(live.agent && live.verified_at);
 }
 
-function archiveNamed(prior: StaleMainRecovery["prior_receipt"]) {
-  return /^[a-f0-9]{64}$/i.test(prior.sha256) && basename(prior.archive) === `${prior.sha256}.yaml`;
+function archiveNamed(prior: { sha256: string; archive: string } | undefined) {
+  return !prior || (/^[a-f0-9]{64}$/i.test(prior.sha256) && basename(prior.archive) === `${prior.sha256}.yaml`);
 }
 
 /** Request, canonical source and live-source snapshot must describe one exact target tuple. */
 export function recoveryEvidenceMatches(request: HandoverReplacementRequest, recovery: StaleMainRecovery) {
-  return targetMatches(request, recovery.canonical_source) && snapshotMatches(request, recovery.live_source) && archiveNamed(recovery.prior_receipt);
+  return targetMatches(request, recovery.canonical_source) && snapshotMatches(request, recovery.live_source) && archiveNamed(recovery.prior_receipt) && archiveNamed(recovery.prior_request);
 }
 
 /** The recorded runtime must still be the exact stale canonical source named by the recovery request. */
@@ -124,9 +155,10 @@ export function staleRecoveryMatches(runtime: Runtime | undefined, request: Hand
   return placementMatches(runtime, recovery.canonical_source) && sessionMatches(runtime, recovery) && recoveryEvidenceMatches(request, recovery);
 }
 
-/** Build the recovery record: verify the live source (injected), then archive the stale receipt by hash. */
-export async function buildStaleMainRecovery(root: string, seat: string, intent: { record: Seat; source: Source; target: Target }, verify: (canonical: StaleMainRecovery["canonical_source"]) => Promise<LiveSourceProof>): Promise<StaleMainRecovery> {
+/** Build the recovery record: verify the live source (injected), then archive the stale receipt and any stale active request by hash. */
+export async function buildStaleMainRecovery(root: string, seat: string, intent: { record: Seat; source: Source; target: Target }, active: { file: string; isLive: (request: HandoverReplacementRequest) => boolean }, verify: (canonical: StaleMainRecovery["canonical_source"]) => Promise<LiveSourceProof>): Promise<StaleMainRecovery> {
   const canonical = staleCanonicalSource(intent.record, intent.source, intent.target);
   const live_source = await verify(canonical);
-  return { canonical_source: canonical, prior_receipt: await archiveStaleReceipt(root, seat, canonical), live_source };
+  const prior_request = await archivePriorRequest(root, seat, active.file, active.isLive);
+  return { canonical_source: canonical, prior_receipt: await archiveStaleReceipt(root, seat, canonical), ...(prior_request ? { prior_request } : {}), live_source };
 }
