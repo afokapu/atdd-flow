@@ -120,9 +120,6 @@ async function reservePrompt(root: string, candidate: Candidate, at: Date) {
  */
 async function sendRepair(root: string, candidate: Candidate, options: MainRepairOptions) {
   const id = taskId(candidate);
-  const prior = await readYaml<Memo>(memoPath(root, candidate)).catch(() => undefined);
-  if (prior?.count === 2) return "exhausted" as const;
-  if (prior && (options.now ?? new Date()).getTime() - Date.parse(prior.at) < 300_000) return "cooldown" as const;
   if (!await repairTask(root, candidate, id)) return "failed" as const;
   const disposition = await reservePrompt(root, candidate, options.now ?? new Date());
   if (disposition !== "reserved") return disposition;
