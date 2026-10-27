@@ -39,17 +39,40 @@ async function inspectHerdr(session: string, pane: string, name: string) {
     cwd: String(item?.cwd ?? ""), sessionPath: typeof path === "string" ? path : "" };
 }
 
+/** Only canonical main seats are allowed to receive this special repair path.
+ * Other roles continue to use their existing coordinator escalation rules.
+ */
+function canonicalMain(seat: Seat) {
+  return seat.role === "main" && seat.address === `main@${seat.project}` && !seat.retired;
+}
+
+/** Runtime placement cannot differ: only the Pi session ID may be stale. */
+function eligibleRuntime(seat: Seat, live: RuntimeState) {
+  const runtime = seat.runtime, herdr = runtime?.addresses.herdr;
+  return runtime?.application === "herdr" && runtime.wake === "native"
+    && !!herdr && typeof herdr !== "string" && !!runtime.pi_session
+    && !!live.pi_session && runtime.pi_session !== live.pi_session && live.seat === seat.address;
+}
+
+/** A failed activation must name exactly the session field, not a pane or host. */
+function exactInactiveMail(seat: Seat, live: RuntimeState) {
+  const activation = live.mail_activation, runtime = seat.runtime;
+  const herdr = runtime?.addresses.herdr;
+  if (!activation || !herdr || typeof herdr === "string") return false;
+  const compared = activation.bound.pi_session === runtime?.pi_session
+    && activation.live.pi_session === live.pi_session;
+  const placement = activation.live.herdr_session === herdr.session
+    && activation.live.pane === herdr.pane;
+  return activation.transport === "inactive" && compared && placement
+    && activation.differs.length === 1 && activation.differs[0] === "session";
+}
+
 /** Mismatches of session ID alone can trigger this narrow repair pathway. */
 function onlySessionMismatch(seat: Seat, live: RuntimeState): Candidate | undefined {
-  const runtime = seat.runtime, herdr = runtime?.addresses.herdr, activation = live.mail_activation;
-  if (seat.role !== "main" || seat.address !== `main@${seat.project}` || seat.retired) return;
-  if (runtime?.application !== "herdr" || runtime.wake !== "native"
-    || !herdr || typeof herdr === "string" || !runtime.pi_session || !live.pi_session) return;
-  if (runtime.pi_session === live.pi_session || live.seat !== seat.address) return;
-  if (activation?.transport !== "inactive" || activation.live.pi_session !== live.pi_session) return;
-  if (activation.bound.pi_session !== runtime.pi_session || activation.differs.length !== 1 || activation.differs[0] !== "session") return;
-  if (activation.live.herdr_session !== herdr.session || activation.live.pane !== herdr.pane) return;
-  return { seat, live, herdr, bound: runtime.pi_session };
+  if (!canonicalMain(seat) || !eligibleRuntime(seat, live) || !exactInactiveMail(seat, live)) return;
+  const runtime = seat.runtime!, herdr = runtime.addresses.herdr;
+  if (!herdr || typeof herdr === "string") return;
+  return { seat, live, herdr, bound: runtime.pi_session! };
 }
 
 /** Verify main's primary worktree, live Pi identity, and exact JSONL session. */
@@ -79,15 +102,30 @@ async function repairTask(root: string, candidate: Candidate, id: string) {
   return true;
 }
 
-/** A single prompt is not a substitute for a repaired binding. */
-async function sendRepair(root: string, candidate: Candidate, options: MainRepairOptions) {
-  const id = taskId(candidate), memo = memoPath(root, candidate), now = options.now ?? new Date();
-  const previous = await readYaml<Memo>(memo).catch(() => undefined);
+/** A bounded memo makes direct Herdr prompts idempotent across host restarts.
+ * A failed prompt counts as an attempt, preventing storming a broken host.
+ */
+async function reservePrompt(root: string, candidate: Candidate, at: Date) {
+  const file = memoPath(root, candidate);
+  const previous = await readYaml<Memo>(file).catch(() => undefined);
   if (previous?.count === 2) return "exhausted" as const;
-  if (previous && now.getTime() - Date.parse(previous.at) < 300_000) return "cooldown" as const;
-  if (!await repairTask(root, candidate, id)) return "failed" as const;
-  await atomicYaml(memo, { schema: "atdd-flow/main-mail-repair-notice/v1", at: now.toISOString(),
+  if (previous && at.getTime() - Date.parse(previous.at) < 300_000) return "cooldown" as const;
+  await atomicYaml(file, { schema: "atdd-flow/main-mail-repair-notice/v1", at: at.toISOString(),
     count: (previous?.count ?? 0) + 1 } satisfies Memo);
+  return "reserved" as const;
+}
+
+/** A single prompt is not a substitute for a repaired binding.
+ * The repair task is permanent Desk work; the memo is temporary host evidence.
+ */
+async function sendRepair(root: string, candidate: Candidate, options: MainRepairOptions) {
+  const id = taskId(candidate);
+  const prior = await readYaml<Memo>(memoPath(root, candidate)).catch(() => undefined);
+  if (prior?.count === 2) return "exhausted" as const;
+  if (prior && (options.now ?? new Date()).getTime() - Date.parse(prior.at) < 300_000) return "cooldown" as const;
+  if (!await repairTask(root, candidate, id)) return "failed" as const;
+  const disposition = await reservePrompt(root, candidate, options.now ?? new Date());
+  if (disposition !== "reserved") return disposition;
   const notice = `SYSTEM: repair task ${candidate.seat.project}/${id} for ${candidate.seat.address}. Your native Flow inbox is inactive because bound Pi session ${candidate.bound} differs from your live Pi session ${candidate.live.pi_session}. This exact Herdr prompt is a recovery notice, not mail activation. Read 'atdd-flow task open ${candidate.seat.project} ${id}' and 'atdd-flow status seat ${candidate.seat.address}'. Coordinate the existing operator-authorized exact-session recovery and verify native mail; do not blindly rebind or invent authorization.`;
   try {
     await (options.deliver ?? ((session, pane, body) => notify("herdr", pane, body, session)))
