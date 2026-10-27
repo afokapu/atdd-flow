@@ -1,6 +1,6 @@
-// URN: component:flow:e013:session-rotation:backend:application
+// URN: component:flow:e014:session-rotation:backend:application
 // Tested-By:
-// - test:flow:session-rotation:E013-UNIT-001
+// - test:flow:session-rotation:E014-UNIT-001
 // Runtime: bun
 // Purpose: Replace released Pi sessions without changing Desk work authority.
 import { createHash } from "node:crypto";
