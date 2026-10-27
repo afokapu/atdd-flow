@@ -1,3 +1,9 @@
+// URN: component:flow:e004:collaboration-policy:backend:application
+// Tested-By:
+// - test:atdd-flow:seat-recovery-bundle
+// Runtime: bun
+// Purpose: Define the project collaboration policy and its startup instruction.
+
 import { readFileSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
