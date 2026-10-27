@@ -311,7 +311,7 @@ export async function retireSeat(root: string, address: string, args: string[]) 
   console.log(`${resolved}  retired`);
 }
 
-export async function add(root: string, projectName: string, id: string, args: string[]) {
+export async function add(root: string, projectName: string, id: string, args: string[], options: { quiet?: boolean } = {}) {
   const normalizedId = taskId(id);
   await project(root, projectName);
   if (await exists(paths(root).taskFile(projectName, normalizedId))) throw new Error(`Task ${normalizedId} already exists and cannot be replaced.`);
@@ -336,7 +336,7 @@ export async function add(root: string, projectName: string, id: string, args: s
     done_when: doneWhen,
   };
   await writeTask(root, projectName, normalizedId, task);
-  console.log(normalizedId);
+  if (!options.quiet) console.log(normalizedId);
 }
 
 export async function assign(root: string, projectName: string, id: string, args: string[]) {
