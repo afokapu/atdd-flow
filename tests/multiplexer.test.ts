@@ -301,3 +301,55 @@ test("a linked seat target still requires a checkout path even when a no-checkou
   expect(projected.workspace).not.toBe("wl");
   expect(herdr.calls.some((call) => call.startsWith(`worktree open --workspace w1 --path ${fixture.integration}`))).toBe(true);
 });
+
+test("RED: legacy generic coordinator@project sharing the primary main worktree is not bulk-projected, while main, operator, and named coordinators are", async () => {
+  const fixture = await desk();
+  const seats = join(fixture.site, "work", "demo", "seats");
+  await Promise.all(["coordinator", "operator"].map((name) => mkdir(join(seats, name), { recursive: true })));
+  await Promise.all([
+    writeFile(join(seats, "coordinator", "seat.yaml"), `schema: atdd-workflow/seat/v2
+address: coordinator@demo
+role: coordinator
+project: demo
+worktree: ${fixture.repository}
+branch: main
+`),
+    writeFile(join(seats, "operator", "seat.yaml"), `schema: atdd-workflow/seat/v2
+address: operator@demo
+role: operator
+project: demo
+worktree: ${fixture.repository}
+branch: main
+`),
+  ]);
+  const fake = await fakeHerdr(fixture.root);
+  await invoke(fixture.site, fake.environment, "multiplexer", "apply", "herdr", "--session", "chosen");
+  const calls = await readFile(fake.log, "utf8");
+  for (const projected of ["main@demo", "operator@demo", "coordinator.primary@demo", "coordinator.integration@demo"]) expect(calls).toContain(projected);
+  expect(calls).not.toContain("coordinator@demo");
+  const status = JSON.parse(await invoke(fixture.site, fake.environment, "multiplexer", "status", "herdr", "--session", "chosen"));
+  expect(status.unprojected.map((entry: { address: string }) => entry.address)).not.toContain("coordinator@demo");
+  // Option A: an explicit per-seat projection still projects the legacy seat.
+  const command = async (args: string[]) => {
+    const child = Bun.spawn([join(fixture.root, "bin", "herdr"), ...args.slice(1)], { env: fake.environment, stdout: "pipe", stderr: "pipe" });
+    return new Response(child.stdout).text();
+  };
+  expect(await projectHerdrSeat(fixture.site, "coordinator@demo", "chosen", command)).toMatchObject({ label: "coordinator@demo" });
+});
+
+test("a project whose only primary coordinator is the legacy generic one keeps its primary tab", async () => {
+  const fixture = await desk();
+  const seats = join(fixture.site, "work", "demo", "seats");
+  await rm(join(seats, "main"), { recursive: true });
+  await mkdir(join(seats, "coordinator"), { recursive: true });
+  await writeFile(join(seats, "coordinator", "seat.yaml"), `schema: atdd-workflow/seat/v2
+address: coordinator@demo
+role: coordinator
+project: demo
+worktree: ${fixture.repository}
+branch: main
+`);
+  const fake = await fakeHerdr(fixture.root);
+  await invoke(fixture.site, fake.environment, "multiplexer", "apply", "herdr", "--session", "chosen");
+  expect(await readFile(fake.log, "utf8")).toContain("coordinator@demo");
+});
