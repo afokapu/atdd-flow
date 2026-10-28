@@ -50,7 +50,7 @@ export async function createExactSessionAdoptionAuthorization(root: string, id: 
   await mkdir(dirname(file), { recursive: true });
   await writeFile(file, content, { encoding: "utf8", flag: "wx" });
   await writeFile(hashPath(root, id), `${digest(content)}\n`, { encoding: "utf8", flag: "wx" });
-  console.log(id);
+  process.stdout.write(`${id}\n`);
 }
 
 function same(record: ExactSessionAdoptionAuthorization, expected: Omit<ExactSessionAdoptionAuthorization, "schema" | "id" | "issued_by" | "created_at">) {
