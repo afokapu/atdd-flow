@@ -1,3 +1,9 @@
+// URN: component:flow:e006:adoption-authorizations:backend:integration
+// Tested-By:
+// - test:flow:exact-adoption-resumed-proof-and-relaunch
+// Runtime: bun
+// Purpose: Create and resolve exact-session adoption authorizations.
+
 import { createHash } from "node:crypto";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";

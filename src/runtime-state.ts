@@ -1,3 +1,10 @@
+// URN: component:flow:e010:runtime-state:backend:application
+// Tested-By:
+// - test:flow:inactive-mail-notice-diagnosable
+// - test:flow:relaunched-seat-mail-activation
+// Runtime: bun
+// Purpose: Record and read advisory seat runtime state.
+
 import { mkdir, readFile, rm, stat, unlink } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
