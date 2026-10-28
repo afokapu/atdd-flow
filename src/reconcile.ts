@@ -20,6 +20,7 @@ export type ReconcileOptions = {
   maxNudges?: number;
   inspect?: (locator: HerdrLocator, seat: string) => Promise<string>;
   wake?: (locator: HerdrLocator, notice: string) => Promise<void>;
+  warn?: (message: string) => void;
 };
 
 type Attempt = { schema: "atdd-flow/continuation-attempt/v1"; key: string; at: string; count: number };
@@ -46,13 +47,17 @@ async function inspectHerdr(locator: HerdrLocator, address: string) {
 /** Discover durable seat identity from the existing Desk directories.
  * No second fleet registry is created or synchronized.
  */
-async function seats(root: string): Promise<Seat[]> {
+async function seats(root: string, warn: (message: string) => void): Promise<Seat[]> {
   const found: Seat[] = [];
   for (const project of await readdir(paths(root).work, { withFileTypes: true })) {
     if (!project.isDirectory()) continue;
     for (const local of await readdir(paths(root).seats(project.name), { withFileTypes: true }).catch(() => [])) {
       if (!local.isDirectory()) continue;
-      found.push(await readYaml<Seat>(join(paths(root).seats(project.name), local.name, "seat.yaml")));
+      const folder = join(paths(root).seats(project.name), local.name);
+      // A completely empty directory (hidden entries included) is a ghost, not a seat: skip it once, never delete it.
+      // Any directory with content but no seat.yaml still fails closed in readYaml.
+      if ((await readdir(folder)).length === 0) { warn(`Skipping empty seat directory without a seat record: ${folder}`); continue; }
+      found.push(await readYaml<Seat>(join(folder, "seat.yaml")));
     }
   }
   return found;
@@ -143,7 +148,7 @@ async function reconcileSeat(root: string, owner: Seat, config: Settings): Promi
 export async function reconcileOnce(root: string, options: ReconcileOptions = {}): Promise<Reconciliation[]> {
   const config = settings(options);
   const results: Reconciliation[] = [];
-  for (const owner of await seats(root)) {
+  for (const owner of await seats(root, options.warn ?? ((message) => process.stderr.write(`warning: ${message}\n`)))) {
     const result = await reconcileSeat(root, owner, config);
     if (result) results.push(result);
   }
