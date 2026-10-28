@@ -7,6 +7,7 @@
 
 import { basename, resolve } from "node:path";
 import { init, initProject, configureProject, migrateNamedCoordinatorTopology, spawn, bind, useApplication, attach, describe, checkpoint, launchPiRuntime, migrate, openSeat, piExtensionPath } from "./seats";
+import { formatWakeRow, wakePi } from "./pi-wake";
 import { createExactSessionAdoptionAuthorization } from "./adoption-authorizations";
 import { addParticipant, openThread, post, readMessage, receipt, result, startThread } from "./threads";
 import * as tasks from "./tasks";
@@ -40,6 +41,7 @@ Usage:
   atdd-flow bind <address> [--application <application>] --address <native-address> [--session <name>] [--agent <executable>] [--worktree <path>] [--wake host|native]
   atdd-flow attach <address> [--application <application>] [--wake host|native]
   atdd-flow pi extension-path
+  atdd-flow pi wake <seat>|--scope project|desk [--model-profile <name>] --by <authorized-seat>
   atdd-flow pi runtime authorize-adoption <id> --by operator@desk --seat <seat> --pi-session <id> --pi-session-path <jsonl> --source-herdr-session <session> --source-pane <pane> --target-herdr-session <session> --target-pane <pane> --target-cwd <path>
   atdd-flow pi runtime launch <address> [--pane <asserted-herdr-pane>] --herdr-session <session> [--resume] [--dry-run] [--adopt-session <exact-jsonl> --source-herdr-session <session> --source-pane <pane> --authorization <record-id>]
   atdd-flow application use <address> <application>
@@ -124,6 +126,12 @@ async function main() {
     attach: () => attach(root, required(rest[0], "address"), rest.slice(1)),
     pi: async () => {
       if (rest[0] === "extension-path") return console.log(piExtensionPath());
+      if (rest[0] === "wake") {
+        const { rows, success } = await wakePi(root, rest.slice(1), (entry) => console.log(formatWakeRow(entry)));
+        if (!success) process.exitCode = 1;
+        if (rows.length !== 1) console.log(`pi wake: ${rows.length} seat(s) — ${["woke", "swapped+woke", "deferred", "refused", "skipped", "failed"].map((outcome) => [outcome, rows.filter((entry) => entry.outcome === outcome).length] as const).filter(([, count]) => count).map(([outcome, count]) => `${count} ${outcome}`).join(", ") || "none"}`);
+        return;
+      }
       if (rest[0] === "runtime" && rest[1] === "authorize-adoption") return createExactSessionAdoptionAuthorization(root, required(rest[2], "authorization id"), rest.slice(3));
       if (rest[0] === "runtime" && rest[1] === "launch") {
         const plan = await launchPiRuntime(root, required(rest[2], "address"), rest.slice(3));
@@ -131,7 +139,7 @@ async function main() {
         else console.log(`Launched Pi runtime for ${required(rest[2], "address")} with ${plan.candidate}.`);
         return;
       }
-      throw new Error("Use `pi extension-path`, `pi runtime authorize-adoption <id> ...`, or `pi runtime launch <address> [--pane <asserted-pane>] --herdr-session <session> [--resume] [--dry-run] [--adopt-session <exact-jsonl> --source-herdr-session <session> --source-pane <pane> --authorization <record-id>]`.");
+      throw new Error("Use `pi extension-path`, `pi wake <seat>|--scope project|desk [--model-profile <name>] --by <authorized-seat>`, `pi runtime authorize-adoption <id> ...`, or `pi runtime launch <address> [--pane <asserted-pane>] --herdr-session <session> [--resume] [--dry-run] [--adopt-session <exact-jsonl> --source-herdr-session <session> --source-pane <pane> --authorization <record-id>]`.");
     },
     application: async () => {
       if (rest[0] === "use") return useApplication(root, required(rest[1], "address"), required(rest[2], "application"));

@@ -250,6 +250,29 @@ atdd-flow --root /path/to/desk attach driver.runtime@example-app --application h
 
 Pi receives its identity and startup task from the extension itself. Its normal TUI remains visible and manually usable; incoming Desk mail wakes it through Pi's native message API. The runtime lifecycle has one internal bounded inbox transport; it does not add a second watcher, registry, mailbox, reservation system, or routing path.
 
+### Wake or migrate live Pi seats
+
+`atdd-flow pi wake` replaces the manual `/model` → `/reload` → inbox/task prompt chain with one command per seat or fleet. It sends only the local extension command `/flow-wake` through Herdr (no model prompt) and verifies Pi's own session transcript.
+
+```sh
+atdd-flow pi wake driver.runtime@example-app --by operator@desk                          # keep model, reconcile, wake once
+atdd-flow pi wake driver.runtime@example-app --model-profile restore --by main@example-app # swap to the mapped model first
+atdd-flow pi wake --scope project --by main@example-app                                   # every live seat of the project
+atdd-flow pi wake --scope desk --by operator@desk                                         # every live seat of the Desk
+```
+
+`--by` must be `operator@desk` or the project's `main@<project>`; `--scope desk` requires the operator. A profile is declared in `models.yaml` and must map a source `provider/model` to an existing, enabled portfolio candidate that names one exact Pi `--provider`/`--model`; anything else is rejected when `models.yaml` is read:
+
+```yaml
+model_migrations:
+  restore:
+    anthropic/claude-sonnet-4-5: strong
+```
+
+The extension re-checks the target against Pi's authenticated model registry, calls `setModel`, preserves the thinking level, and reloads. On reload the unmatched request is reconstructed from the active transcript branch; Flow reactivates mail, writes the result, and injects the recovery bundle plus the authoritative task directive as exactly one resumed-work turn. A seat whose Pi predates `/flow-wake` is first sent one `/reload` at a safe boundary, and only a fresh `flow-wake-capability/v1` transcript entry lets the wake proceed.
+
+Seats are handled in lexical order, one at a time, and every seat gets exactly one row: `woke`, `swapped+woke`, `deferred` (agent working), `refused` (blocked/question UI, stale pane/session/process, unmapped model), `skipped` (retired, terminal task, no agent or binding, the invoking seat), or `failed` (unavailable target, partial model/reload evidence; never retried). A named seat exits non-zero unless it woke; a fleet exits non-zero only on `refused` or `failed`. No fallback model, relaunch, compaction, seat reassignment, or session replacement exists, and Desk, seat, runtime and repository records are never written; only Pi's native model-change and flow-wake entries are appended to the transcript. `ATDD_FLOW_WAKE_TIMEOUT_MS` bounds each wait (default 30 s; 5 min for a seat to return to idle after a bootstrap reload).
+
 The lifecycle and recovery design was informed by [nicobailon/pi-messenger](https://github.com/nicobailon/pi-messenger) at `09937ed647a1b07a3b595bf75943feacb80ff123` (MIT). No pi-messenger source is copied here. Flow keeps Desk identity, recipient selection, immutable mail, and governance authoritative; any future copied source must carry its MIT notice.
 
 With ATDD Bun, enable the Workflow profile:

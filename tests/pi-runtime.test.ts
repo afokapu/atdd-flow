@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { atomicYaml } from "../src/core";
 import { readRuntimeState } from "../src/runtime-state";
-import { awaitLaunchActivation, createPiRuntime } from "../extensions/pi/index";
+import installFlowExtension, { awaitLaunchActivation, createPiRuntime } from "../extensions/pi/index";
 
 const seat = "driver.pi@demo";
 const thread = "T-runtime";
@@ -154,6 +154,97 @@ test("RED: the extension runtime starts, registers, heartbeats, and stops in Nod
     expect(result.heartbeated.heartbeat_at).not.toBe(result.registered.heartbeat_at);
     expect(result.stopped).toBe(true);
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("RED: flow-wake registers a transcript-native command and orders request, authenticated model swap, thinking restore, and reload", async () => {
+  const root = await temporaryDesk();
+  const session = "01a12345-6789-7abc-8def-0123456789ab", pane = "w1:p2", sessionPath = join(root, `run_${session}.jsonl`);
+  const names = ["ATDD_WORKFLOW_ROOT", "ATDD_WORKFLOW_SEAT", "ATDD_FLOW_PI_SESSION", "ATDD_FLOW_HERDR_SESSION", "ATDD_FLOW_HERDR_PANE"] as const;
+  const saved = names.map((name) => [name, process.env[name]] as const);
+  const calls: string[] = [], entries: Array<{ customType: string; data: Record<string, unknown> }> = [];
+  let command: { handler(args: string, context: unknown): Promise<void> } | undefined, modelAccepted = true;
+  const source = { provider: "old", id: "source" }, target = { provider: "new", id: "exact" };
+  try {
+    Object.assign(process.env, { ATDD_WORKFLOW_ROOT: root, ATDD_WORKFLOW_SEAT: seat, ATDD_FLOW_PI_SESSION: session, ATDD_FLOW_HERDR_SESSION: "forge", ATDD_FLOW_HERDR_PANE: pane });
+    await atomicYaml(join(root, "models.yaml"), {
+      schema: "atdd-workflow/models/v1",
+      models: [{ id: "target", executable: "pi", args: ["--provider", "new", "--model", "exact"] }],
+      model_migrations: { restore: { "old/source": "target" } },
+    });
+    await atomicYaml(join(root, "work", "demo", "seats", "driver.pi", "seat.yaml"), {
+      schema: "atdd-workflow/seat/v2", address: seat, role: "driver", project: "demo", worktree: "/work/demo", branch: "delivery/pi",
+      runtime: { application: "herdr", wake: "native", addresses: { herdr: { session: "forge", pane } }, pi_session: session, pi_session_path: sessionPath },
+    });
+    installFlowExtension({
+      on() {}, sendMessage() {},
+      registerCommand(name: string, options: unknown) { if (name === "flow-wake") command = options as typeof command; },
+      appendEntry(customType: string, data: Record<string, unknown>) { calls.push(customType); entries.push({ customType, data }); },
+      async setModel(model: unknown) { calls.push(`model:${(model as { provider: string }).provider}/${(model as { id: string }).id}`); return modelAccepted; },
+      getThinkingLevel() { return "high"; },
+      setThinkingLevel(level: string) { calls.push(`thinking:${level}`); },
+    } as never);
+    expect(command).toBeDefined();
+    const context = (branch: unknown[] = []) => ({
+      cwd: "/work/demo", model: source, hasUI: false, ui: { notify() {} },
+      modelRegistry: { find: (provider: string, id: string) => provider === "new" && id === "exact" ? target : undefined, getAvailable: () => [source, target], hasConfiguredAuth: () => true },
+      sessionManager: { getSessionId: () => session, getSessionFile: () => sessionPath, getBranch: () => branch },
+      async reload() { calls.push("reload"); },
+    });
+    await command!.handler("target request-unique-1", context());
+    expect(entries[0]).toMatchObject({ customType: "flow-wake-request/v1", data: { request_id: "request-unique-1", candidate: "target", seat, pi_session: session, pane } });
+    expect(calls).toEqual(["flow-wake-request/v1", "model:new/exact", "thinking:high", "reload"]);
+    expect(entries.every((value) => value.customType !== "atdd-flow-start")).toBe(true); // appendEntry is non-context; startup is emitted only after reload.
+
+    const beforeDuplicate = calls.length;
+    await command!.handler("target request-unique-1", context([{ type: "custom", customType: "flow-wake-request/v1", data: { request_id: "request-unique-1" } }]));
+    expect(calls.slice(beforeDuplicate)).not.toContain("model:new/exact");
+    expect(calls.slice(beforeDuplicate)).not.toContain("reload");
+    expect(entries.at(-1)).toMatchObject({ customType: "flow-wake-result/v1", data: { request_id: "request-unique-1", outcome: "failed" } });
+
+    modelAccepted = false;
+    const beforeAuthFailure = calls.length;
+    await command!.handler("target request-auth-1", context());
+    expect(entries.at(-1)).toMatchObject({ customType: "flow-wake-result/v1", data: { request_id: "request-auth-1", outcome: "failed" } });
+    expect(calls.slice(beforeAuthFailure)).not.toContain("reload");
+  } finally {
+    for (const [name, value] of saved) { if (value === undefined) delete process.env[name]; else process.env[name] = value; }
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("RED: reload reconstructs one unmatched request from the active branch and combines recovery plus task directive into one trigger", async () => {
+  const root = await temporaryDesk();
+  const piSession = "01a12345-6789-7abc-8def-0123456789ab", pane = "w1:p2", sessionPath = join(root, `run_${piSession}.jsonl`), receipt = join(root, "receipt.yaml");
+  const names = ["ATDD_WORKFLOW_ROOT", "ATDD_WORKFLOW_SEAT", "ATDD_FLOW_PI_SESSION", "ATDD_FLOW_HERDR_SESSION", "ATDD_FLOW_HERDR_PANE"] as const;
+  const saved = names.map((name) => [name, process.env[name]] as const);
+  let start: ((event: unknown, context: unknown) => Promise<void>) | undefined, shutdown: (() => void) | undefined;
+  const entries: Array<{ customType: string; data: Record<string, unknown> }> = [], sent: Array<{ value: { customType: string; content: string }; options?: { triggerTurn?: boolean } }> = [];
+  try {
+    Object.assign(process.env, { ATDD_WORKFLOW_ROOT: root, ATDD_WORKFLOW_SEAT: seat, ATDD_FLOW_PI_SESSION: piSession, ATDD_FLOW_HERDR_SESSION: "forge", ATDD_FLOW_HERDR_PANE: pane });
+    await atomicYaml(receipt, { schema: "atdd-flow/pi-runtime-launch-receipt/v1", seat, pi_session: piSession, pi_session_path: sessionPath, herdr_session: "forge", pane });
+    await atomicYaml(join(root, "work", "demo", "seats", "driver.pi", "seat.yaml"), { schema: "atdd-workflow/seat/v2", address: seat, role: "driver", project: "demo", worktree: "/work/demo", branch: "delivery/pi", runtime: { application: "herdr", addresses: { herdr: { session: "forge", pane } }, pi_session: piSession, pi_session_path: sessionPath, launch_receipt: receipt } });
+    await atomicYaml(join(root, "work", "demo", "tasks", "wake.yaml"), { schema: "atdd-workflow/task/v1", title: "wake", status: "in_progress", coordinator: "main@demo", assignee: seat, phase: "red", handoff: { state: "executing", evidence: "accepted", updated_at: new Date().toISOString() }, done_when: [{ text: "wake" }] });
+    const request = { type: "custom", id: "request-entry", parentId: null, timestamp: new Date().toISOString(), customType: "flow-wake-request/v1", data: { request_id: "request-reload-1", seat, pi_session: piSession, pi_session_path: sessionPath, herdr_session: "forge", pane, source: { provider: "old", model: "source", thinking: "high" } } };
+    installFlowExtension({
+      on(event: string, listener: unknown) { if (event === "session_start") start = listener as typeof start; if (event === "session_shutdown") shutdown = listener as typeof shutdown; },
+      registerCommand() {}, appendEntry(customType: string, data: Record<string, unknown>) { entries.push({ customType, data }); },
+      sendMessage(value: { customType: string; content: string }, options?: { triggerTurn?: boolean }) { sent.push({ value, options }); },
+    } as never);
+    await start?.({}, { hasUI: false, model: { provider: "old", id: "source" }, thinkingLevel: "high", sessionManager: { getSessionId: () => piSession, getSessionFile: () => sessionPath, getBranch: () => [request] } });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(entries.map((value) => value.customType)).toContain("flow-wake-capability/v1");
+    expect(entries).toContainEqual(expect.objectContaining({ customType: "flow-wake-result/v1", data: expect.objectContaining({ request_id: "request-reload-1" }) }));
+    const triggered = sent.filter((message) => message.options?.triggerTurn);
+    expect(triggered).toHaveLength(1);
+    expect(triggered[0]?.value.customType).toBe("atdd-flow-start");
+    expect(triggered[0]?.value.content).toContain("RECOVERY BUNDLE");
+    expect(triggered[0]?.value.content).toContain("authoritative next action");
+    expect(await readRuntimeState(root, seat)).not.toHaveProperty("capabilities");
+    shutdown?.();
+  } finally {
+    for (const [name, value] of saved) { if (value === undefined) delete process.env[name]; else process.env[name] = value; }
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("startup activation waits for the verified receipt and exact binding, activates once, and owner shutdown clears state", async () => {
