@@ -366,9 +366,9 @@ const sessionUnsetOrEqual = (runtime: Seat["runtime"], piSession?: string, piSes
 const recovery = (root: string, seat: string, mode: RecoveryMode, session?: string) => recoveryFor(root, seat, mode, session).catch(() => undefined);
 
 /** Desk mail is authoritative; the queue is a bounded delivery index and fs.watch only shortens latency. */
-export default function (pi: ExtensionAPI) {
-  const root = process.env.ATDD_WORKFLOW_ROOT;
-  const seat = process.env.ATDD_WORKFLOW_SEAT;
+export default function (pi: ExtensionAPI, environment: NodeJS.ProcessEnv = process.env) {
+  const root = environment.ATDD_WORKFLOW_ROOT;
+  const seat = environment.ATDD_WORKFLOW_SEAT;
   if (!root || !seat) return;
   let runtime: ReturnType<typeof createPiRuntime> | undefined;
   let handoverPrompted = false;
@@ -395,7 +395,7 @@ export default function (pi: ExtensionAPI) {
       const threshold = await contextHandoverThreshold(root);
       if (percent < threshold) return;
       handoverPrompted = true;
-      const bundle = await recovery(root, seat, "threshold", process.env.ATDD_FLOW_PI_SESSION);
+      const bundle = await recovery(root, seat, "threshold", environment.ATDD_FLOW_PI_SESSION);
       pi.sendMessage({
         customType: "atdd-flow-context-handover-replacement",
         content: handoverThresholdInstruction(percent, threshold, bundle),
@@ -404,7 +404,7 @@ export default function (pi: ExtensionAPI) {
     } catch { /* Desk policy is re-read on the next safe boundary. */ }
   });
   pi.on("turn_end", async (_event, ctx) => {
-    const sourceSession = process.env.ATDD_FLOW_PI_SESSION;
+    const sourceSession = environment.ATDD_FLOW_PI_SESSION;
     if (!sourceSession) return;
     try {
       const request = await readHandoverReplacement(root, seat);
@@ -419,13 +419,13 @@ export default function (pi: ExtensionAPI) {
   });
   pi.on("session_start", async (_event, ctx) => {
     const sessionManager = (ctx as { sessionManager?: { getSessionId?: () => string; getSessionFile?: () => string | undefined } }).sessionManager;
-    const liveSession = process.env.ATDD_FLOW_PI_SESSION ?? sessionManager?.getSessionId?.();
+    const liveSession = environment.ATDD_FLOW_PI_SESSION ?? sessionManager?.getSessionId?.();
     // One display-only notice per session: a refused, timed-out or failed activation must never be silent, and never wakes the agent.
     let noticed = false;
     const noticeActivation = async (transport: "active" | "inactive", error?: string) => {
       if (noticed) return;
       noticed = true;
-      const live = { pi_session: liveSession, herdr_session: process.env.ATDD_FLOW_HERDR_SESSION ?? process.env.HERDR_SESSION, pane: process.env.ATDD_FLOW_HERDR_PANE ?? process.env.HERDR_PANE_ID };
+      const live = { pi_session: liveSession, herdr_session: environment.ATDD_FLOW_HERDR_SESSION ?? environment.HERDR_SESSION, pane: environment.ATDD_FLOW_HERDR_PANE ?? environment.HERDR_PANE_ID };
       const activation = await diagnoseMailActivation(root, seat, live, transport, error).catch(() => undefined);
       if (!activation) return;
       if (runtime) await recordMailActivation(root, seat, runtime.ownerToken, activation).catch(() => undefined);
@@ -449,11 +449,11 @@ export default function (pi: ExtensionAPI) {
       });
     } });
     await runtime.start();
-    const piSession = process.env.ATDD_FLOW_PI_SESSION;
-    const herdrSession = process.env.ATDD_FLOW_HERDR_SESSION;
-    const pane = process.env.ATDD_FLOW_HERDR_PANE;
+    const piSession = environment.ATDD_FLOW_PI_SESSION;
+    const herdrSession = environment.ATDD_FLOW_HERDR_SESSION;
+    const pane = environment.ATDD_FLOW_HERDR_PANE;
     if (!piSession && !herdrSession && !pane) {
-      if (await hostAttachedActivation({ root, seat, herdrSession: process.env.HERDR_SESSION, pane: process.env.HERDR_PANE_ID, piSession: sessionManager?.getSessionId?.(), piSessionPath: sessionManager?.getSessionFile?.() })) {
+      if (await hostAttachedActivation({ root, seat, herdrSession: environment.HERDR_SESSION, pane: environment.HERDR_PANE_ID, piSession: sessionManager?.getSessionId?.(), piSessionPath: sessionManager?.getSessionFile?.() })) {
         hostActivatedAt = Date.now();
         if (await runtime.activate()) {
           const bundle = await recovery(root, seat, "start", sessionManager?.getSessionId?.());

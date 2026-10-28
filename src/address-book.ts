@@ -26,11 +26,11 @@ export async function addressBook(root: string) {
       catch { /* A partially removed legacy seat is not an address-book entry. */ }
     }
   }
-  console.log("# Desk address book\n");
-  console.log("`operator@desk` is the human authority. Drivers route normal work through coordinators; main seats are the normal technical gateway to the operator.\n");
-  console.log("| Address | Identity | Purpose / authority |\n| --- | --- | --- |");
+  process.stdout.write("# Desk address book\n\n");
+  process.stdout.write("`operator@desk` is the human authority. Drivers route normal work through coordinators; main seats are the normal technical gateway to the operator.\n\n");
+  process.stdout.write("| Address | Identity | Purpose / authority |\n| --- | --- | --- |\n");
   for (const record of records.sort((left, right) => left.address.localeCompare(right.address))) {
     const purpose = (record.purpose ?? authority(record)).replaceAll("|", "\\|");
-    console.log(`| ${record.address} | ${identity(record.address)} | ${purpose} |`);
+    process.stdout.write(`| ${record.address} | ${identity(record.address)} | ${purpose} |\n`);
   }
 }

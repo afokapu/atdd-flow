@@ -164,13 +164,19 @@ async function targets(root: string, options: { strict?: string; unprojected?: U
     if (!config.repository) continue;
     const primary = resolve(config.repository);
     result.push({ project: name, worktree: primary, workspaceLabel: name });
-    for (const entry of await projectSeats(root, name)) {
+    const seats = await projectSeats(root, name);
+    const mainOnPrimary = seats.some((entry) => entry.role === "main" && resolve(entry.worktree) === primary);
+    for (const entry of seats) {
       try { assertNewTopologyPlacement(config, entry, primary); }
       catch (error) {
         if (entry.address === options.strict) throw error;
         options.unprojected?.push({ address: entry.address, reason: (error as Error).message });
         continue;
       }
+      // main@project is the single primary coordinator projection: the preserved legacy generic
+      // coordinator@project shares its checkout and is not bulk-projected as a second tab. An explicit
+      // per-seat projection still projects it, and a project without a primary main keeps it.
+      if (mainOnPrimary && entry.role === "coordinator" && entry.address === `coordinator@${name}` && entry.address !== options.strict && resolve(entry.worktree) === primary) continue;
       if ((entry.role === "main" || entry.role === "coordinator" || entry.role === "operator") && resolve(entry.worktree) === primary) {
         result.push({ project: name, worktree: primary, workspaceLabel: name, seat: entry });
         continue;

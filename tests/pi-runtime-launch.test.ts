@@ -593,3 +593,57 @@ test("RED: operator resumed fails closed without verified activation", async () 
   await atomicYaml(paths(host).seatFile(operatorSeat), { ...saved, runtime: { ...saved.runtime, wake: "host" } });
   await expect(resumed(host)).rejects.toThrow("not reconciled");
 });
+
+// RED: live failure — the launcher run inside the target pane typed its export into its own tty.
+const sameTerminalMessage = "Run this from a different pane; the target pane must be an idle shell.";
+const paneRuns = (calls: string[][]) => calls.filter((call) => call[3] === "pane" && call[4] === "run");
+
+test("RED: a launch invoked from inside the target pane refuses before any pane run or agent start", async () => {
+  for (const flags of [["--dry-run"], []]) {
+    const root = await operatorDesk();
+    const herdr = operatorHerdr();
+    await expect(launchPiRuntime(root, operatorSeat, ["--herdr-session", "forge", ...flags], { select: selectEconomy, command: herdr.command, sessionId: () => sessionId, hostPane: "w1:p2" } as any)).rejects.toThrow(sameTerminalMessage);
+    expect(paneRuns(herdr.calls)).toEqual([]);
+    expect(herdr.calls.some((call) => call[3] === "agent" && call[4] === "start")).toBe(false);
+    expect((await readYaml<any>(paths(root).seatFile(operatorSeat))).runtime).toBeUndefined();
+  }
+});
+
+test("RED: a launch whose process is in the target pane's foreground refuses before any pane run", async () => {
+  const root = await operatorDesk();
+  const herdr = operatorHerdr();
+  // The fake pane reports foreground pids 11, 22, 23 once started; make the launcher one of them while still a shell.
+  const command = async (args: string[]) => {
+    const out = await herdr.command(args);
+    return args[3] === "pane" && args[4] === "process-info" ? out.replace("\"pid\":11", "\"pid\":31337") : out;
+  };
+  await expect(launchPiRuntime(root, operatorSeat, ["--herdr-session", "forge"], { select: selectEconomy, command, sessionId: () => sessionId, hostPane: "w9:p9", hostPid: 31337 } as any)).rejects.toThrow(sameTerminalMessage);
+  expect(paneRuns(herdr.calls)).toEqual([]);
+});
+
+test("RED: a launch from a different pane still proceeds, and the export is typed only after vacancy is proven", async () => {
+  const root = await operatorDesk();
+  const herdr = operatorHerdr();
+  await launchPiRuntime(root, operatorSeat, ["--herdr-session", "forge"], { select: selectEconomy, command: herdr.command, sessionId: () => sessionId, hostPane: "w9:p9", hostPid: 1 } as any);
+  const firstRun = herdr.calls.findIndex((call) => call[3] === "pane" && call[4] === "run");
+  const lastVacancy = herdr.calls.findIndex((call) => call[3] === "pane" && call[4] === "process-info");
+  expect(lastVacancy).toBeGreaterThanOrEqual(0);
+  expect(firstRun).toBeGreaterThan(lastVacancy);
+});
+
+test("RED: the handover-show relaunch text tells the operator to use a DIFFERENT pane", async () => {
+  const root = await operatorDesk();
+  await recordOperatorHandover(root);
+  const shown = await captureStdoutRaw(() => showHandover(root, operatorSeat));
+  expect(shown).toContain("Exit Pi in the operator pane so it is an idle shell, then run this from a DIFFERENT pane");
+  expect(shown).not.toContain("vacant shell pane");
+  expect(shown).toContain(canonicalOperatorCommand);
+});
+
+async function captureStdoutRaw(work: () => Promise<unknown>) {
+  let shown = "";
+  const write = process.stdout.write.bind(process.stdout);
+  process.stdout.write = ((chunk: string | Uint8Array) => { shown += String(chunk); return true; }) as typeof process.stdout.write;
+  try { await work(); } finally { process.stdout.write = write; }
+  return shown;
+}

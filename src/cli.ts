@@ -34,7 +34,7 @@ Usage:
   atdd-flow desk migrate
   atdd-flow project init <project>
   atdd-flow project configure <project> [--vcs <git|jj>] [--repository <primary-checkout>] [--worktree-root <directory>]
-  atdd-flow project migrate-vcs <project> --to jj [--allow-dirty-primary] [--dry-run]
+  atdd-flow project migrate-vcs <project> --to jj [--allow-dirty-primary [--retain-large-primary-file <path>:<sha256>:<bytes>:<mode> ...]] [--dry-run]
   atdd-flow project migrate-named-coordinator-topology <project> --baseline <40-lowercase-hex-remote-main-sha>
   atdd-flow spawn <project> <role> <name> [--worktree <path>] [--branch <branch>] [--agent <legacy-executable>]
   atdd-flow bind <address> [--application <application>] --address <native-address> [--session <name>] [--agent <executable>] [--worktree <path>] [--wake host|native]
@@ -48,10 +48,12 @@ Usage:
   atdd-flow checkpoint <address> --summary <text> --next <text> [--status active|standby|blocked|complete|unverified]
   atdd-flow handover <address> --file <path> [--check]
   atdd-flow handover show <address>
-  atdd-flow handover replace <address> [--supersede-consumed] [--legacy-source-bootstrap] --handover <id> --authorization <operator-record> --takeover-task <id> --source-pi-session <id> --source-pi-session-path <jsonl> --source-herdr-session <session> --source-pane <pane> --herdr-session <session> --target-pane <pane> --target-cwd <canonical-main-worktree>
+  atdd-flow handover replace <address> [--supersede-consumed] [--recover-stale-main] [--legacy-source-bootstrap] --handover <id> --authorization <operator-record> --takeover-task <id> --source-pi-session <id> --source-pi-session-path <jsonl> --source-herdr-session <session> --source-pane <pane> --herdr-session <session> --target-pane <pane> --target-cwd <canonical-main-worktree>
   atdd-flow handover resumed <address>
   atdd-flow task add <project> <task-id> --title <text> --coordinator <address> [--assignee <address>] [--body <text>] [--source <reference>] [--depends-on <task-id,...>] --done-when <text> [--done-when <text> ...]
-  atdd-flow task assign <project> <task-id> --assignee <address> --by <coordinator-address>
+  atdd-flow task assign <project> <task-id> --assignee <address> --by <coordinator-address> [--immediate --priority <priority> --mutation-boundary <text>]
+  atdd-flow task acknowledge <project> <task-id> --dispatch <message-id> --by <assignee>
+  atdd-flow task observe-assignment <project> <task-id> --by <coordinator-address>
   atdd-flow task transfer <project> <task-id> --to <main-or-named-coordinator> --reason <text> --by <actor> [--authorization <operator-message-id>]
   atdd-flow task amend <project> <task-id> [--title <text>] [--body <text>] [--source <reference>] [--depends-on <task-id,...>]
   atdd-flow task import <project> <task-id> --proof <reference> [--proof <reference> ...] [--done-when <text> ...] [--source <reference>]
@@ -115,7 +117,7 @@ async function main() {
       if (rest[0] === "configure") return configureProject(root, required(rest[1], "project"), rest.slice(2));
       if (rest[0] === "migrate-vcs") return migrateProjectVcs(root, required(rest[1], "project"), rest.slice(2));
       if (rest[0] === "migrate-named-coordinator-topology") return migrateNamedCoordinatorTopology(root, required(rest[1], "project"), rest.slice(2));
-      throw new Error("Use `atdd-flow project init <project>`, `atdd-flow project configure <project> [--vcs <git|jj>] [--repository <primary-checkout>] [--worktree-root <directory>]`, `atdd-flow project migrate-vcs <project> --to jj [--allow-dirty-primary] [--dry-run]`, or `atdd-flow project migrate-named-coordinator-topology <project> --baseline <40-lowercase-hex-remote-main-sha>`.");
+      throw new Error("Use `atdd-flow project init <project>`, `atdd-flow project configure <project> [--vcs <git|jj>] [--repository <primary-checkout>] [--worktree-root <directory>]`, `atdd-flow project migrate-vcs <project> --to jj [--allow-dirty-primary [--retain-large-primary-file <path>:<sha256>:<bytes>:<mode> ...]] [--dry-run]`, or `atdd-flow project migrate-named-coordinator-topology <project> --baseline <40-lowercase-hex-remote-main-sha>`.");
     },
     spawn: () => spawn(root, required(rest[0], "project"), required(rest[1], "role"), required(rest[2], "name"), rest.slice(3)),
     bind: () => bind(root, required(rest[0], "address"), rest.slice(1)),
@@ -146,6 +148,8 @@ async function main() {
       const [subcommand, projectName, taskId, ...tail] = rest;
       if (subcommand === "add") return tasks.add(root, required(projectName, "project"), required(taskId, "task id"), tail);
       if (subcommand === "assign") return tasks.assign(root, required(projectName, "project"), required(taskId, "task id"), tail);
+      if (subcommand === "acknowledge") return tasks.acknowledge(root, required(projectName, "project"), required(taskId, "task id"), tail);
+      if (subcommand === "observe-assignment") return tasks.observeAssignment(root, required(projectName, "project"), required(taskId, "task id"), tail);
       if (subcommand === "transfer") return tasks.transfer(root, required(projectName, "project"), required(taskId, "task id"), tail);
       if (subcommand === "amend") return tasks.amend(root, required(projectName, "project"), required(taskId, "task id"), tail);
       if (subcommand === "import") return tasks.importCompleted(root, required(projectName, "project"), required(taskId, "task id"), tail);
@@ -163,7 +167,7 @@ async function main() {
       if (subcommand === "unblock") return tasks.unblock(root, required(projectName, "project"), required(taskId, "task id"), tail);
       if (subcommand === "list") return tasks.list(root, required(projectName, "project"), rest.slice(2));
       if (subcommand === "open") return tasks.open(root, required(projectName, "project"), required(taskId, "task id"));
-      throw new Error("Use `atdd-flow task add|assign|transfer|amend|import|start|prove|handoff|respond|review|return|done|block|supersede|reject|defer|unblock|list|open`.");
+      throw new Error("Use `atdd-flow task add|assign|acknowledge|observe-assignment|transfer|amend|import|start|prove|handoff|respond|review|return|done|block|supersede|reject|defer|unblock|list|open`.");
     },
     seat: async () => {
       if (rest[0] === "retire") return tasks.retireSeat(root, required(rest[1], "address"), rest.slice(2));

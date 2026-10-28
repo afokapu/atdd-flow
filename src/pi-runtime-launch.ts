@@ -43,6 +43,10 @@ export type PiRuntimeLaunchDependencies = {
   sleep?: (milliseconds: number) => Promise<void>;
   /** How long Herdr may take to report the exact session path after start. */
   sessionPathWindowMs?: number;
+  /** Herdr pane hosting this launcher process; defaults to HERDR_PANE_ID. Injectable for tests. */
+  hostPane?: string;
+  /** Pid of this launcher process; defaults to process.pid. Injectable for tests. */
+  hostPid?: number;
 };
 
 type Bind = (root: string, address: string, args: string[], selectedModel?: string, wake?: Runtime["wake"], piSession?: string, piSessionPath?: string, launchReceipt?: string) => Promise<void>;
@@ -154,7 +158,7 @@ export const piExtensionPath = () => join(import.meta.dir, "..", "extensions", "
 type HerdrRequest = { session: string; pane: string; seat: string; root: string; piSession: string; sessionPath?: string; resume: boolean; args: string[] };
 type Command = (command: string[]) => Promise<string>;
 type PaneReport = { pane: string; agent?: string; status?: string; sessionPath?: string };
-type ProcessReport = { shell?: number; processes: Array<{ name?: string; argv0?: string; cmdline?: string }> };
+type ProcessReport = { shell?: number; processes: Array<{ pid?: number; name?: string; argv0?: string; cmdline?: string }> };
 
 const object = (value: unknown): Record<string, unknown> | undefined => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 const text = (value: unknown) => typeof value === "string" ? value : undefined;
@@ -176,7 +180,7 @@ function processReport(value: unknown): ProcessReport {
   const report = object(result(value)?.process_info) ?? result(value);
   const processes = Array.isArray(report?.foreground_processes) ? report.foreground_processes.flatMap((entry) => {
     const process = object(entry);
-    return process ? [{ name: text(process.name), argv0: text(process.argv0), cmdline: text(process.cmdline) }] : [];
+    return process ? [{ pid: number(process.pid), name: text(process.name), argv0: text(process.argv0), cmdline: text(process.cmdline) }] : [];
   }) : [];
   return { ...(number(report?.shell_pid) ? { shell: number(report?.shell_pid) } : {}), processes };
 }
@@ -305,15 +309,22 @@ function assertProjectedPane(launch: PreparedLaunch, pane: string) {
   if (replacement) assertReplacementTarget(replacement.request, options.herdrSession, pane, record.worktree);
 }
 
+const sameTerminalRefusal = "Run this from a different pane; the target pane must be an idle shell.";
+
 /** Require both Herdr metadata and process inspection to report a vacant target. */
 async function assertVacantTarget(launch: PreparedLaunch, pane: string) {
-  const { command, options } = launch;
+  const { command, options, dependencies } = launch;
+  const hostPane = dependencies.hostPane ?? process.env.HERDR_PANE_ID;
+  // The launcher typing into its own tty would corrupt the pane: refuse before any Herdr call.
+  if (hostPane === pane) throw new Error(sameTerminalRefusal);
   const [paneRaw, processRaw] = await Promise.all([
     command(herdr(options.herdrSession, "pane", "get", pane)),
     command(herdr(options.herdrSession, "pane", "process-info", "--pane", pane)),
   ]);
   const currentPane = paneReport(JSON.parse(paneRaw));
   if (currentPane.pane !== pane) throw new Error("Herdr reported a different pane; refusing runtime launch.");
+  const hostPid = dependencies.hostPid ?? process.pid;
+  if (processReport(JSON.parse(processRaw)).processes.some((entry) => entry.pid === hostPid)) throw new Error(sameTerminalRefusal);
   if (currentPane.agent || piProcess(processReport(JSON.parse(processRaw)).processes)) {
     throw new Error(options.resume ? "Resume requires the prior Pi to have exited and been released." : "New launch requires an available shell pane.");
   }

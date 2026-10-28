@@ -1,0 +1,12 @@
+urn: acc:flow:E017-UNIT-001
+phase: UNIT
+description: >-
+  A Flow project migrating a dirty primary to colocated Jujutsu can retain each explicitly
+  authorized over-limit untracked file via a repeatable --retain-large-primary-file
+  <path>:<sha256>:<bytes>:<mode> (requires --allow-dirty-primary). Path, sha256, byte length and
+  permission mode must match the on-disk file exactly or the migration is refused before JJ
+  metadata exists. Each file is retained byte-exact in the JJ working-copy revision above the
+  unchanged main tip with the size exemption scoped to the initializing command only (no persisted
+  JJ config); every unauthorized over-limit file, dirty secondary worktree, and post-initialization
+  failure remains refused or fully rolled back (index bytes, refs/jj, working tree), and Git
+  history, reflog and stash are never changed.

@@ -27,13 +27,13 @@ async function issue(id = "A-one") {
   return { root, file: join(root, ".atdd-flow", "exact-session-adoption-authorizations", `${id}.yaml`), hash: join(root, ".atdd-flow", "exact-session-adoption-authorizations", `${id}.sha256`) };
 }
 
-/** Runs the strict metrics sensor from the repository root and returns its finding lines. */
+/** Runs the repo-local strict metrics sensor (CI has no global atdd-bun on PATH) from the repository root and returns its finding lines. */
 async function metricsFindings() {
   const repository = join(import.meta.dir, "..");
   const environment: Record<string, string | undefined> = { ...process.env };
   delete environment.ATDD_WORKFLOW_ROOT;
   delete environment.ATDD_WORKFLOW_SEAT;
-  const child = Bun.spawn(["atdd-bun", "metrics"], { cwd: repository, env: environment as Record<string, string>, stdout: "pipe", stderr: "pipe" });
+  const child = Bun.spawn([join(repository, "node_modules", ".bin", "atdd-bun"), "metrics"], { cwd: repository, env: environment as Record<string, string>, stdout: "pipe", stderr: "pipe" });
   const [out, err] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()]);
   await child.exited;
   const output = `${out}\n${err}`;

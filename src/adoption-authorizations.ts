@@ -1,3 +1,9 @@
+// URN: component:flow:e006:adoption-authorizations:backend:integration
+// Tested-By:
+// - test:flow:exact-adoption-resumed-proof-and-relaunch
+// Runtime: bun
+// Purpose: Create and resolve exact-session adoption authorizations.
+
 import { createHash } from "node:crypto";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
@@ -72,7 +78,7 @@ export async function createExactSessionAdoptionAuthorization(root: string, id: 
   await mkdir(dirname(file), { recursive: true });
   await writeFile(file, content, { encoding: "utf8", flag: "wx" });
   await writeFile(hashPath(root, id), `${digest(content)}\n`, { encoding: "utf8", flag: "wx" });
-  console.log(id);
+  process.stdout.write(`${id}\n`);
 }
 
 // The adoption tuple a launch asks to use; the stored record must match it field for field.

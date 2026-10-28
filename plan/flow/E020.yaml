@@ -1,0 +1,7 @@
+urn: acc:flow:E020-UNIT-001
+phase: UNIT
+description: >-
+  Desk-wide reconcile tolerates a completely empty seat directory (no entries, including hidden):
+  it skips the directory, reports it once as a warning naming its path, completes for every other
+  seat, and never deletes anything. A directory with any other content but no seat.yaml still
+  fails closed.
