@@ -48,7 +48,7 @@ Usage:
   atdd-flow checkpoint <address> --summary <text> --next <text> [--status active|standby|blocked|complete|unverified]
   atdd-flow handover <address> --file <path> [--check]
   atdd-flow handover show <address>
-  atdd-flow handover replace <address> [--supersede-consumed] [--legacy-source-bootstrap] --handover <id> --authorization <operator-record> --takeover-task <id> --source-pi-session <id> --source-pi-session-path <jsonl> --source-herdr-session <session> --source-pane <pane> --herdr-session <session> --target-pane <pane> --target-cwd <canonical-main-worktree>
+  atdd-flow handover replace <address> [--supersede-consumed] [--recover-stale-main] [--legacy-source-bootstrap] --handover <id> --authorization <operator-record> --takeover-task <id> --source-pi-session <id> --source-pi-session-path <jsonl> --source-herdr-session <session> --source-pane <pane> --herdr-session <session> --target-pane <pane> --target-cwd <canonical-main-worktree>
   atdd-flow handover resumed <address>
   atdd-flow task add <project> <task-id> --title <text> --coordinator <address> [--assignee <address>] [--body <text>] [--source <reference>] [--depends-on <task-id,...>] --done-when <text> [--done-when <text> ...]
   atdd-flow task assign <project> <task-id> --assignee <address> --by <coordinator-address>
