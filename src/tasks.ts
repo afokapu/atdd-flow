@@ -29,6 +29,19 @@ export type CoordinatorTransfer = {
 };
 export type TerminalDisposition = { kind: "superseded" | "rejected"; by: string; at: string; reason: string };
 export type DeferredDisposition = { by: string; at: string; reason: string; owner: string; trigger: string; review_at: string };
+export type DispatchAlert = { key: string; message: string; observed_at: string };
+/** Persisted evidence for an immediate assignment; each field is written only by its own typed command. */
+export type ImmediateDispatch = {
+  thread: string;
+  message: string;
+  priority: string;
+  mutation_boundary: string;
+  assignee: string;
+  status: "dispatched";
+  acknowledgement?: { dispatch: string; by: string; acknowledged_at: string };
+  start?: { by: string; transitioned_at: string };
+  alerts?: { missing_acknowledgement?: DispatchAlert; missing_start?: DispatchAlert };
+};
 export type Task = {
   schema: "atdd-workflow/task/v1";
   title: string;
@@ -51,6 +64,8 @@ export type Task = {
   disposition?: TerminalDisposition;
   /** Bounded hold with an accountable owner, trigger, and review point. */
   deferred?: DeferredDisposition;
+  /** Absent unless assigned with `--immediate`. */
+  immediate_dispatch?: ImmediateDispatch;
   done_when: DoneWhen[];
 };
 
@@ -346,11 +361,95 @@ export async function assign(root: string, projectName: string, id: string, args
   if (task.status !== "todo") throw new Error(`Task ${id} can only be assigned while todo.`);
   if (task.assignee) throw new Error(`Task ${id} is already assigned to ${task.assignee}.`);
   const assignee = await canonicalAddress(root, required(words(args, "--assignee"), "--assignee"));
-  const base = await evidenceBase(root, projectName, task.coordinator, await eligibleAssignee(root, projectName, assignee));
+  const target = await eligibleAssignee(root, projectName, assignee);
+  const base = await evidenceBase(root, projectName, task.coordinator, target);
+  const immediate = args.includes("--immediate") ? await dispatchImmediately(root, projectName, id, task, target, args) : undefined;
   task.assignee = assignee;
   if (base) task.governed_base = base;
+  if (immediate) task.immediate_dispatch = immediate;
   await writeTask(root, projectName, id, task);
-  console.log(`${id}  assigned  ${assignee}`);
+  console.log(`${id}  assigned  ${assignee}${immediate ? "  dispatched" : ""}`);
+}
+
+/** The assignee's todo -> in_progress transition is the only writer of start evidence. */
+function recordDispatchStart(task: Task, next: TaskStatus, actor: string) {
+  if (next === "in_progress" && task.status === "todo" && task.immediate_dispatch) {
+    task.immediate_dispatch.start = { by: actor, transitioned_at: now() };
+  }
+}
+
+async function quietly<T>(run: () => Promise<T>) {
+  const log = console.log;
+  console.log = () => {};
+  try { return await run(); }
+  finally { console.log = log; }
+}
+
+/**
+ * Fails closed before any write when the assignee has no native queue, then persists one task-linked
+ * dispatch through the existing native mail path. The task write that claims "dispatched" happens last.
+ */
+async function dispatchImmediately(root: string, projectName: string, id: string, task: Task, target: Seat, args: string[]): Promise<ImmediateDispatch> {
+  const priority = required(words(args, "--priority"), "--priority");
+  const boundary = required(words(args, "--mutation-boundary"), "--mutation-boundary");
+  const threads = await import("./threads");
+  if (!threads.hasNativeQueue(target)) throw new Error(`Assignee ${target.address} has no native queue; immediate assignment needs a native Flow inbox.`);
+  const thread = await quietly(() => threads.startThread(root, [
+    "--with", `${task.coordinator},${target.address}`, "--subject", `Immediate assignment ${projectName}/${id}`, "--task", `${projectName}/${id}`,
+  ]));
+  const body = [
+    `Immediate assignment: ${projectName}/${id}`, `Priority: ${priority}`, `Mutation boundary: ${boundary}`,
+    `Acknowledge (typed, not prose): atdd-flow task acknowledge ${projectName} ${id} --dispatch <this message id> --by ${target.address}`,
+    `Start: atdd-flow task start ${projectName} ${id} --by ${target.address}`,
+  ].join("\n");
+  const message = await quietly(() => threads.post(root, thread, ["--from", task.coordinator, "--to", target.address, "--label", "dispatch", "--expects-result", "--body", body]));
+  return { thread, message, priority, mutation_boundary: boundary, assignee: target.address, status: "dispatched" };
+}
+
+/** Binds an acknowledgement to the exact stored dispatch and assignee; it never changes task status. */
+export async function acknowledge(root: string, projectName: string, id: string, args: string[]) {
+  const task = await readTask(root, projectName, taskId(id));
+  const actor = await canonicalAddress(root, required(words(args, "--by"), "--by"));
+  const dispatch = required(words(args, "--dispatch"), "--dispatch");
+  const stored = task.immediate_dispatch;
+  if (!stored) throw new Error(`Task ${id} has no immediate dispatch.`);
+  if (dispatch !== stored.message) throw new Error(`${dispatch} is not the dispatch for task ${id}.`);
+  if (actor !== stored.assignee || actor !== task.assignee) throw new Error(`Only ${stored.assignee} may acknowledge task ${id}.`);
+  if (terminal(task)) throw new Error(`Task ${id} is already ${task.status}.`);
+  if (!stored.acknowledgement) {
+    stored.acknowledgement = { dispatch, by: actor, acknowledged_at: now() };
+    await writeTask(root, projectName, id, task);
+  }
+  console.log(`${id}  acknowledged  ${actor}`);
+}
+
+function missingSignal(task: Task): "missing_acknowledgement" | "missing_start" | undefined {
+  const stored = task.immediate_dispatch;
+  if (!stored || terminal(task)) return undefined;
+  if (!stored.acknowledgement) return "missing_acknowledgement";
+  return task.status === "todo" ? "missing_start" : undefined;
+}
+
+/** On demand and bounded: posts at most one alert per missing state, then returns the stored one. */
+export async function observeAssignment(root: string, projectName: string, id: string, args: string[]) {
+  const task = await readTask(root, projectName, taskId(id));
+  const actor = await canonicalAddress(root, required(words(args, "--by"), "--by"));
+  if (actor !== task.coordinator) throw new Error(`Only ${task.coordinator} may observe the assignment of task ${id}.`);
+  const stored = task.immediate_dispatch;
+  if (!stored) throw new Error(`Task ${id} has no immediate dispatch.`);
+  const state = missingSignal(task);
+  if (!state) { console.log(`${id}  no missing signal`); return; }
+  const existing = stored.alerts?.[state];
+  if (existing) { console.log(`${id}  ${state}  ${existing.message}`); return; }
+  const action = state === "missing_acknowledgement"
+    ? `atdd-flow task acknowledge ${projectName} ${id} --dispatch ${stored.message} --by ${stored.assignee}`
+    : `atdd-flow task start ${projectName} ${id} --by ${stored.assignee}`;
+  const { post } = await import("./threads");
+  const message = await quietly(() => post(root, stored.thread, ["--from", task.coordinator, "--to", stored.assignee, "--label", state, "--expects-result", "--body",
+    `Alert ${state} for ${projectName}/${id} (dispatch ${stored.message}). Run: ${action}`]));
+  stored.alerts = { ...stored.alerts, [state]: { key: `${stored.message}/${state}`, message, observed_at: now() } };
+  await writeTask(root, projectName, id, task);
+  console.log(`${id}  ${state}  ${message}`);
 }
 
 type TransferAuthorization = {
@@ -512,6 +611,7 @@ async function transition(root: string, projectName: string, id: string, next: T
     await assertAcceptedBehavioralReview(root, projectName, id, task);
     if (retire) await retireAssignee(root, projectName, id, task);
   }
+  recordDispatchStart(task, next, actor);
   task.status = next;
   if (next !== "in_progress") { delete task.blocker; delete task.deferred; }
   await writeTask(root, projectName, id, task);
