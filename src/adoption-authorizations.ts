@@ -101,19 +101,29 @@ function same(record: ExactSessionAdoptionAuthorization, expected: ExpectedTuple
   return sameSubject(record, expected) && sameSource(record, expected) && sameTarget(record, expected);
 }
 
+// Narrow an unknown YAML value to a plain object so nested receipt fields can be read without casts.
+const asRecord = (value: unknown): Record<string, unknown> | undefined => (value && typeof value === "object" ? (value as Record<string, unknown>) : undefined);
+
+// A receipt names an authorization when relocation.authorization.id equals the id.
+function receiptNames(receipt: unknown, id: string) {
+  return asRecord(asRecord(asRecord(receipt)?.relocation)?.authorization)?.id === id;
+}
+
+// A receipt that cannot be read or parsed never authorizes reuse, so it counts as not naming the id.
+async function receiptFileNames(file: string, id: string) {
+  try { return receiptNames(yaml.parse<unknown>(await readFile(file, "utf8")), id); }
+  catch { return false; }
+}
+
 // A receipt that already names this authorization id means the one-shot authorization was consumed.
 async function used(root: string, id: string) {
   const folder = join(root, ".atdd-flow", "runtime-launch");
-  try {
-    const files = await readdir(folder);
-    for (const file of files.filter((entry) => entry.endsWith(".yaml"))) {
-      try {
-        const value = yaml.parse<Record<string, unknown>>(await readFile(join(folder, file), "utf8"));
-        const authorization = value.relocation && typeof value.relocation === "object" ? (value.relocation as Record<string, unknown>).authorization : undefined;
-        if (authorization && typeof authorization === "object" && (authorization as Record<string, unknown>).id === id) return true;
-      } catch { /* Malformed receipts never authorize reuse. */ }
-    }
-  } catch { /* No previous receipt means unused. */ }
+  let files: string[];
+  try { files = await readdir(folder); }
+  catch { return false; } // No previous receipt means unused.
+  for (const file of files.filter((entry) => entry.endsWith(".yaml"))) {
+    if (await receiptFileNames(join(folder, file), id)) return true;
+  }
   return false;
 }
 
