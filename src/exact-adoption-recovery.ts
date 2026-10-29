@@ -10,7 +10,7 @@ import { basename, join, resolve } from "node:path";
 import { type Seat, paths, readYaml, yaml } from "./core";
 import type { HandoverReplacementRequest } from "./handover";
 import { readRuntimeState } from "./runtime-state";
-import { archivedReceiptMatches, recoveryEvidenceMatches } from "./stale-main-recovery";
+import { archivedReceiptMatches, backupIsTranscriptPrefix, recoveryEvidenceMatches } from "./stale-main-recovery";
 import type { Task } from "./tasks";
 
 type ReplacementLaunchReceipt = {
@@ -188,12 +188,8 @@ function exactAdoptionReceiptMatches(receipt: ReplacementLaunchReceipt, activeBy
 }
 
 /** Prove the immutable recovery copy is the prefix of the adopted source JSONL. */
-async function exactBackupMatches(receipt: ReplacementLaunchReceipt, request: HandoverReplacementRequest) {
-  const relocation = receipt.relocation!;
-  const [backup, source] = await Promise.all([readFile(relocation.backup!), readFile(request.source.pi_session_path)]);
-  return digest(backup) === relocation.backup_sha256
-    && source.length >= backup.length
-    && source.subarray(0, backup.length).equals(backup);
+function exactBackupMatches(receipt: ReplacementLaunchReceipt, request: HandoverReplacementRequest) {
+  return backupIsTranscriptPrefix({ path: receipt.relocation!.backup, sha256: receipt.relocation!.backup_sha256 }, request.source.pi_session_path);
 }
 
 /** A live same-identity adoption is fresh only after its receipt and start. */

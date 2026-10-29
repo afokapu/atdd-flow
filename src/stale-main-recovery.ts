@@ -255,12 +255,12 @@ export async function isManualRebindingReceipt(record: Seat) {
   try { return yaml.parse<PriorReceipt>(await readFile(path, "utf8")).schema === MANUAL_REBINDING_SCHEMA; } catch { return false; }
 }
 
-/** The backup must hash to its recorded digest and be the exact byte prefix of the adopted session transcript. */
-async function backupIsTranscriptPrefix(receipt: PriorReceipt) {
+/** A backup file must hash to its recorded digest (and size, when recorded) and be the exact byte prefix of the adopted session transcript. */
+export async function backupIsTranscriptPrefix(backup: { path?: string; sha256?: string; bytes?: number }, transcriptPath: string) {
   try {
-    const [backup, transcript] = await Promise.all([readFile(receipt.backup!.path!), readFile(receipt.pi_session_path!)]);
-    return sha256(backup) === receipt.backup!.sha256 && receipt.backup!.bytes === backup.length
-      && transcript.length >= backup.length && transcript.subarray(0, backup.length).equals(backup);
+    const [saved, transcript] = await Promise.all([readFile(backup.path!), readFile(transcriptPath)]);
+    return sha256(saved) === backup.sha256 && (backup.bytes === undefined || backup.bytes === saved.length)
+      && transcript.length >= saved.length && transcript.subarray(0, saved.length).equals(saved);
   } catch { return false; }
 }
 
@@ -321,7 +321,7 @@ export async function assertRelocatedBinding(record: Seat, source: Source, targe
   const failure = authorityFailure(receipt, record) ?? identityFailure(receipt, record, session, sessionPath)
     ?? requestFailure(receipt, source, target, { session, sessionPath, locator })
     ?? firstFailure([
-      [await backupIsTranscriptPrefix(receipt), "the receipt backup is missing, mismatched, or not a prefix of the adopted transcript"],
+      [await backupIsTranscriptPrefix(receipt.backup ?? {}, receipt.pi_session_path!), "the receipt backup is missing, mismatched, or not a prefix of the adopted transcript"],
       [await priorRequestIsRetiredLineage(activeFile, receipt), "the stale active request does not retain the receipt's retired placement"],
     ]);
   if (failure) throw refuse(failure);
