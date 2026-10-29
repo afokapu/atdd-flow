@@ -1,0 +1,9 @@
+urn: acc:flow:E016-UNIT-001
+phase: UNIT
+description: >-
+  Exact-session adoption authorization (src/adoption-authorizations.ts) stays behaviorally identical
+  while its carried maintainability findings are removed: strict ATDD Bun metrics report no
+  cyclomatic-complexity, length, nesting, comment-ratio or maintainability-index finding for the file,
+  and resolveExactSessionAdoptionAuthorization keeps its exact error messages and check order
+  (invalid id, missing record, malformed record, missing hash, hash mismatch, tuple mismatch,
+  already used).
