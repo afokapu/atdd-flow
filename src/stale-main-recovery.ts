@@ -3,13 +3,14 @@
 // - test:atdd-flow:stale-main-binding-recovery
 // - test:atdd-flow:stale-main-recovery-resumed
 // - test:atdd-flow:stale-main-source-exited-path-a
+// - test:atdd-flow:stale-main-s1-exited-recovery
 // Runtime: bun
 // Purpose: Evidence rules for operator-authorized stale-main Pi binding recovery.
 
 import { createHash } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
-import { type Runtime, type Seat, yaml } from "./core";
+import { type Runtime, type Seat, runOutput, yaml } from "./core";
 import type { HandoverReplacementRequest, LiveSourceProof } from "./handover";
 
 /**
@@ -20,14 +21,15 @@ import type { HandoverReplacementRequest, LiveSourceProof } from "./handover";
 export type StaleMainRecovery = {
   canonical_source: { pi_session: string; pi_session_path: string; herdr_session: string; pane: string; cwd: string; launch_receipt: string };
   prior_receipt: { path: string; sha256: string; archive: string };
-  /** A superseded active request that no longer matches the recorded runtime, preserved by hash. */
-  prior_request?: { path: string; sha256: string; archive: string; source_exited?: SourceExited };
+  /** A superseded active request, preserved by hash; `live_source_exited` proves an active recovery request's own live source Pi was absent from every live Pi agent when a newer source replaced it. */
+  prior_request?: { path: string; sha256: string; archive: string; source_exited?: SourceExited; live_source_exited?: SourceExited };
   live_source: LiveSourceProof;
 };
 
 /** Proof that a runtime-matching prior request's recorded source Pi was absent from every live Pi agent when it was replaced. */
 export type SourceExited = { pi_session: string; pi_session_path: string; herdr_session: string; pane: string; verified_at: string };
 
+type Run = (argv: string[]) => Promise<string>;
 type Source = HandoverReplacementRequest["source"];
 type Target = HandoverReplacementRequest["target"];
 type PriorReceipt = { schema?: string; seat?: string; pi_session?: string; pi_session_path?: string; herdr_session?: string; pane?: string };
@@ -94,14 +96,36 @@ async function archiveBytes(root: string, folder: string, seat: string, bytes: s
  * matches is replaceable only when its recorded source is exactly the stale canonical source, which the caller has
  * already proven absent from every live Pi agent. The old bytes are archived by hash with that source-exit evidence.
  */
-async function archivePriorRequest(root: string, seat: string, file: string, isLive: (request: HandoverReplacementRequest) => boolean, exit: { canonical: StaleMainRecovery["canonical_source"]; verifiedAt: string }) {
+async function archivePriorRequest(root: string, seat: string, file: string, isLive: (request: HandoverReplacementRequest) => boolean, exit: { canonical: StaleMainRecovery["canonical_source"]; source: Source; verifiedAt: string; assertAbsent: (source: Source) => Promise<void> }) {
   let bytes: string;
   try { bytes = await readFile(file, "utf8"); } catch { return undefined; }
   const prior = yaml.parse<HandoverReplacementRequest>(bytes);
-  const matching = isLive(prior), exited = matching && sourceIsCanonical(prior.source, exit.canonical);
-  if (prior.seat !== seat || (matching && !exited)) throw new Error("A live Path-A replacement request already exists; stale main recovery only replaces a request that no longer matches the recorded runtime or whose matching source has exited.");
-  const source_exited = exited ? sourceExited(exit.canonical, exit.verifiedAt) : undefined;
-  return { path: file, ...await archiveBytes(root, "stale-main-request-archive", seat, bytes), ...(source_exited ? { source_exited } : {}) };
+  const kind = priorKind(prior, isLive, exit);
+  if (prior.seat !== seat || kind === "live") throw new Error("A live Path-A replacement request already exists; stale main recovery only replaces a request that no longer matches the recorded runtime or whose matching source has exited.");
+  if (kind === "live_source_exited") await exit.assertAbsent(prior.source);
+  const proof = kind === "source_exited" ? { source_exited: sourceExited(exit.canonical, exit.verifiedAt) }
+    : kind === "live_source_exited" ? { live_source_exited: sourceExited(prior.source, exit.verifiedAt) } : {};
+  return { path: file, ...await archiveBytes(root, "stale-main-request-archive", seat, bytes), ...proof };
+}
+
+/** How an active request relates to the recorded runtime: replaceable as-is, by proven exit of a named source, or still live. */
+function priorKind(prior: HandoverReplacementRequest, isLive: (request: HandoverReplacementRequest) => boolean, exit: { canonical: StaleMainRecovery["canonical_source"]; source: Source }) {
+  if (!isLive(prior)) return "unmatched";
+  if (sourceIsCanonical(prior.source, exit.canonical)) return "source_exited";
+  return prior.stale_main_recovery && !sameSource(prior.source, exit.source) ? "live_source_exited" : "live";
+}
+
+/** Stale-main recovery proves S0 and any replaced S1 absent from one complete global agent-list snapshot, read once. */
+function agentListOnce() {
+  let list: Promise<string> | undefined;
+  return <T extends { command?: Run }>(dependencies: T): T => {
+    const run = dependencies.command ?? runOutput;
+    return { ...dependencies, command: (argv: string[]) => argv.slice(3, 5).join(" ") === "agent list" ? (list ??= run(argv)) : run(argv) };
+  };
+}
+
+function sameSource(a: Source, b: Source) {
+  return a.pi_session === b.pi_session && a.pi_session_path === b.pi_session_path;
 }
 
 function sourceIsCanonical(source: Source, canonical: StaleMainRecovery["canonical_source"]) {
@@ -109,8 +133,8 @@ function sourceIsCanonical(source: Source, canonical: StaleMainRecovery["canonic
     && source.herdr_session === canonical.herdr_session && source.pane === canonical.pane;
 }
 
-const sourceExited = (canonical: StaleMainRecovery["canonical_source"], verified_at: string): SourceExited =>
-  ({ pi_session: canonical.pi_session, pi_session_path: canonical.pi_session_path, herdr_session: canonical.herdr_session, pane: canonical.pane, verified_at });
+const sourceExited = (source: Source, verified_at: string): SourceExited =>
+  ({ pi_session: source.pi_session, pi_session_path: source.pi_session_path, herdr_session: source.herdr_session, pane: source.pane, verified_at });
 
 /** Swap the active request through a staged file so readers never observe a partial request. */
 export async function replaceActiveRequest(file: string, content: string) {
@@ -157,8 +181,9 @@ function snapshotMatches(request: HandoverReplacementRequest, live: LiveSourcePr
 }
 
 function exitMatches(recovery: StaleMainRecovery) {
-  const exited = recovery.prior_request?.source_exited;
-  return !exited || (sourceIsCanonical({ ...exited }, recovery.canonical_source) && Boolean(exited.verified_at));
+  const exited = recovery.prior_request?.source_exited, replaced = recovery.prior_request?.live_source_exited;
+  return (!exited || (sourceIsCanonical({ ...exited }, recovery.canonical_source) && Boolean(exited.verified_at)))
+    && (!replaced || (!sameSource(replaced, recovery.live_source) && !sourceIsCanonical({ ...replaced }, recovery.canonical_source) && Boolean(replaced.verified_at)));
 }
 
 function archiveNamed(prior: { sha256: string; archive: string } | undefined) {
@@ -176,9 +201,9 @@ export function staleRecoveryMatches(runtime: Runtime | undefined, request: Hand
 }
 
 /** Build the recovery record: verify the live source (injected), then archive the stale receipt and any stale active request by hash. */
-export async function buildStaleMainRecovery(root: string, seat: string, intent: { record: Seat; source: Source; target: Target }, active: { file: string; isLive: (request: HandoverReplacementRequest) => boolean }, verify: (canonical: StaleMainRecovery["canonical_source"]) => Promise<LiveSourceProof>): Promise<StaleMainRecovery> {
+export async function buildStaleMainRecovery(root: string, seat: string, intent: { record: Seat; source: Source; target: Target }, active: { file: string; isLive: (request: HandoverReplacementRequest) => boolean }, verify: (absent: Pick<Source, "pi_session" | "pi_session_path">, once: ReturnType<typeof agentListOnce>) => Promise<LiveSourceProof>): Promise<StaleMainRecovery> {
   const canonical = staleCanonicalSource(intent.record, intent.source, intent.target);
-  const live_source = await verify(canonical);
-  const prior_request = await archivePriorRequest(root, seat, active.file, active.isLive, { canonical, verifiedAt: live_source.verified_at });
+  const once = agentListOnce(), live_source = await verify(canonical, once);
+  const prior_request = await archivePriorRequest(root, seat, active.file, active.isLive, { canonical, source: intent.source, verifiedAt: live_source.verified_at, assertAbsent: async (source) => { await verify(source, once); } });
   return { canonical_source: canonical, prior_receipt: await archiveStaleReceipt(root, seat, canonical), ...(prior_request ? { prior_request } : {}), live_source };
 }
