@@ -4,12 +4,13 @@
 // - test:atdd-flow:stale-main-recovery-resumed
 // - test:atdd-flow:stale-main-source-exited-path-a
 // - test:atdd-flow:stale-main-s1-exited-recovery
+// - test:atdd-flow:relocated-receipt-stale-main-recovery
 // Runtime: bun
 // Purpose: Evidence rules for operator-authorized stale-main Pi binding recovery.
 
 import { createHash } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { type Runtime, type Seat, runOutput, yaml } from "./core";
 import type { HandoverReplacementRequest, LiveSourceProof } from "./handover";
 
@@ -24,7 +25,15 @@ export type StaleMainRecovery = {
   /** A superseded active request, preserved by hash; `live_source_exited` proves an active recovery request's own live source Pi was absent from every live Pi agent when a newer source replaced it. */
   prior_request?: { path: string; sha256: string; archive: string; source_exited?: SourceExited; live_source_exited?: SourceExited };
   live_source: LiveSourceProof;
+  /** Present only for a relocated main: the recorded receipt is an operator manual rebinding receipt for a retired placement. */
+  relocation?: Relocation;
 };
+
+export const MANUAL_REBINDING_SCHEMA = "atdd-flow/manual-pi-runtime-rebinding-receipt/v1";
+export const MANUAL_REBINDING_MODE = "operator-authorized-manual-in-place-adoption";
+
+/** The retired placement named by the manual rebinding receipt; lineage only, never a live source. */
+export type Relocation = { mode: string; retired: { herdr_session: string; pane: string } };
 
 /** Proof that a runtime-matching prior request's recorded source Pi was absent from every live Pi agent when it was replaced. */
 export type SourceExited = { pi_session: string; pi_session_path: string; herdr_session: string; pane: string; verified_at: string };
@@ -32,7 +41,12 @@ export type SourceExited = { pi_session: string; pi_session_path: string; herdr_
 type Run = (argv: string[]) => Promise<string>;
 type Source = HandoverReplacementRequest["source"];
 type Target = HandoverReplacementRequest["target"];
-type PriorReceipt = { schema?: string; seat?: string; pi_session?: string; pi_session_path?: string; herdr_session?: string; pane?: string };
+type PriorReceipt = {
+  schema?: string; seat?: string; pi_session?: string; pi_session_path?: string; herdr_session?: string; pane?: string;
+  mode?: string; authorized_by?: string; authorization?: string;
+  target?: { cwd?: string; pi_session?: string; pi_session_path?: string; herdr_session?: string; pane?: string };
+  backup?: { path?: string; bytes?: number; sha256?: string };
+};
 
 const sha256 = (content: string | Uint8Array) => createHash("sha256").update(content).digest("hex");
 
@@ -59,10 +73,20 @@ export function staleCanonicalSource(record: Seat, source: Source, target: Targe
 }
 
 /** The archived receipt must name exactly the recorded canonical seat, session, path and placement. */
-export function receiptProvesCanonical(receipt: PriorReceipt, seat: string, canonical: StaleMainRecovery["canonical_source"]) {
+export function receiptProvesCanonical(receipt: PriorReceipt, seat: string, canonical: StaleMainRecovery["canonical_source"], relocation?: Relocation) {
+  return relocation ? manualReceiptProvesCanonical(receipt, seat, canonical, relocation) : launchReceiptProvesCanonical(receipt, seat, canonical);
+}
+
+function launchReceiptProvesCanonical(receipt: PriorReceipt, seat: string, canonical: StaleMainRecovery["canonical_source"]) {
   return receipt.schema === "atdd-flow/pi-runtime-launch-receipt/v1" && receipt.seat === seat
     && receipt.pi_session === canonical.pi_session && receipt.pi_session_path === canonical.pi_session_path
     && receipt.herdr_session === canonical.herdr_session && receipt.pane === canonical.pane;
+}
+
+function manualReceiptProvesCanonical(receipt: PriorReceipt, seat: string, canonical: StaleMainRecovery["canonical_source"], relocation: Relocation) {
+  return receipt.schema === MANUAL_REBINDING_SCHEMA && receipt.seat === seat && receipt.mode === relocation.mode
+    && receipt.pi_session === canonical.pi_session && receipt.pi_session_path === canonical.pi_session_path
+    && receipt.herdr_session === relocation.retired.herdr_session && receipt.pane === relocation.retired.pane;
 }
 
 const archivePath = (root: string, folder: string, seat: string, hash: string) => join(root, ".atdd-flow", folder, encodeURIComponent(seat), `${hash}.yaml`);
@@ -75,11 +99,11 @@ async function publishOrVerify(file: string, bytes: string) {
 }
 
 /** Preserve the stale receipt by content hash, create-only; an existing copy must be identical. */
-export async function archiveStaleReceipt(root: string, seat: string, canonical: StaleMainRecovery["canonical_source"]): Promise<StaleMainRecovery["prior_receipt"]> {
+export async function archiveStaleReceipt(root: string, seat: string, canonical: StaleMainRecovery["canonical_source"], relocation?: Relocation): Promise<StaleMainRecovery["prior_receipt"]> {
   let bytes: string;
   try { bytes = await readFile(canonical.launch_receipt, "utf8"); }
   catch { throw new Error("Stale main recovery requires its immutable recorded launch receipt."); }
-  if (!receiptProvesCanonical(yaml.parse<PriorReceipt>(bytes), seat, canonical)) {
+  if (!receiptProvesCanonical(yaml.parse<PriorReceipt>(bytes), seat, canonical, relocation)) {
     throw new Error("Stale main recovery recorded launch receipt does not prove the recorded canonical runtime.");
   }
   return { path: canonical.launch_receipt, ...await archiveBytes(root, "stale-main-receipt-archive", seat, bytes) };
@@ -153,7 +177,7 @@ export async function archivedReceiptMatches(request: HandoverReplacementRequest
   try {
     const bytes = await readFile(recovery.prior_receipt.archive, "utf8");
     const priorRequest = !recovery.prior_request || await archiveIntact(recovery.prior_request);
-    return priorRequest && await archiveIntact(recovery.prior_receipt) && receiptProvesCanonical(yaml.parse<PriorReceipt>(bytes), request.seat, recovery.canonical_source);
+    return priorRequest && await archiveIntact(recovery.prior_receipt) && receiptProvesCanonical(yaml.parse<PriorReceipt>(bytes), request.seat, recovery.canonical_source, recovery.relocation);
   } catch { return false; }
 }
 
@@ -169,15 +193,26 @@ function sessionMatches(runtime: Runtime | undefined, recovery: StaleMainRecover
     && runtime.launch_receipt === canonical.launch_receipt && recovery.prior_receipt.path === runtime.launch_receipt;
 }
 
-function targetMatches(request: HandoverReplacementRequest, canonical: StaleMainRecovery["canonical_source"]) {
+function targetMatches(request: HandoverReplacementRequest, canonical: StaleMainRecovery["canonical_source"], relocation?: Relocation) {
+  if (relocation) return relocatedTargetMatches(request, canonical, relocation);
   return canonical.cwd === request.target.cwd && canonical.herdr_session === request.target.herdr_session
     && canonical.pane === request.target.pane && canonical.pi_session !== request.source.pi_session;
 }
 
-function snapshotMatches(request: HandoverReplacementRequest, live: LiveSourceProof) {
+/** A relocated request names the exact recorded Pi at the retired pane, and moves to the current pane that Herdr observed it on. */
+function relocatedTargetMatches(request: HandoverReplacementRequest, canonical: StaleMainRecovery["canonical_source"], relocation: Relocation) {
+  return relocation.mode === MANUAL_REBINDING_MODE
+    && canonical.cwd === request.target.cwd && canonical.herdr_session === request.target.herdr_session && canonical.pane === request.target.pane
+    && request.source.pi_session === canonical.pi_session && request.source.pi_session_path === canonical.pi_session_path
+    && request.source.herdr_session === relocation.retired.herdr_session && request.source.pane === relocation.retired.pane
+    && (relocation.retired.herdr_session !== canonical.herdr_session || relocation.retired.pane !== canonical.pane);
+}
+
+function snapshotMatches(request: HandoverReplacementRequest, live: LiveSourceProof, relocation?: Relocation) {
+  const placement = relocation ? request.target : request.source;
   return live.authorization_hash === request.authorization.hash && live.pi_session === request.source.pi_session
-    && live.pi_session_path === request.source.pi_session_path && live.herdr_session === request.source.herdr_session
-    && live.pane === request.source.pane && live.cwd === request.target.cwd && Boolean(live.agent && live.verified_at);
+    && live.pi_session_path === request.source.pi_session_path && live.herdr_session === placement.herdr_session
+    && live.pane === placement.pane && live.cwd === request.target.cwd && Boolean(live.agent && live.verified_at);
 }
 
 function exitMatches(recovery: StaleMainRecovery) {
@@ -192,7 +227,7 @@ function archiveNamed(prior: { sha256: string; archive: string } | undefined) {
 
 /** Request, canonical source and live-source snapshot must describe one exact target tuple. */
 export function recoveryEvidenceMatches(request: HandoverReplacementRequest, recovery: StaleMainRecovery) {
-  return targetMatches(request, recovery.canonical_source) && snapshotMatches(request, recovery.live_source) && archiveNamed(recovery.prior_receipt) && archiveNamed(recovery.prior_request) && exitMatches(recovery);
+  return targetMatches(request, recovery.canonical_source, recovery.relocation) && snapshotMatches(request, recovery.live_source, recovery.relocation) && archiveNamed(recovery.prior_receipt) && archiveNamed(recovery.prior_request) && exitMatches(recovery);
 }
 
 /** The recorded runtime must still be the exact stale canonical source named by the recovery request. */
@@ -201,9 +236,137 @@ export function staleRecoveryMatches(runtime: Runtime | undefined, request: Hand
 }
 
 /** Build the recovery record: verify the live source (injected), then archive the stale receipt and any stale active request by hash. */
-export async function buildStaleMainRecovery(root: string, seat: string, intent: { record: Seat; source: Source; target: Target }, active: { file: string; isLive: (request: HandoverReplacementRequest) => boolean }, verify: (absent: Pick<Source, "pi_session" | "pi_session_path">, once: ReturnType<typeof agentListOnce>) => Promise<LiveSourceProof>): Promise<StaleMainRecovery> {
+export async function buildStaleMainRecovery(root: string, seat: string, intent: { record: Seat; source: Source; target: Target; relocation?: Relocation }, active: { file: string; isLive: (request: HandoverReplacementRequest) => boolean }, verify: (absent: Pick<Source, "pi_session" | "pi_session_path">, once: ReturnType<typeof agentListOnce>) => Promise<LiveSourceProof>, agentList: () => Promise<string>): Promise<StaleMainRecovery> {
+  if (intent.relocation) return buildRelocatedStaleMainRecovery(root, seat, intent, intent.relocation, active, { verify: () => verify(intent.source, agentListOnce()), agentList });
   const canonical = staleCanonicalSource(intent.record, intent.source, intent.target);
   const once = agentListOnce(), live_source = await verify(canonical, once);
   const prior_request = await archivePriorRequest(root, seat, active.file, active.isLive, { canonical, source: intent.source, verifiedAt: live_source.verified_at, assertAbsent: async (source) => { await verify(source, once); } });
   return { canonical_source: canonical, prior_receipt: await archiveStaleReceipt(root, seat, canonical), ...(prior_request ? { prior_request } : {}), live_source };
+}
+
+
+const refuse = (reason: string) => new Error(`Stale main relocation receipt recovery refused: ${reason}.`);
+
+/** True when the seat records a manual binding_mode or its launch receipt is a manual rebinding receipt, rather than a launcher receipt. */
+export async function isManualRebindingReceipt(record: Seat) {
+  const path = record.runtime?.launch_receipt;
+  if (!path) return false;
+  if (record.runtime?.binding_mode !== undefined) return true;
+  try { return yaml.parse<PriorReceipt>(await readFile(path, "utf8")).schema === MANUAL_REBINDING_SCHEMA; } catch { return false; }
+}
+
+/** A backup file must hash to its recorded digest (and size, when recorded) and be the exact byte prefix of the adopted session transcript. */
+export async function backupIsTranscriptPrefix(backup: { path?: string; sha256?: string; bytes?: number }, transcriptPath: string) {
+  try {
+    const [saved, transcript] = await Promise.all([readFile(backup.path!), readFile(transcriptPath)]);
+    return sha256(saved) === backup.sha256 && (backup.bytes === undefined || backup.bytes === saved.length)
+      && transcript.length >= saved.length && transcript.subarray(0, saved.length).equals(saved);
+  } catch { return false; }
+}
+
+/** An existing stale active request must retain exactly the retired placement of the recorded Pi. */
+async function priorRequestIsRetiredLineage(file: string, receipt: PriorReceipt) {
+  let bytes: string;
+  try { bytes = await readFile(file, "utf8"); } catch { return true; }
+  try {
+    const { source, target } = yaml.parse<HandoverReplacementRequest>(bytes);
+    return source.pi_session === receipt.pi_session && source.pi_session_path === receipt.pi_session_path
+      && [source, target].every((placement) => placement.herdr_session === receipt.herdr_session && placement.pane === receipt.pane);
+  } catch { return false; }
+}
+
+type Check = [boolean, string];
+const firstFailure = (checks: Check[]) => checks.find(([ok]) => !ok)?.[1];
+
+/** The recorded receipt is a complete operator-authorized manual rebinding receipt whose mode equals the seat binding_mode. */
+function authorityFailure(receipt: PriorReceipt, record: Seat) {
+  return firstFailure([
+    [receipt.schema === MANUAL_REBINDING_SCHEMA, "the recorded receipt is not a manual rebinding receipt"],
+    [receipt.seat === record.address, "the receipt names another seat"],
+    [receipt.mode === MANUAL_REBINDING_MODE && record.runtime?.binding_mode === receipt.mode, "the receipt mode must equal the seat binding_mode"],
+    [receipt.authorized_by === "operator@desk" && Boolean(receipt.authorization), "the receipt lacks operator@desk authorization"],
+  ]);
+}
+
+/** The receipt describes the exact recorded Pi, the canonical worktree and one retired placement. */
+function identityFailure(receipt: PriorReceipt, record: Seat, session: string, sessionPath: string) {
+  const placement = receipt.target;
+  return firstFailure([
+    [receipt.pi_session === session && receipt.pi_session_path === sessionPath, "the receipt does not name the exact recorded Pi session"],
+    [placement?.pi_session === session && placement.pi_session_path === sessionPath, "the receipt target does not name the exact recorded Pi session"],
+    [Boolean(placement?.cwd) && resolve(placement!.cwd!) === resolve(record.worktree), "the receipt cwd is not the canonical main worktree"],
+    [Boolean(receipt.pane) && placement?.herdr_session === receipt.herdr_session && placement.pane === receipt.pane, "the receipt placement is inconsistent"],
+  ]);
+}
+
+/** The request moves the exact recorded Pi from the retired placement to the seat's current locator. */
+function requestFailure(receipt: PriorReceipt, source: Source, target: Target, recorded: { session: string; sessionPath: string; locator: { session: string; pane: string } }) {
+  return firstFailure([
+    [source.pi_session === recorded.session && source.pi_session_path === recorded.sessionPath, "the request source is not the exact recorded Pi"],
+    [source.herdr_session === receipt.herdr_session && source.pane === receipt.pane, "the request source must be the receipt's retired placement"],
+    [target.herdr_session === recorded.locator.session && target.pane === recorded.locator.pane, "the request target must be the seat's current locator"],
+  ]);
+}
+
+/**
+ * Validate a relocated main before any authorization or Herdr evidence is consulted: the recorded receipt must be a
+ * complete operator manual rebinding receipt whose mode equals the seat binding_mode, for the exact recorded Pi, whose
+ * backup is a prefix of the adopted transcript, and whose retired placement is the request source and the stale request's
+ * placement while the request target is the seat's current locator. Returns the lineage to record.
+ */
+export async function assertRelocatedBinding(record: Seat, source: Source, target: Target, activeFile: string): Promise<Relocation> {
+  const { locator, session, sessionPath, receipt: path } = completeRuntime(record.runtime);
+  let receipt: PriorReceipt;
+  try { receipt = yaml.parse<PriorReceipt>(await readFile(path, "utf8")); } catch { throw refuse("the recorded relocation receipt is unreadable"); }
+  const failure = authorityFailure(receipt, record) ?? identityFailure(receipt, record, session, sessionPath)
+    ?? requestFailure(receipt, source, target, { session, sessionPath, locator })
+    ?? firstFailure([
+      [await backupIsTranscriptPrefix(receipt.backup ?? {}, receipt.pi_session_path!), "the receipt backup is missing, mismatched, or not a prefix of the adopted transcript"],
+      [await priorRequestIsRetiredLineage(activeFile, receipt), "the stale active request does not retain the receipt's retired placement"],
+    ]);
+  if (failure) throw refuse(failure);
+  return { mode: receipt.mode!, retired: { herdr_session: receipt.herdr_session!, pane: receipt.pane! } };
+}
+
+/** Build the relocated recovery record: the live source (injected) is the exact recorded Pi at the current locator. */
+export async function buildRelocatedStaleMainRecovery(root: string, seat: string, intent: { record: Seat; source: Source; target: Target }, relocation: Relocation, active: { file: string }, observe: { verify: () => Promise<LiveSourceProof>; agentList: () => Promise<string> }): Promise<StaleMainRecovery> {
+  const { locator, session, sessionPath, receipt } = completeRuntime(intent.record.runtime);
+  const canonical = { pi_session: session, pi_session_path: sessionPath, herdr_session: locator.session, pane: locator.pane, cwd: intent.target.cwd, launch_receipt: receipt };
+  let live_source: LiveSourceProof;
+  try {
+    live_source = await observe.verify();
+    assertRelocatedAgentList(await observe.agentList(), intent.source, intent.target, relocation.retired);
+  } catch (error) { throw refuse((error as Error).message.replace(/\.$/, "")); }
+  const prior_request = await archivePriorRequest(root, seat, active.file, () => false, { canonical, source: intent.source, verifiedAt: live_source.verified_at, assertAbsent: async () => {} });
+  const prior_receipt = await archiveStaleReceipt(root, seat, canonical, relocation);
+  return { canonical_source: canonical, prior_receipt, ...(prior_request ? { prior_request } : {}), live_source, relocation };
+}
+
+/** Pi agents from one complete global Herdr agent list, each with its pane and exact session path; `who` names the refusing operation. */
+export function listedPiAgents(raw: string, who: string) {
+  const incomplete = () => new Error(`${who} requires complete global Herdr agent-list evidence.`);
+  const parsed = JSON.parse(raw) as { result?: { agents?: unknown }; agents?: unknown };
+  const agents = (parsed.result ?? parsed).agents;
+  if (!Array.isArray(agents)) throw incomplete();
+  return agents.filter((entry) => {
+    if (!entry || typeof entry !== "object") throw incomplete();
+    return (entry as { agent?: unknown }).agent === "pi";
+  }).map((entry) => {
+    const { pane_id, agent_session } = entry as { pane_id?: string; agent_session?: { kind?: string; value?: string } };
+    if (agent_session?.kind !== "path" || !agent_session.value) throw incomplete();
+    return { pane: pane_id, path: resolve(agent_session.value) };
+  });
+}
+
+/** A relocated recovery requires the exact recorded Pi once, at the current pane, and no Pi at the retired pane. */
+export function assertRelocatedAgentList(raw: string, source: Pick<Source, "pi_session_path">, current: { pane: string }, retired: { pane: string }) {
+  const agents = listedPiAgents(raw, "Relocated recovery"), recorded = agents.filter((agent) => agent.path === resolve(source.pi_session_path));
+  if (agents.some((agent) => agent.pane === retired.pane)) throw new Error("A Pi is live at the retired relocation pane.");
+  if (recorded.some((agent) => agent.pane !== current.pane)) throw new Error("The recorded Pi is also live outside the current pane.");
+  if (recorded.length !== 1) throw new Error("The recorded Pi must be listed exactly once at the current pane.");
+}
+
+/** A target pane that differs from the source pane is a relocation only when the seat records a manual binding; otherwise undefined. */
+export async function relocationFor(record: Seat, source: Source, target: Target, activeFile: string): Promise<Relocation | undefined> {
+  return target.pane !== source.pane && await isManualRebindingReceipt(record) ? assertRelocatedBinding(record, source, target, activeFile) : undefined;
 }

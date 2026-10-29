@@ -75,6 +75,8 @@ export type Runtime = {
   pi_session_path?: string;
   /** Immutable, non-secret receipt for that selected launch. */
   launch_receipt?: string;
+  /** Operator-recorded binding mode for an adopted runtime whose receipt is not launcher-generated. */
+  binding_mode?: string;
 };
 
 export function runtimeAddress(application: string, value: RuntimeAddress, legacyHerdrSession?: string) {
