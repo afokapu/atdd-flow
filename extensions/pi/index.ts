@@ -108,6 +108,10 @@ async function readDelivered(root: string, seat: string) {
   } catch { return []; }
 }
 
+async function writeDelivered(root: string, seat: string, delivered: Set<string>) {
+  await atomicYaml(deliveredPath(root, seat), { schema: "atdd-flow/pi-inbox-delivered/v1", keys: [...delivered].slice(-deliveredLimit) });
+}
+
 async function atomicYaml(path: string, value: unknown) {
   await mkdir(dirname(path), { recursive: true });
   const temporary = join(dirname(path), `.${basename(path)}.${crypto.randomUUID()}.tmp`);
@@ -193,7 +197,7 @@ export function createInboxTransport({ root, seat, deliver, batchSize = defaultB
           if (accepted === false) return;
           // Persist before consuming the reference: a crash in between skips the message rather than replaying it.
           delivered.add(key);
-          await atomicYaml(deliveredPath(root, seat), { schema: "atdd-flow/pi-inbox-delivered/v1", keys: [...delivered].slice(-deliveredLimit) });
+          await writeDelivered(root, seat, delivered);
         }
         delivered.add(key);
         entries.shift();
