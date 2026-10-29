@@ -2,6 +2,7 @@
 // Tested-By:
 // - test:atdd-flow:stale-main-binding-recovery
 // - test:atdd-flow:stale-main-recovery-resumed
+// - test:atdd-flow:stale-main-source-exited-path-a
 // Runtime: bun
 // Purpose: Evidence rules for operator-authorized stale-main Pi binding recovery.
 
@@ -20,9 +21,12 @@ export type StaleMainRecovery = {
   canonical_source: { pi_session: string; pi_session_path: string; herdr_session: string; pane: string; cwd: string; launch_receipt: string };
   prior_receipt: { path: string; sha256: string; archive: string };
   /** A superseded active request that no longer matches the recorded runtime, preserved by hash. */
-  prior_request?: { path: string; sha256: string; archive: string };
+  prior_request?: { path: string; sha256: string; archive: string; source_exited?: SourceExited };
   live_source: LiveSourceProof;
 };
+
+/** Proof that a runtime-matching prior request's recorded source Pi was absent from every live Pi agent when it was replaced. */
+export type SourceExited = { pi_session: string; pi_session_path: string; herdr_session: string; pane: string; verified_at: string };
 
 type Source = HandoverReplacementRequest["source"];
 type Target = HandoverReplacementRequest["target"];
@@ -86,16 +90,27 @@ async function archiveBytes(root: string, folder: string, seat: string, bytes: s
 }
 
 /**
- * An existing active request may be replaced only when it no longer matches the recorded runtime;
- * a request that still matches is live and must go through the ordinary flow. The old bytes are archived by hash.
+ * An existing active request may be replaced when it no longer matches the recorded runtime. A request that still
+ * matches is replaceable only when its recorded source is exactly the stale canonical source, which the caller has
+ * already proven absent from every live Pi agent. The old bytes are archived by hash with that source-exit evidence.
  */
-async function archivePriorRequest(root: string, seat: string, file: string, isLive: (request: HandoverReplacementRequest) => boolean) {
+async function archivePriorRequest(root: string, seat: string, file: string, isLive: (request: HandoverReplacementRequest) => boolean, exit: { canonical: StaleMainRecovery["canonical_source"]; verifiedAt: string }) {
   let bytes: string;
   try { bytes = await readFile(file, "utf8"); } catch { return undefined; }
   const prior = yaml.parse<HandoverReplacementRequest>(bytes);
-  if (prior.seat !== seat || isLive(prior)) throw new Error("A live Path-A replacement request already exists; stale main recovery only replaces a request that no longer matches the recorded runtime.");
-  return { path: file, ...await archiveBytes(root, "stale-main-request-archive", seat, bytes) };
+  const matching = isLive(prior), exited = matching && sourceIsCanonical(prior.source, exit.canonical);
+  if (prior.seat !== seat || (matching && !exited)) throw new Error("A live Path-A replacement request already exists; stale main recovery only replaces a request that no longer matches the recorded runtime or whose matching source has exited.");
+  const source_exited = exited ? sourceExited(exit.canonical, exit.verifiedAt) : undefined;
+  return { path: file, ...await archiveBytes(root, "stale-main-request-archive", seat, bytes), ...(source_exited ? { source_exited } : {}) };
 }
+
+function sourceIsCanonical(source: Source, canonical: StaleMainRecovery["canonical_source"]) {
+  return source.pi_session === canonical.pi_session && source.pi_session_path === canonical.pi_session_path
+    && source.herdr_session === canonical.herdr_session && source.pane === canonical.pane;
+}
+
+const sourceExited = (canonical: StaleMainRecovery["canonical_source"], verified_at: string): SourceExited =>
+  ({ pi_session: canonical.pi_session, pi_session_path: canonical.pi_session_path, herdr_session: canonical.herdr_session, pane: canonical.pane, verified_at });
 
 /** Swap the active request through a staged file so readers never observe a partial request. */
 export async function replaceActiveRequest(file: string, content: string) {
@@ -141,13 +156,18 @@ function snapshotMatches(request: HandoverReplacementRequest, live: LiveSourcePr
     && live.pane === request.source.pane && live.cwd === request.target.cwd && Boolean(live.agent && live.verified_at);
 }
 
+function exitMatches(recovery: StaleMainRecovery) {
+  const exited = recovery.prior_request?.source_exited;
+  return !exited || (sourceIsCanonical({ ...exited }, recovery.canonical_source) && Boolean(exited.verified_at));
+}
+
 function archiveNamed(prior: { sha256: string; archive: string } | undefined) {
   return !prior || (/^[a-f0-9]{64}$/i.test(prior.sha256) && basename(prior.archive) === `${prior.sha256}.yaml`);
 }
 
 /** Request, canonical source and live-source snapshot must describe one exact target tuple. */
 export function recoveryEvidenceMatches(request: HandoverReplacementRequest, recovery: StaleMainRecovery) {
-  return targetMatches(request, recovery.canonical_source) && snapshotMatches(request, recovery.live_source) && archiveNamed(recovery.prior_receipt) && archiveNamed(recovery.prior_request);
+  return targetMatches(request, recovery.canonical_source) && snapshotMatches(request, recovery.live_source) && archiveNamed(recovery.prior_receipt) && archiveNamed(recovery.prior_request) && exitMatches(recovery);
 }
 
 /** The recorded runtime must still be the exact stale canonical source named by the recovery request. */
@@ -159,6 +179,6 @@ export function staleRecoveryMatches(runtime: Runtime | undefined, request: Hand
 export async function buildStaleMainRecovery(root: string, seat: string, intent: { record: Seat; source: Source; target: Target }, active: { file: string; isLive: (request: HandoverReplacementRequest) => boolean }, verify: (canonical: StaleMainRecovery["canonical_source"]) => Promise<LiveSourceProof>): Promise<StaleMainRecovery> {
   const canonical = staleCanonicalSource(intent.record, intent.source, intent.target);
   const live_source = await verify(canonical);
-  const prior_request = await archivePriorRequest(root, seat, active.file, active.isLive);
+  const prior_request = await archivePriorRequest(root, seat, active.file, active.isLive, { canonical, verifiedAt: live_source.verified_at });
   return { canonical_source: canonical, prior_receipt: await archiveStaleReceipt(root, seat, canonical), ...(prior_request ? { prior_request } : {}), live_source };
 }

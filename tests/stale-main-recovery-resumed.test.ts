@@ -29,7 +29,7 @@ async function resumed(root: string) {
 }
 
 /** Fake Herdr: a live Pi on `writerPath` until released; a started agent continues the requested session path. */
-function harness(root: string, live: string) {
+function harness(root: string, live: string, alsoListed?: string) {
   let writerPath: string | undefined = live;
   const session = (value: string) => ({ kind: "path", source: "herdr:pi", value });
   const command = async (argv: string[]) => {
@@ -43,7 +43,7 @@ function harness(root: string, live: string) {
     if (op[0] === "pane" && op[1] === "process-info") return JSON.stringify({ result: { process_info: { pane_id: pane, shell_pid: 42,
       foreground_processes: writerPath ? [{ name: "node", argv0: "pi", pid: 100, cwd }] : [{ name: "zsh", argv0: "zsh", pid: 42, cwd }] } } });
     if (op[0] === "agent" && op[1] === "get") return JSON.stringify({ result: { agent: agent(writerPath!) } });
-    if (op[0] === "agent" && op[1] === "list") return JSON.stringify({ result: { agents: writerPath ? [agent(writerPath)] : [] } });
+    if (op[0] === "agent" && op[1] === "list") return JSON.stringify({ result: { agents: [...(writerPath ? [agent(writerPath)] : []), ...(alsoListed ? [agent(alsoListed)] : [])] } });
     if (op[0] === "pane" && op[1] === "run") return JSON.stringify({ result: { pane_id: pane } });
     if (op[0] === "agent" && op[1] === "start") {
       const args = op.slice(op.indexOf("--") + 1);
@@ -55,7 +55,7 @@ function harness(root: string, live: string) {
   return { command, release: () => { writerPath = undefined; } };
 }
 
-/** An active Path-A request already on the Desk: "stale" names a Pi the runtime no longer records; "live" matches the recorded runtime. */
+/** An active Path-A request already on the Desk: "stale" names a Pi the runtime no longer records; "live" matches the recorded runtime and its source Pi is still listed as a live agent. */
 type Existing = "stale" | "live";
 
 async function recovered(existing?: Existing) {
@@ -85,7 +85,7 @@ async function recovered(existing?: Existing) {
     "--by", "operator@desk", "--seat", address, "--pi-session", liveSession, "--pi-session-path", livePath,
     "--source-herdr-session", herdrSession, "--source-pane", pane, "--target-herdr-session", herdrSession, "--target-pane", pane, "--target-cwd", cwd,
   ]);
-  const fake = harness(root, livePath);
+  const fake = harness(root, livePath, existing === "live" ? stalePath : undefined);
   if (existing) {
     const session = existing === "live" ? staleSession : "33333333-3333-4333-8333-333333333333";
     const path = existing === "live" ? stalePath : join(root, `old_${session}.jsonl`);
