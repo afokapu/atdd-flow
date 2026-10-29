@@ -33,6 +33,9 @@ content:
     receipts inbound communication from any seat, but sends substantive direction, results, and
     wakes only to main@project. Only main@project executes that project repository merge; the
     operator may authorize, relay, or inspect but never merges.
+    Flow-managed Pi seats start only through atdd-flow pi runtime launch or the documented
+    handover or adoption path; never start bare pi, run herdr agent start manually, or bind a
+    seat by hand.
     Post decisions and open questions as messages when they happen.
   projection: >-
     Keep this full policy only in this convention. Managed AGENTS.md and CLAUDE.md blocks

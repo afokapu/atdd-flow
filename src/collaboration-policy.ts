@@ -6,7 +6,8 @@
 
 import { readFileSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parse } from "yaml";
 
 export const collaborationConventionPath = "conventions/atdd-flow.collaboration/atdd-flow.collaboration.convention.yaml";
@@ -16,8 +17,11 @@ export const collaborationPolicyPointer = `ATDD Flow collaboration policy: node_
 
 type Convention = { content?: { canonical_policy?: unknown } };
 
+/** Pi loads extensions through Node/jiti, where Bun's import.meta.dir is undefined. */
+const sourceDirectory = import.meta.dirname ?? dirname(fileURLToPath(import.meta.url));
+
 function conventionFile() {
-  return join(import.meta.dir, "..", collaborationConventionPath);
+  return join(sourceDirectory, "..", collaborationConventionPath);
 }
 
 /** The convention is the sole policy text; projections and runtimes resolve it from here. */

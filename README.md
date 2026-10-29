@@ -236,17 +236,7 @@ At session start, the extension records one local, token-fenced **advisory** run
 
 Native mail is loss-tolerant rather than watcher-dependent. When Flow persists a message for a native or Pi-designated unbound seat, it also appends a small per-seat reference to an ordered, fixed-size pending segment under `.atdd-flow/pi-inbox/<encoded-seat>`; immutable thread `M-*.yaml` files remain the authoritative message source. On session start/reload and at a bounded interval, the extension reads only the durable queue head and consumes a fixed batch in `created_at`/message-ID order, removing a reference only after Pi accepts delivery. The pending queue shrinks after delivery, so periodic recovery neither scans nor retains the complete Desk history. `fs.watch` on that queue remains a low-latency fast path; an unavailable watcher or restarted Pi is recovered by reconciliation. Existing Pi processes still require `/reload` or restart after a Flow package upgrade to load the bundled extension.
 
-To host Pi in Herdr, create a pane with the durable Desk and seat identity, then start Pi with the extension supplied by the installed Flow package:
-
-```sh
-PI_EXTENSION="$(atdd-flow pi extension-path)"
-herdr pane split --current --direction right --cwd /path/to/worktree --no-focus \
-  --env ATDD_WORKFLOW_ROOT=/path/to/desk \
-  --env ATDD_WORKFLOW_SEAT=driver.runtime@example-app
-# Use the pane id returned above.
-herdr agent start pi-runtime --kind pi --pane <pane-id> -- --extension "$PI_EXTENSION"
-atdd-flow --root /path/to/desk attach driver.runtime@example-app --application herdr --wake native
-```
+Flow-managed Pi seats start only through `atdd-flow pi runtime launch <address> --herdr-session <session>` or the documented handover or adoption path. That command creates the launch receipt and exact seat binding, supplies the bundled extension and the `ATDD_WORKFLOW_ROOT`, `ATDD_WORKFLOW_SEAT` and launcher identity variables, and activates native mail only after the receipt and binding verify. Do not start bare `pi`, run `herdr agent start` manually, or bind a seat by hand; such a Pi cannot satisfy the receipt gate, so its mail stays inactive. `atdd-flow pi extension-path` is for diagnostics only.
 
 Pi receives its identity and startup task from the extension itself. Its normal TUI remains visible and manually usable; incoming Desk mail wakes it through Pi's native message API. The runtime lifecycle has one internal bounded inbox transport; it does not add a second watcher, registry, mailbox, reservation system, or routing path.
 

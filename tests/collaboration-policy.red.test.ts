@@ -101,3 +101,10 @@ test("Pi startup resolves the canonical collaboration policy rather than a dupli
   expect(instruction).toContain(canonicalCollaborationPolicy());
   expect(instruction).toContain(collaborationConventionPath);
 });
+
+test("the canonical policy rejects manual Pi launch and bind routes and the README no longer documents them", async () => {
+  const policy = canonicalCollaborationPolicy();
+  expect(policy).toContain("atdd-flow pi runtime launch");
+  expect(policy).toContain("never start bare pi, run herdr agent start manually, or bind a seat by hand");
+  expect(await readFile(join(import.meta.dir, "..", "README.md"), "utf8")).not.toContain("herdr agent start pi-runtime");
+});

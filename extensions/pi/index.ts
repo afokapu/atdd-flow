@@ -97,6 +97,16 @@ function inboxDirectory(root: string, seat: string) {
 function pendingDirectory(root: string, seat: string) { return join(inboxDirectory(root, seat), "pending"); }
 function queuePath(root: string, seat: string) { return join(inboxDirectory(root, seat), "queue.yaml"); }
 function segmentPath(root: string, seat: string, segment: string) { return join(pendingDirectory(root, seat), `${segment}.yaml`); }
+/** Durable, bounded record of references already handed to Pi, so a successor never replays them. */
+function deliveredPath(root: string, seat: string) { return join(inboxDirectory(root, seat), "delivered.yaml"); }
+const deliveredLimit = 512;
+
+async function readDelivered(root: string, seat: string) {
+  try {
+    const record = parse(await readFile(deliveredPath(root, seat), "utf8")) as { keys?: unknown };
+    return Array.isArray(record?.keys) ? record.keys.filter((key): key is string => typeof key === "string") : [];
+  } catch { return []; }
+}
 
 async function atomicYaml(path: string, value: unknown) {
   await mkdir(dirname(path), { recursive: true });
@@ -150,9 +160,11 @@ export function createInboxTransport({ root, seat, deliver, batchSize = defaultB
   let watcher: fs.FSWatcher | undefined;
   let interval: ReturnType<typeof setInterval> | undefined;
   const delivered = new Set<string>();
+  let loaded = false;
   let serial = Promise.resolve();
 
   const reconcileNow = async () => withInboxLock(inboxDirectory(root, seat), async () => {
+    if (!loaded) { for (const key of await readDelivered(root, seat)) delivered.add(key); loaded = true; }
     let queue: PendingQueue;
     try { queue = parse(await readFile(queuePath(root, seat), "utf8")) as PendingQueue; }
     catch { return; }
@@ -179,6 +191,9 @@ export function createInboxTransport({ root, seat, deliver, batchSize = defaultB
           const accepted = await deliver(mail, thread, join(folder, `${reference.message}.yaml`));
           // A replaced runtime must not consume the shared durable reference.
           if (accepted === false) return;
+          // Persist before consuming the reference: a crash in between skips the message rather than replaying it.
+          delivered.add(key);
+          await atomicYaml(deliveredPath(root, seat), { schema: "atdd-flow/pi-inbox-delivered/v1", keys: [...delivered].slice(-deliveredLimit) });
         }
         delivered.add(key);
         entries.shift();
@@ -363,7 +378,6 @@ const unsetOrEqual = (recorded: string | undefined, live: string | undefined) =>
 const sessionUnsetOrEqual = (runtime: Seat["runtime"], piSession?: string, piSessionPath?: string) =>
   unsetOrEqual(runtime?.pi_session, piSession) && unsetOrEqual(runtime?.pi_session_path, piSessionPath);
 
-
 type WakeIdentity = { seat: string; pi_session?: string; pi_session_path?: string; herdr_session?: string; pane?: string };
 type WakeContext = {
   model?: { provider: string; id: string };
@@ -404,6 +418,26 @@ function unmatchedWakeRequest(branch: TranscriptEntry[], identity: WakeIdentity)
   const request = customEntries(branch, wakeRequestType).map((entry) => entry.data).filter((data) => data && !matched.has(data.request_id)).at(-1);
   if (!request || typeof request.request_id !== "string") return undefined;
   return request.seat === identity.seat && request.pi_session === identity.pi_session && request.pane === identity.pane ? request : undefined;
+}
+
+/** A post-activation startup step failure that remembers which step failed. */
+export class StartupPhaseError extends Error {
+  constructor(readonly phase: string, readonly cause: unknown) { super(cause instanceof Error ? cause.message : String(cause)); }
+}
+
+/** Runs one named startup step; any failure is rethrown with its phase so the diagnostic is actionable. */
+export async function startupPhase<T>(phase: string, step: () => T | Promise<T>): Promise<T> {
+  try { return await step(); }
+  catch (error) { throw new StartupPhaseError(phase, error); }
+}
+
+/** `<message> [phase=<name>]` followed by the original stack, so the notice and status seat show where startup failed. */
+export function describeStartupError(error: unknown) {
+  const phase = error instanceof StartupPhaseError ? error.phase : undefined;
+  const cause = error instanceof StartupPhaseError ? error.cause : error;
+  const message = cause instanceof Error ? cause.message : String(cause);
+  const stack = cause instanceof Error && cause.stack ? cause.stack.split("\n").filter((line) => /^\s+at /.test(line)).slice(0, 8).join("\n") : "";
+  return `${message}${phase ? ` [phase=${phase}]` : ""}${stack ? `\n${stack}` : ""}`;
 }
 
 /** The recovery bundle is advisory; any failure falls back to the plain prompt. */
@@ -583,7 +617,7 @@ export default function (pi: ExtensionAPI, environment: NodeJS.ProcessEnv = proc
     void awaitLaunchActivation({
       root, seat, piSession, herdrSession, pane,
       activate: async () => {
-        if (!await activateWithRetry(() => current.activate())) return failWake("native mail activation was refused");
+        if (!await startupPhase("mail-activation", () => activateWithRetry(() => current.activate()))) return failWake("native mail activation was refused");
         announceCapability();
         if (await completeWake()) {
           if (ctx.hasUI) ctx.ui.notify(`ATDD Flow native mail active for ${seat}`, "info");
@@ -592,20 +626,20 @@ export default function (pi: ExtensionAPI, environment: NodeJS.ProcessEnv = proc
         const request = await readHandoverReplacement(root, seat).catch(() => undefined);
         const successor = request && request.source.pi_session !== piSession ? request : undefined;
         const bundle = await recovery(root, seat, successor ? "successor" : "start", piSession);
-        pi.sendMessage({ customType: "atdd-flow-start", content: runtimeStartupInstruction(seat, successor ? undefined : bundle), display: true, details: { seat, root } }, { triggerTurn: true, deliverAs: "followUp" });
+        await startupPhase("startup-handoff", () => pi.sendMessage({ customType: "atdd-flow-start", content: runtimeStartupInstruction(seat, successor ? undefined : bundle), display: true, details: { seat, root } }, { triggerTurn: true, deliverAs: "followUp" }));
         if (successor) {
-          pi.sendMessage({
+          await startupPhase("successor-handoff", () => pi.sendMessage({
             customType: "atdd-flow-context-handover-replacement",
             content: successorInstruction(seat, successor.handover.id, bundle),
             display: true, details: { seat, handover: successor.handover.id, authority: "handover-replacement" },
-          }, { triggerTurn: true, deliverAs: "followUp" });
+          }, { triggerTurn: true, deliverAs: "followUp" }));
         }
-        await sendTaskDirective(host, root, seat, notices);
-        if (ctx.hasUI) ctx.ui.notify(`ATDD Flow native mail active for ${seat}`, "info");
+        await startupPhase("task-directive", () => sendTaskDirective(host, root, seat, notices));
+        await startupPhase("ui-notify", () => { if (ctx.hasUI) ctx.ui.notify(`ATDD Flow native mail active for ${seat}`, "info"); });
       },
     }).catch((error) => (failWake(error instanceof Error ? error.message : String(error)), error instanceof ActivationTimeout)
       ? noticeActivation("inactive")
-      : noticeActivation(current.active ? "active" : "inactive", error instanceof Error ? error.message : String(error)));
+      : noticeActivation(current.active ? "active" : "inactive", describeStartupError(error)));
   });
   pi.on("session_shutdown", () => { void runtime?.stop(); });
 }
