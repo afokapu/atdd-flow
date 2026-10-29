@@ -136,7 +136,7 @@ function herdr(sessionPath: string, options: Options) {
     }
     if (op[0] === "agent" && op[1] === "list") {
       const agents = [...(writer ? [agent(sessionPath, current)] : []), ...(options.writerAtRetired ? [agent(otherPath, retired)] : []),
-        ...(options.successorListed ? [agent(otherPath, "w7:p9")] : [])];
+        ...(options.successorListed ? [agent(sessionPath, "w7:p9")] : [])];
       return JSON.stringify({ result: { agents } });
     }
     if (op[0] === "workspace" && op[1] === "list") return JSON.stringify({ result: { workspaces: [{ workspace_id: "w7", label: project, worktree: { checkout_path: cwd } }] } });
@@ -263,7 +263,7 @@ test("a terminal or non-ready takeover task keeps the ready takeover guard", asy
 });
 
 // Live source: the exact recorded Pi must be the sole writer at the current locator; the retired pane is lineage only.
-test("a live Pi at the retired pane, a second writer at the current pane, no writer, or a listed successor is refused", async () => {
+test("a live Pi at the retired pane, a second writer at the current pane, no writer, or the exact Pi already running elsewhere (a successor) is refused", async () => {
   await refusedUnchanged({ writerAtRetired: true }, "relocation receipt");
   await refusedUnchanged({ twoWritersAtCurrent: true }, "relocation receipt");
   await refusedUnchanged({ noWriterAtCurrent: true }, "relocation receipt");

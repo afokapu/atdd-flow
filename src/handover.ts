@@ -14,7 +14,7 @@ import { resolveExactSessionAdoptionAuthorization } from "./adoption-authorizati
 import { exactFailedAdoptionProof } from "./exact-adoption-recovery";
 import { isExactOperatorSeat, operatorActivation, operatorRelaunchSection } from "./operator-launch";
 import { readRuntimeState } from "./runtime-state";
-import { type StaleMainRecovery, buildStaleMainRecovery, replaceActiveRequest, staleRecoveryMatches } from "./stale-main-recovery";
+import { type StaleMainRecovery, buildStaleMainRecovery, listedPiAgents, relocationFor, replaceActiveRequest, staleRecoveryMatches } from "./stale-main-recovery";
 
 export type Handover = {
   schema: "atdd-workflow/handover/v1";
@@ -314,20 +314,9 @@ function assertSinglePiWriter(raw: string) {
 type PiSource = Pick<HandoverReplacementRequest["source"], "pi_session" | "pi_session_path">;
 
 function assertCanonicalSourceNotLive(raw: string, canonical: PiSource) {
-  const value = JSON.parse(raw), agents = result(value)?.agents;
-  if (!Array.isArray(agents)) throw new Error("Consumed Path-A replacement requires complete global Herdr agent-list evidence.");
-  for (const entry of agents) {
-    const agent = object(entry);
-    if (!agent) throw new Error("Consumed Path-A replacement requires complete global Herdr agent-list evidence.");
-    if (text(agent.agent) !== "pi") continue;
-    const session = object(agent.agent_session);
-    const sessionPath = session?.kind === "path" ? text(session.value) : undefined;
-    if (!sessionPath) throw new Error("Consumed Path-A replacement requires complete global Herdr agent-list evidence.");
-    const sessionId = basename(sessionPath).match(/_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i)?.[1];
-    if (resolve(sessionPath) === resolve(canonical.pi_session_path) || sessionId === canonical.pi_session) {
-      throw new Error("Consumed Path-A replacement prior canonical source is still a live Pi agent.");
-    }
-  }
+  const live = listedPiAgents(raw, "Consumed Path-A replacement").some(({ path }) => path === resolve(canonical.pi_session_path)
+    || basename(path).match(/_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i)?.[1] === canonical.pi_session);
+  if (live) throw new Error("Consumed Path-A replacement prior canonical source is still a live Pi agent.");
 }
 
 async function verifyLegacySource(source: HandoverReplacementRequest["source"], target: HandoverReplacementRequest["target"], authorizationHash: string, dependencies: HandoverReplacementDependencies, canonical?: PiSource) {
@@ -387,7 +376,7 @@ function replacementTarget(args: string[], record: Seat, source: HandoverReplace
   const cwd = resolve(nonEmpty(words(args, "--target-cwd"), "--target-cwd"));
   if (cwd !== resolve(record.worktree)) throw new Error("Path-A replacement target CWD must be the exact canonical main worktree.");
   const target = { herdr_session: nonEmpty(words(args, "--herdr-session"), "--herdr-session"), pane: nonEmpty(words(args, "--target-pane"), "--target-pane"), cwd };
-  if (target.herdr_session !== source.herdr_session || target.pane !== source.pane) throw new Error("Path-A replacement target must be the exact released source pane.");
+  if (target.herdr_session !== source.herdr_session) throw new Error("Path-A replacement target must be the exact released source pane.");
   return target;
 }
 
@@ -402,9 +391,12 @@ async function prepareReplacement(root: string, resolved: string, args: string[]
   const handover = await currentReplacementHandover(root, resolved, args);
   const task = nonEmpty(words(args, "--takeover-task"), "--takeover-task");
   const { record } = await exactMainTakeoverTask(root, resolved, task);
-  const source = replacementSource(args), target = replacementTarget(args, record, source);
+  const source = replacementSource(args), file = handoverReplacementPath(root, resolved);
+  const target = replacementTarget(args, record, source);
+  const relocation = recover ? await relocationFor(record, source, target, file) : undefined;
+  if (!relocation && target.pane !== source.pane) throw new Error("Path-A replacement target must be the exact released source pane.");
   if (!supersede && !recover) assertReplacementSource(record, source, legacy);
-  return { legacy, supersede, recover, handover, task, record, source, target };
+  return { legacy, supersede, recover, handover, task, record, source, target, relocation };
 }
 
 function replacementRequest(resolved: string, intent: Awaited<ReturnType<typeof prepareReplacement>>, authorization: { id: string; hash: string }, legacySource: HandoverReplacementRequest["legacy_source"], dependencies: HandoverReplacementDependencies): HandoverReplacementRequest {
@@ -745,7 +737,9 @@ export async function requestHandoverReplacement(root: string, address: string, 
     source: { herdr_session: intent.source.herdr_session, pane: intent.source.pane }, target: intent.target,
   });
   const legacySource = intent.legacy ? await verifyLegacySource(intent.source, intent.target, authorization.hash, dependencies) : undefined;
-  const recovery = intent.recover ? await buildStaleMainRecovery(root, resolved, intent, { file, isLive: (prior) => replacementMatchesRuntime(intent.record.runtime, prior) }, (canonical, once) => verifyLegacySource(intent.source, intent.target, authorization.hash, once(dependencies), canonical)) : undefined;
+  const recovery = intent.recover ? await buildStaleMainRecovery(root, resolved, intent, { file, isLive: (prior) => replacementMatchesRuntime(intent.record.runtime, prior) },
+    (canonical, once) => verifyLegacySource(intent.relocation ? { ...intent.source, ...intent.target } : intent.source, intent.target, authorization.hash, once(dependencies), canonical),
+    () => (dependencies.command ?? runOutput)(herdr(intent.target.herdr_session, "agent", "list"))) : undefined;
   const request = { ...replacementRequest(resolved, intent, authorization, legacySource, dependencies), ...(recovery ? { stale_main_recovery: recovery } : {}) };
   await (recovery?.prior_request ? replaceActiveRequest : dependencies.publish ?? publishCreateOnly)(file, yaml.print(request));
   console.log(`Recorded Path-A replacement request for ${resolved}.`);
