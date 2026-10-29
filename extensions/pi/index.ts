@@ -217,7 +217,11 @@ export function createInboxTransport({ root, seat, deliver, batchSize = defaultB
   };
   const start = async () => {
     await reconcile();
-    try { watcher = fs.watch(pendingDirectory(root, seat), () => { void reconcile(); }); }
+    try {
+      // Watch a path that exists before the first queued mail, so a newly created queue wakes promptly.
+      await mkdir(pendingDirectory(root, seat), { recursive: true });
+      watcher = fs.watch(pendingDirectory(root, seat), () => { void reconcile(); });
+    }
     catch { /* Periodic reconciliation recovers unavailable watchers. */ }
     interval = setInterval(() => { void reconcile(); }, intervalMs);
   };
