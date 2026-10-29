@@ -15,7 +15,7 @@ const names = ["ATDD_WORKFLOW_ROOT", "ATDD_WORKFLOW_SEAT", "ATDD_FLOW_PI_SESSION
 
 type Sent = { customType?: string; content?: string };
 type Runtime = Record<string, unknown>;
-type Options = { host?: { session: string; pane: string } | null; launcher?: boolean; mail?: "before" | "after" | "none" };
+type Options = { host?: { session: string; pane: string } | null; launcher?: boolean; mail?: "before" | "after" | "after-empty" | "none" };
 
 async function queueMail(root: string, message: string, created_at: string) {
   const thread = `T-${message}`, segment = `S-${message}`, inbox = join(root, ".atdd-flow", "pi-inbox", encodeURIComponent(seat));
@@ -46,7 +46,7 @@ async function hostAttach(runtime: Runtime | undefined, options: Options = {}) {
       });
       if (options.launcher) await atomicYaml(join(root, "receipt.yaml"), { schema: "atdd-flow/pi-runtime-launch-receipt/v1", seat, pi_session: session, pi_session_path: sessionPath, herdr_session: "forge", pane: "w1:p2" });
     }
-    if (options.mail !== "none") await queueMail(root, "M-before", "2026-10-15T12:00:00.000Z");
+    if (options.mail === "before" || options.mail === "after") await queueMail(root, "M-before", "2026-10-15T12:00:00.000Z");
     installFlowExtension({
       on(event: string, listener: unknown) {
         if (event === "session_start") start = listener as typeof start;
@@ -55,7 +55,7 @@ async function hostAttach(runtime: Runtime | undefined, options: Options = {}) {
       sendMessage(value: Sent) { sent.push(value); },
     } as never);
     await start?.({}, { hasUI: false, sessionManager: { getSessionId: () => session, getSessionFile: () => sessionPath } });
-    if (options.mail === "after") { await pause(5); await queueMail(root, "M-after", new Date().toISOString()); }
+    if (options.mail === "after" || options.mail === "after-empty") { await pause(5); await queueMail(root, "M-after", new Date().toISOString()); }
     await pause(200);
     shutdown?.();
     await pause(10);
@@ -87,6 +87,11 @@ test("RED: host-attach prompts once for mail created after activation while the 
   const { delivered, sent } = await hostAttach(exact(), { mail: "after" });
   expect(delivered).toBe(1);
   expect(notice(sent)).toHaveLength(1);
+});
+
+test("RED: native mail wakes promptly when its inbox directory is created after activation", async () => {
+  const { delivered } = await hostAttach(exact(), { mail: "after-empty" });
+  expect(delivered).toBe(1);
 });
 
 test("RED: host-attach fallback refuses wrong pane, wrong session, scalar locator, host wake, receipt, mismatched session, and absent Herdr env", async () => {
