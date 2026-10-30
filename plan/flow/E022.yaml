@@ -1,0 +1,9 @@
+urn: acc:flow:E022-UNIT-001
+phase: UNIT
+description: >-
+  Owner-authorized supersession of stale coordinator tasks: main may supersede, and only supersede, a task
+  owned by a named coordinator that has no launch-eligible task, through the public `task supersede`
+  command with an exact operator@desk authorization that binds project, task, coordinator, action, reason
+  and the pre-mutation task-file SHA-256. The authorization and pre-state task are archived create-only
+  by hash; every other lifecycle mutation, owner shape, authorization shape and transfer lineage rule is
+  unchanged and fails closed.
