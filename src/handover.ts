@@ -739,7 +739,8 @@ export async function requestHandoverReplacement(root: string, address: string, 
   const legacySource = intent.legacy ? await verifyLegacySource(intent.source, intent.target, authorization.hash, dependencies) : undefined;
   const recovery = intent.recover ? await buildStaleMainRecovery(root, resolved, intent, { file, isLive: (prior) => replacementMatchesRuntime(intent.record.runtime, prior) },
     (canonical, once) => verifyLegacySource(intent.relocation ? { ...intent.source, ...intent.target } : intent.source, intent.target, authorization.hash, once(dependencies), canonical),
-    () => (dependencies.command ?? runOutput)(herdr(intent.target.herdr_session, "agent", "list"))) : undefined;
+    () => (dependencies.command ?? runOutput)(herdr(intent.target.herdr_session, "agent", "list")),
+    { paneList: () => (dependencies.command ?? runOutput)(herdr(intent.target.herdr_session, "pane", "list")), authorizationHash: authorization.hash, at: () => dependencies.at?.() ?? now() }) : undefined;
   const request = { ...replacementRequest(resolved, intent, authorization, legacySource, dependencies), ...(recovery ? { stale_main_recovery: recovery } : {}) };
   await (recovery?.prior_request ? replaceActiveRequest : dependencies.publish ?? publishCreateOnly)(file, yaml.print(request));
   console.log(`Recorded Path-A replacement request for ${resolved}.`);

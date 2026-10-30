@@ -24,16 +24,20 @@ export type StaleMainRecovery = {
   prior_receipt: { path: string; sha256: string; archive: string };
   /** A superseded active request, preserved by hash; `live_source_exited` proves an active recovery request's own live source Pi was absent from every live Pi agent when a newer source replaced it. */
   prior_request?: { path: string; sha256: string; archive: string; source_exited?: SourceExited; live_source_exited?: SourceExited };
-  live_source: LiveSourceProof;
-  /** Present only for a relocated main: the recorded receipt is an operator manual rebinding receipt for a retired placement. */
+  /** Absent only for a pane-gone relocation, whose source is proven absent rather than live. */
+  live_source?: LiveSourceProof;
+  /** Present only for a relocated main: an operator manual rebinding receipt, or a launcher receipt whose retired pane is gone. */
   relocation?: Relocation;
 };
 
 export const MANUAL_REBINDING_SCHEMA = "atdd-flow/manual-pi-runtime-rebinding-receipt/v1";
 export const MANUAL_REBINDING_MODE = "operator-authorized-manual-in-place-adoption";
 
-/** The retired placement named by the manual rebinding receipt; lineage only, never a live source. */
-export type Relocation = { mode: string; retired: { herdr_session: string; pane: string } };
+/** Relocation mode of a launcher-generated receipt whose canonical pane and exact Pi are both absent from Herdr. */
+export const PANE_GONE_MODE = "launcher-receipt-pane-gone";
+
+/** The retired placement named by the receipt; lineage only, never a live source. A pane-gone relocation also records the global absence proof. */
+export type Relocation = { mode: string; retired: { herdr_session: string; pane: string }; absence?: { authorization_hash: string; verified_at: string } };
 
 /** Proof that a runtime-matching prior request's recorded source Pi was absent from every live Pi agent when it was replaced. */
 export type SourceExited = { pi_session: string; pi_session_path: string; herdr_session: string; pane: string; verified_at: string };
@@ -84,6 +88,9 @@ function launchReceiptProvesCanonical(receipt: PriorReceipt, seat: string, canon
 }
 
 function manualReceiptProvesCanonical(receipt: PriorReceipt, seat: string, canonical: StaleMainRecovery["canonical_source"], relocation: Relocation) {
+  if (relocation.mode === PANE_GONE_MODE) {
+    return launchReceiptProvesCanonical(receipt, seat, { ...canonical, herdr_session: relocation.retired.herdr_session, pane: relocation.retired.pane });
+  }
   return receipt.schema === MANUAL_REBINDING_SCHEMA && receipt.seat === seat && receipt.mode === relocation.mode
     && receipt.pi_session === canonical.pi_session && receipt.pi_session_path === canonical.pi_session_path
     && receipt.herdr_session === relocation.retired.herdr_session && receipt.pane === relocation.retired.pane;
@@ -201,14 +208,24 @@ function targetMatches(request: HandoverReplacementRequest, canonical: StaleMain
 
 /** A relocated request names the exact recorded Pi at the retired pane, and moves to the current pane that Herdr observed it on. */
 function relocatedTargetMatches(request: HandoverReplacementRequest, canonical: StaleMainRecovery["canonical_source"], relocation: Relocation) {
-  return relocation.mode === MANUAL_REBINDING_MODE
+  return [MANUAL_REBINDING_MODE, PANE_GONE_MODE].includes(relocation.mode)
     && canonical.cwd === request.target.cwd && canonical.herdr_session === request.target.herdr_session && canonical.pane === request.target.pane
     && request.source.pi_session === canonical.pi_session && request.source.pi_session_path === canonical.pi_session_path
     && request.source.herdr_session === relocation.retired.herdr_session && request.source.pane === relocation.retired.pane
     && (relocation.retired.herdr_session !== canonical.herdr_session || relocation.retired.pane !== canonical.pane);
 }
 
-function snapshotMatches(request: HandoverReplacementRequest, live: LiveSourceProof, relocation?: Relocation) {
+/** A pane-gone relocation has no live source: its absence proof must be bound to this request's authorization. */
+function absenceMatches(request: HandoverReplacementRequest, relocation: Relocation) {
+  return relocation.absence?.authorization_hash === request.authorization.hash && Boolean(relocation.absence.verified_at);
+}
+
+function snapshotMatches(request: HandoverReplacementRequest, live: LiveSourceProof | undefined, relocation?: Relocation) {
+  if (relocation?.mode === PANE_GONE_MODE) return !live && absenceMatches(request, relocation);
+  return Boolean(live) && liveSnapshotMatches(request, live!, relocation);
+}
+
+function liveSnapshotMatches(request: HandoverReplacementRequest, live: LiveSourceProof, relocation?: Relocation) {
   const placement = relocation ? request.target : request.source;
   return live.authorization_hash === request.authorization.hash && live.pi_session === request.source.pi_session
     && live.pi_session_path === request.source.pi_session_path && live.herdr_session === placement.herdr_session
@@ -218,7 +235,7 @@ function snapshotMatches(request: HandoverReplacementRequest, live: LiveSourcePr
 function exitMatches(recovery: StaleMainRecovery) {
   const exited = recovery.prior_request?.source_exited, replaced = recovery.prior_request?.live_source_exited;
   return (!exited || (sourceIsCanonical({ ...exited }, recovery.canonical_source) && Boolean(exited.verified_at)))
-    && (!replaced || (!sameSource(replaced, recovery.live_source) && !sourceIsCanonical({ ...replaced }, recovery.canonical_source) && Boolean(replaced.verified_at)));
+    && (!replaced || (!(recovery.live_source && sameSource(replaced, recovery.live_source)) && !sourceIsCanonical({ ...replaced }, recovery.canonical_source) && Boolean(replaced.verified_at)));
 }
 
 function archiveNamed(prior: { sha256: string; archive: string } | undefined) {
@@ -236,7 +253,8 @@ export function staleRecoveryMatches(runtime: Runtime | undefined, request: Hand
 }
 
 /** Build the recovery record: verify the live source (injected), then archive the stale receipt and any stale active request by hash. */
-export async function buildStaleMainRecovery(root: string, seat: string, intent: { record: Seat; source: Source; target: Target; relocation?: Relocation }, active: { file: string; isLive: (request: HandoverReplacementRequest) => boolean }, verify: (absent: Pick<Source, "pi_session" | "pi_session_path">, once: ReturnType<typeof agentListOnce>) => Promise<LiveSourceProof>, agentList: () => Promise<string>): Promise<StaleMainRecovery> {
+export async function buildStaleMainRecovery(root: string, seat: string, intent: { record: Seat; source: Source; target: Target; relocation?: Relocation }, active: { file: string; isLive: (request: HandoverReplacementRequest) => boolean }, verify: (absent: Pick<Source, "pi_session" | "pi_session_path">, once: ReturnType<typeof agentListOnce>) => Promise<LiveSourceProof>, agentList: () => Promise<string>, gone?: PaneGoneObservation): Promise<StaleMainRecovery> {
+  if (intent.relocation?.mode === PANE_GONE_MODE) return buildPaneGoneStaleMainRecovery(root, seat, intent, intent.relocation, active, { agentList, ...gone! });
   if (intent.relocation) return buildRelocatedStaleMainRecovery(root, seat, intent, intent.relocation, active, { verify: () => verify(intent.source, agentListOnce()), agentList });
   const canonical = staleCanonicalSource(intent.record, intent.source, intent.target);
   const once = agentListOnce(), live_source = await verify(canonical, once);
@@ -368,5 +386,67 @@ export function assertRelocatedAgentList(raw: string, source: Pick<Source, "pi_s
 
 /** A target pane that differs from the source pane is a relocation only when the seat records a manual binding; otherwise undefined. */
 export async function relocationFor(record: Seat, source: Source, target: Target, activeFile: string): Promise<Relocation | undefined> {
-  return target.pane !== source.pane && await isManualRebindingReceipt(record) ? assertRelocatedBinding(record, source, target, activeFile) : undefined;
+  if (target.pane === source.pane) return undefined;
+  return await isManualRebindingReceipt(record) ? assertRelocatedBinding(record, source, target, activeFile) : assertPaneGoneBinding(record, source, target, activeFile);
+}
+
+async function readLauncherReceipt(path: string) {
+  try {
+    const receipt = yaml.parse<PriorReceipt>(await readFile(path, "utf8"));
+    return receipt.schema === "atdd-flow/pi-runtime-launch-receipt/v1" ? receipt : undefined;
+  } catch { return undefined; }
+}
+
+type Recorded = { session: string; sessionPath: string; locator: { session: string; pane: string } };
+
+/** The launcher receipt names this seat's exact recorded Pi at a pane other than the seat's current locator. */
+function receiptNamesRetiredPane(receipt: PriorReceipt, record: Seat, recorded: Recorded) {
+  return receipt.seat === record.address && receipt.pi_session === recorded.session && receipt.pi_session_path === recorded.sessionPath
+    && Boolean(receipt.herdr_session && receipt.pane) && (receipt.herdr_session !== recorded.locator.session || receipt.pane !== recorded.locator.pane);
+}
+
+/** The request moves the exact recorded Pi from the receipt's retired pane to the seat's current locator. */
+function requestMovesRetiredPi(receipt: PriorReceipt, source: Source, target: Target, recorded: Recorded) {
+  return source.pi_session === recorded.session && source.pi_session_path === recorded.sessionPath
+    && source.herdr_session === receipt.herdr_session && source.pane === receipt.pane
+    && target.herdr_session === recorded.locator.session && target.pane === recorded.locator.pane;
+}
+
+/** A launcher-generated receipt whose retired canonical pane is the request source while the request target is the seat's current locator; otherwise undefined, so the ordinary released-source-pane guard refuses. */
+async function assertPaneGoneBinding(record: Seat, source: Source, target: Target, activeFile: string): Promise<Relocation | undefined> {
+  const runtime = record.runtime, locator = runtime?.addresses.herdr;
+  if (!runtime?.launch_receipt || typeof locator === "string" || !locator) return undefined;
+  const receipt = await readLauncherReceipt(runtime.launch_receipt);
+  if (!receipt || !runtime.pi_session || !runtime.pi_session_path) return undefined;
+  const recorded = { session: runtime.pi_session, sessionPath: runtime.pi_session_path, locator };
+  if (!receiptNamesRetiredPane(receipt, record, recorded) || !requestMovesRetiredPi(receipt, source, target, recorded) || !await priorRequestIsRetiredLineage(activeFile, receipt)) return undefined;
+  return { mode: PANE_GONE_MODE, retired: { herdr_session: receipt.herdr_session!, pane: receipt.pane! } };
+}
+
+/** Pane-gone recovery requires the retired pane and the exact recorded Pi to be absent from one complete global pane list and agent list. */
+export function assertPaneGone(agentsRaw: string, panesRaw: string, source: Pick<Source, "pi_session" | "pi_session_path">, retired: { pane: string }) {
+  const incomplete = () => new Error("Pane-gone recovery requires complete global Herdr pane-list evidence.");
+  const parsed = JSON.parse(panesRaw) as { result?: { panes?: unknown }; panes?: unknown };
+  const panes = (parsed.result ?? parsed).panes;
+  if (!Array.isArray(panes) || panes.some((pane) => !pane || typeof pane !== "object" || typeof (pane as { pane_id?: unknown }).pane_id !== "string")) throw incomplete();
+  if (panes.some((pane) => (pane as { pane_id: string }).pane_id === retired.pane)) throw new Error("The retired canonical pane is still listed by Herdr.");
+  const agents = listedPiAgents(agentsRaw, "Pane-gone recovery");
+  if (agents.some((agent) => agent.pane === retired.pane)) throw new Error("A Pi is live at the retired canonical pane.");
+  const live = agents.some(({ path }) => path === resolve(source.pi_session_path)
+    || basename(path).match(/_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i)?.[1] === source.pi_session);
+  if (live) throw new Error("The exact recorded Pi is still a live Pi agent.");
+}
+
+/** Herdr pane-list evidence plus the authorization and clock that bind the absence proof to one request. */
+export type PaneGoneObservation = { paneList: () => Promise<string>; authorizationHash: string; at: () => string };
+
+async function buildPaneGoneStaleMainRecovery(root: string, seat: string, intent: { record: Seat; source: Source; target: Target }, pane: Relocation, active: { file: string }, observe: { agentList: () => Promise<string> } & PaneGoneObservation): Promise<StaleMainRecovery> {
+  const { locator, session, sessionPath, receipt } = completeRuntime(intent.record.runtime);
+  const canonical = { pi_session: session, pi_session_path: sessionPath, herdr_session: locator.session, pane: locator.pane, cwd: intent.target.cwd, launch_receipt: receipt };
+  try { assertPaneGone(await observe.agentList(), await observe.paneList(), intent.source, pane.retired); }
+  catch (error) { throw new Error(`Path-A replacement target must be the exact released source pane; pane-gone recovery refused: ${(error as Error).message}`); }
+  const verified_at = observe.at(), relocation: Relocation = { ...pane, absence: { authorization_hash: observe.authorizationHash, verified_at } };
+  const prior_request = await archivePriorRequest(root, seat, active.file, () => false, { canonical, source: intent.source, verifiedAt: verified_at, assertAbsent: async () => {} });
+  const prior_receipt = await archiveStaleReceipt(root, seat, canonical, relocation);
+  return { canonical_source: canonical, prior_receipt, ...(prior_request ? { prior_request } : {}), relocation };
 }
