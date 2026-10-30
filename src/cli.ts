@@ -67,6 +67,7 @@ Usage:
   atdd-flow task respond <project> <task-id> --by <coordinator> --outcome <accept|return> --phase <plan|red|green|refactor>
   atdd-flow task block <project> <task-id> --by <address> --reason <text>
   atdd-flow task supersede|reject <project> <task-id> --by <coordinator-address> --reason <text>
+  atdd-flow task supersede <project> <task-id> --by main@<project> --reason <text> --authorization <operator-message-id>
   atdd-flow task defer <project> <task-id> --by <coordinator-address> --reason <text> --owner <address> --trigger <text> --review-at <ISO-8601>
   atdd-flow task unblock <project> <task-id> --by <coordinator-address>
   atdd-flow task list <project> [--coordinator <address>] [--assignee <address>]
@@ -83,7 +84,7 @@ Usage:
   atdd-flow thread add <thread-id> <address>
   atdd-flow thread open <thread-id>
   atdd-flow message read <message-id>
-  atdd-flow post <thread-id> --from <address> --to <all|address,...> --body <text> [--label <non-sensitive-text>] [--expects-result] [--task-transfer-authorization <json>]
+  atdd-flow post <thread-id> --from <address> --to <all|address,...> --body <text> [--label <non-sensitive-text>] [--expects-result] [--task-transfer-authorization <json>] [--task-supersede-authorization <json>]
   atdd-flow receipt <thread-id> <message-id> --from <address> [--body <text>] [--label <non-sensitive-text>]
   atdd-flow result <thread-id> <message-id> --from <address> --body <text> [--label <non-sensitive-text>]
   atdd-flow status [project <project>|task <project> <task-id>|seat <address>|thread <thread-id>] [--all]

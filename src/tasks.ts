@@ -3,6 +3,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import {
   type Checkpoint, type Seat, atomicYaml, canonicalAddress, exists, now, paths, project, readYaml, required, runOutput, seat, taskId, values, words,
 } from "./core";
+import { operatorAuthorizationPayload } from "./task-supersede-authorization";
 import { branchCommit, currentCommit, isAncestor, vcsMode, type VcsMode } from "./vcs";
 
 export type TaskStatus = "todo" | "in_progress" | "review" | "done" | "superseded" | "rejected";
@@ -27,7 +28,7 @@ export type CoordinatorTransfer = {
   lineage_ref?: LineageRef;
   effective_at: string;
 };
-export type TerminalDisposition = { kind: "superseded" | "rejected"; by: string; at: string; reason: string };
+export type TerminalDisposition = { kind: "superseded" | "rejected"; by: string; at: string; reason: string; authorization?: string };
 export type DeferredDisposition = { by: string; at: string; reason: string; owner: string; trigger: string; review_at: string };
 export type DispatchAlert = { key: string; message: string; observed_at: string };
 /** Persisted evidence for an immediate assignment; each field is written only by its own typed command. */
@@ -463,28 +464,7 @@ type TransferAuthorization = {
 };
 
 async function operatorAuthorization(root: string, reference: string, main: string, expected: TransferAuthorization) {
-  type AuthorizationMessage = { schema?: string; id?: string; from?: string; to?: "all" | string[]; authorization?: TransferAuthorization };
-  type AuthorizationThread = { schema?: string; participants?: string[] };
-  const folders = await readdir(paths(root).threads, { withFileTypes: true });
-  const matches = (await Promise.all(folders.filter((entry) => entry.isDirectory() && entry.name.startsWith("T-"))
-    .map(async (entry) => {
-      try {
-        const [thread, message] = await Promise.all([
-          readYaml<AuthorizationThread>(paths(root).threadFile(entry.name)),
-          readYaml<AuthorizationMessage>(paths(root).message(entry.name, reference)),
-        ]);
-        return { thread, message };
-      } catch { return undefined; }
-    }))).filter((entry): entry is NonNullable<typeof entry> =>
-      entry?.thread.schema === "atdd-workflow/thread/v1" && entry.thread.participants?.includes(main) === true
-      && entry.message.schema === "atdd-workflow/message/v1" && entry.message.id === reference);
-  if (matches.length !== 1 || matches[0]?.message.from !== "operator@desk") {
-    throw new Error(`Authorization ${reference} is not an owner-authorized topology plan.`);
-  }
-  if (matches[0].message.to !== "all" && !matches[0].message.to?.includes(main)) {
-    throw new Error(`Authorization ${reference} is not applicable to ${main}.`);
-  }
-  const authorization = matches[0].message.authorization;
+  const authorization = await operatorAuthorizationPayload(root, reference, main) as TransferAuthorization | undefined;
   if (!authorization || authorization.schema !== expected.schema
     || authorization.project !== expected.project || authorization.task !== expected.task
     || authorization.from !== expected.from || authorization.to !== expected.to
@@ -721,10 +701,14 @@ export async function block(root: string, projectName: string, id: string, args:
 export async function disposition(root: string, projectName: string, id: string, kind: TerminalDisposition["kind"], args: string[]) {
   const task = await readTask(root, projectName, taskId(id));
   const actor = await canonicalAddress(root, required(words(args, "--by"), "--by"));
-  if (actor !== task.coordinator) throw new Error(`Only ${task.coordinator} may ${kind} task ${id}.`);
+  const owner = kind === "superseded" && actor === `main@${projectName}` && actor !== task.coordinator && Boolean(words(args, "--authorization"));
+  if (actor !== task.coordinator && !owner) throw new Error(`Only ${task.coordinator} may ${kind} task ${id}.`);
   if (task.disposition || task.status === "done") throw new Error(`Task ${id} already has terminal history and cannot be ${kind}.`);
+  const reason = required(words(args, "--reason"), "--reason");
+  const reference = owner ? words(args, "--authorization") : undefined;
+  const authorization = reference ? await (await import("./task-supersede-authorization")).authorizeSupersede(root, { project: projectName, id, coordinator: task.coordinator, reason, main: actor, reference }) : undefined;
   task.status = kind;
-  task.disposition = { kind, by: actor, at: now(), reason: required(words(args, "--reason"), "--reason") };
+  task.disposition = { kind, by: actor, at: now(), reason, ...(authorization ? { authorization } : {}) };
   delete task.blocker;
   await writeTask(root, projectName, taskId(id), task);
   console.log(`${id}  ${kind}`);

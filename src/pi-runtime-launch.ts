@@ -99,7 +99,7 @@ async function isExactNamedCoordinator(root: string, record: Seat, address: stri
   return Boolean(worktree && await hasUniqueCoordinatorPlacement(root, record, worktree));
 }
 
-async function launchEligibleTasks(root: string, record: Seat, address: string) {
+export async function launchEligibleTasks(root: string, record: Seat, address: string) {
   const coordinator = await isExactNamedCoordinator(root, record, address);
   const operator = await isExactOperatorSeat(root, record, address);
   const tasks = await seatTasks(root, record.project, record.address);
