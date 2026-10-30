@@ -281,6 +281,11 @@ function transferAuthorization(args: string[], from: string) {
   return value as TransferAuthorization;
 }
 
+/** The one typed owner authorization a post may carry: a transfer tuple or a supersede tuple. */
+function typedAuthorization(args: string[], from: string) {
+  return transferAuthorization(args, from) ?? parseSupersedeAuthorization(words(args, "--task-supersede-authorization"), from);
+}
+
 async function post(root: string, threadId: string, args: string[], overrides: Partial<Message> = {}) {
   const record = await thread(root, threadId);
   const from = await canonicalAddress(root, required(overrides.from ?? words(args, "--from"), "--from"));
@@ -290,7 +295,7 @@ async function post(root: string, threadId: string, args: string[], overrides: P
   if (recipients.some((address) => !record.participants.includes(address))) throw new Error("Recipients must be thread participants.");
   await assertRoute(root, from, recipients.filter((address) => address !== from));
   const kind = overrides.kind ?? "message";
-  const authorization = overrides.authorization ?? transferAuthorization(args, from) ?? parseSupersedeAuthorization(words(args, "--task-supersede-authorization"), from);
+  const authorization = overrides.authorization ?? typedAuthorization(args, from);
   // Labels are an explicit, non-sensitive operator hint; message bodies never enter durable IDs.
   const label = words(args, "--label") ?? kind;
   const message: Message = {

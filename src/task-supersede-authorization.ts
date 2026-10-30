@@ -61,6 +61,13 @@ async function archiveEvidence(root: string, projectName: string, id: string, ha
   await publishOrVerify(join(folder, "authorization.yaml"), yaml.print(evidence));
 }
 
+/** Exact tuple equality: the same keys with the same values, and nothing more. */
+function sameTuple(actual: unknown, expected: SupersedeAuthorization) {
+  const record = actual && typeof actual === "object" ? actual as Record<string, unknown> : undefined;
+  const keys = Object.keys(expected) as (keyof SupersedeAuthorization)[];
+  return Boolean(record) && Object.keys(record!).length === keys.length && keys.every((key) => record![key] === expected[key]);
+}
+
 type Subject = { project: string; id: string; coordinator: string; reason: string; main: string; reference: string };
 
 async function assertStaleCoordinatorTask(root: string, subject: Subject) {
@@ -85,10 +92,7 @@ export async function authorizeSupersede(root: string, subject: Subject): Promis
     coordinator: subject.coordinator, action: "supersede", reason: subject.reason, task_sha256: sha256(taskBytes),
   };
   const authorization = await operatorAuthorizationPayload(root, subject.reference, subject.main);
-  if (JSON.stringify(authorization, Object.keys(expected).sort()) !== JSON.stringify(expected, Object.keys(expected).sort())
-    || Object.keys(authorization as object).length !== Object.keys(expected).length) {
-    throw new Error(`Authorization ${subject.reference} is not an exact supersede authorization.`);
-  }
+  if (!sameTuple(authorization, expected)) throw new Error(`Authorization ${subject.reference} is not an exact supersede authorization.`);
   await assertStaleCoordinatorTask(root, subject);
   await archiveEvidence(root, subject.project, subject.id, expected.task_sha256, taskBytes, { id: subject.reference, from: "operator@desk", authorization: expected });
   return subject.reference;
