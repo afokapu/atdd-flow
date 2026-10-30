@@ -2,6 +2,7 @@ import { mkdir, readdir, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { notify } from "./adapters";
 import { seatTasks, terminal } from "./tasks";
+import { type SupersedeAuthorization, parseSupersedeAuthorization } from "./task-supersede-authorization";
 import {
   atomicYaml, canonicalAddress, desk, has, id, now, paths, project, readYaml,
   required, runtimeAddress, seat, words,
@@ -29,7 +30,7 @@ export type Message = {
   created_at: string;
   body: string;
   /** Immutable owner authorization for one exact coordinator-transfer tuple. */
-  authorization?: TransferAuthorization;
+  authorization?: TransferAuthorization | SupersedeAuthorization;
 };
 
 async function thread(root: string, threadId: string) {
@@ -289,7 +290,7 @@ async function post(root: string, threadId: string, args: string[], overrides: P
   if (recipients.some((address) => !record.participants.includes(address))) throw new Error("Recipients must be thread participants.");
   await assertRoute(root, from, recipients.filter((address) => address !== from));
   const kind = overrides.kind ?? "message";
-  const authorization = overrides.authorization ?? transferAuthorization(args, from);
+  const authorization = overrides.authorization ?? transferAuthorization(args, from) ?? parseSupersedeAuthorization(words(args, "--task-supersede-authorization"), from);
   // Labels are an explicit, non-sensitive operator hint; message bodies never enter durable IDs.
   const label = words(args, "--label") ?? kind;
   const message: Message = {
