@@ -15,6 +15,11 @@ async function worktreeIsClean(worktree: string) {
   return status.split("\n").filter(Boolean).every((line) => line.endsWith(" .githooks/") || line.endsWith(" .githooks"));
 }
 
+/** No uncommitted work, and the worktree is on the exact branch tip being proven merged. */
+async function worktreeIsAtTip(worktree: string, tip: string) {
+  return await worktreeIsClean(worktree) && await runOutput(["git", "-C", worktree, "rev-parse", "HEAD"]) === tip;
+}
+
 /** Merged PRs for the branch, from GitHub; an unavailable or malformed answer is no evidence. */
 async function mergedPullRequests(repository: string, branch: string): Promise<PullRequest[]> {
   try {
@@ -41,7 +46,7 @@ export async function terminalMergeProof(repository: string, owner: Seat): Promi
   try {
     const primary = await runOutput(["git", "-C", repository, "branch", "--show-current"]);
     const tip = await runOutput(["git", "-C", repository, "rev-parse", "--verify", `refs/heads/${owner.branch}`]);
-    if (!primary || !await worktreeIsClean(owner.worktree) || await runOutput(["git", "-C", owner.worktree, "rev-parse", "HEAD"]) !== tip) return undefined;
+    if (!primary || !await worktreeIsAtTip(owner.worktree, tip)) return undefined;
     if (await isAncestor(repository, tip, primary)) return `branch tip ${tip} is reachable from ${primary}`;
     const merge = await squashMergeProof(repository, owner.branch, tip, primary);
     return merge ? `branch tip ${tip} is the head of a merged PR whose merge commit ${merge} is on ${primary}` : undefined;

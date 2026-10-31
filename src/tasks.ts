@@ -264,11 +264,11 @@ async function retirementBun(root: string, projectName: string) {
  * merged), retirement proceeds only on independent merge proof; the worktree and branch are then retained and the refusal stands otherwise.
  */
 async function finishOrProveMerged(root: string, projectName: string, owner: Seat) {
+  const config = await project(root, projectName);
   try {
-    return await runOutput([...await retirementBun(root, projectName), "worktree", "finish", "--delete-branch", "--vcs", vcsMode(await project(root, projectName))], owner.worktree);
+    return await runOutput([...await retirementBun(root, projectName), "worktree", "finish", "--delete-branch", "--vcs", vcsMode(config)], owner.worktree);
   } catch (error) {
-    const repository = (await project(root, projectName)).repository;
-    const proof = repository && await exists(owner.worktree) ? await terminalMergeProof(repository, owner) : undefined;
+    const proof = config.repository && await exists(owner.worktree) ? await terminalMergeProof(config.repository, owner) : undefined;
     if (!proof) throw error;
     return `Worktree finish refused (${(error as Error).message}); merge proof: ${proof}; worktree ${owner.worktree} and branch ${owner.branch} retained.`;
   }
