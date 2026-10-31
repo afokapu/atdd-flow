@@ -265,16 +265,16 @@ export async function buildStaleMainRecovery(root: string, seat: string, intent:
 
 const refuse = (reason: string) => new Error(`Stale main relocation receipt recovery refused: ${reason}.`);
 
-/** The recorded receipt's schema; undefined when unreadable. */
-async function receiptSchema(path: string) {
-  try { return yaml.parse<PriorReceipt>(await readFile(path, "utf8")).schema; } catch { return undefined; }
+/** The recorded receipt, or undefined when it is unreadable or malformed. */
+async function readReceipt(path: string) {
+  try { return yaml.parse<PriorReceipt>(await readFile(path, "utf8")); } catch { return undefined; }
 }
 
 /** A launcher receipt is never manual, even if the seat retains a binding_mode; any other receipt is manual when it has the manual schema or the seat records a binding_mode. */
 export async function isManualRebindingReceipt(record: Seat) {
   const path = record.runtime?.launch_receipt;
   if (!path) return false;
-  const schema = await receiptSchema(path);
+  const schema = (await readReceipt(path))?.schema;
   if (schema === LAUNCH_RECEIPT_SCHEMA) return false;
   return record.runtime?.binding_mode !== undefined || schema === MANUAL_REBINDING_SCHEMA;
 }
@@ -397,10 +397,8 @@ export async function relocationFor(record: Seat, source: Source, target: Target
 }
 
 async function readLauncherReceipt(path: string) {
-  try {
-    const receipt = yaml.parse<PriorReceipt>(await readFile(path, "utf8"));
-    return receipt.schema === LAUNCH_RECEIPT_SCHEMA ? receipt : undefined;
-  } catch { return undefined; }
+  const receipt = await readReceipt(path);
+  return receipt?.schema === LAUNCH_RECEIPT_SCHEMA ? receipt : undefined;
 }
 
 /** The launcher receipt names this seat's exact recorded Pi at a pane other than the seat's current locator. */
