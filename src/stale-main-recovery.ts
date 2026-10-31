@@ -43,6 +43,7 @@ export type Relocation = { mode: string; retired: { herdr_session: string; pane:
 export type SourceExited = { pi_session: string; pi_session_path: string; herdr_session: string; pane: string; verified_at: string };
 
 type Run = (argv: string[]) => Promise<string>;
+type Recorded = { session: string; sessionPath: string; locator: { session: string; pane: string } };
 type Source = HandoverReplacementRequest["source"];
 type Target = HandoverReplacementRequest["target"];
 type PriorReceipt = {
@@ -78,6 +79,7 @@ export function staleCanonicalSource(record: Seat, source: Source, target: Targe
 
 /** The archived receipt must name exactly the recorded canonical seat, session, path and placement. */
 export function receiptProvesCanonical(receipt: PriorReceipt, seat: string, canonical: StaleMainRecovery["canonical_source"], relocation?: Relocation) {
+  if (relocation?.mode === PANE_GONE_MODE) return launchReceiptProvesCanonical(receipt, seat, { ...canonical, ...relocation.retired });
   return relocation ? manualReceiptProvesCanonical(receipt, seat, canonical, relocation) : launchReceiptProvesCanonical(receipt, seat, canonical);
 }
 
@@ -88,9 +90,6 @@ function launchReceiptProvesCanonical(receipt: PriorReceipt, seat: string, canon
 }
 
 function manualReceiptProvesCanonical(receipt: PriorReceipt, seat: string, canonical: StaleMainRecovery["canonical_source"], relocation: Relocation) {
-  if (relocation.mode === PANE_GONE_MODE) {
-    return launchReceiptProvesCanonical(receipt, seat, { ...canonical, herdr_session: relocation.retired.herdr_session, pane: relocation.retired.pane });
-  }
   return receipt.schema === MANUAL_REBINDING_SCHEMA && receipt.seat === seat && receipt.mode === relocation.mode
     && receipt.pi_session === canonical.pi_session && receipt.pi_session_path === canonical.pi_session_path
     && receipt.herdr_session === relocation.retired.herdr_session && receipt.pane === relocation.retired.pane;
@@ -222,7 +221,7 @@ function absenceMatches(request: HandoverReplacementRequest, relocation: Relocat
 
 function snapshotMatches(request: HandoverReplacementRequest, live: LiveSourceProof | undefined, relocation?: Relocation) {
   if (relocation?.mode === PANE_GONE_MODE) return !live && absenceMatches(request, relocation);
-  return Boolean(live) && liveSnapshotMatches(request, live!, relocation);
+  return live !== undefined && liveSnapshotMatches(request, live, relocation);
 }
 
 function liveSnapshotMatches(request: HandoverReplacementRequest, live: LiveSourceProof, relocation?: Relocation) {
@@ -253,8 +252,8 @@ export function staleRecoveryMatches(runtime: Runtime | undefined, request: Hand
 }
 
 /** Build the recovery record: verify the live source (injected), then archive the stale receipt and any stale active request by hash. */
-export async function buildStaleMainRecovery(root: string, seat: string, intent: { record: Seat; source: Source; target: Target; relocation?: Relocation }, active: { file: string; isLive: (request: HandoverReplacementRequest) => boolean }, verify: (absent: Pick<Source, "pi_session" | "pi_session_path">, once: ReturnType<typeof agentListOnce>) => Promise<LiveSourceProof>, agentList: () => Promise<string>, gone?: PaneGoneObservation): Promise<StaleMainRecovery> {
-  if (intent.relocation?.mode === PANE_GONE_MODE) return buildPaneGoneStaleMainRecovery(root, seat, intent, intent.relocation, active, { agentList, ...gone! });
+export async function buildStaleMainRecovery(root: string, seat: string, intent: { record: Seat; source: Source; target: Target; relocation?: Relocation }, active: { file: string; isLive: (request: HandoverReplacementRequest) => boolean }, verify: (absent: Pick<Source, "pi_session" | "pi_session_path">, once: ReturnType<typeof agentListOnce>) => Promise<LiveSourceProof>, agentList: () => Promise<string>, gone: PaneGoneObservation): Promise<StaleMainRecovery> {
+  if (intent.relocation?.mode === PANE_GONE_MODE) return buildPaneGoneStaleMainRecovery(root, seat, intent, intent.relocation, active, { agentList, ...gone });
   if (intent.relocation) return buildRelocatedStaleMainRecovery(root, seat, intent, intent.relocation, active, { verify: () => verify(intent.source, agentListOnce()), agentList });
   const canonical = staleCanonicalSource(intent.record, intent.source, intent.target);
   const once = agentListOnce(), live_source = await verify(canonical, once);
@@ -384,7 +383,7 @@ export function assertRelocatedAgentList(raw: string, source: Pick<Source, "pi_s
   if (recorded.length !== 1) throw new Error("The recorded Pi must be listed exactly once at the current pane.");
 }
 
-/** A target pane that differs from the source pane is a relocation only when the seat records a manual binding; otherwise undefined. */
+/** A target pane that differs from the source pane is a relocation only for a manual binding or an exact pane-gone launcher receipt; otherwise undefined. */
 export async function relocationFor(record: Seat, source: Source, target: Target, activeFile: string): Promise<Relocation | undefined> {
   if (target.pane === source.pane) return undefined;
   return await isManualRebindingReceipt(record) ? assertRelocatedBinding(record, source, target, activeFile) : assertPaneGoneBinding(record, source, target, activeFile);
@@ -396,8 +395,6 @@ async function readLauncherReceipt(path: string) {
     return receipt.schema === "atdd-flow/pi-runtime-launch-receipt/v1" ? receipt : undefined;
   } catch { return undefined; }
 }
-
-type Recorded = { session: string; sessionPath: string; locator: { session: string; pane: string } };
 
 /** The launcher receipt names this seat's exact recorded Pi at a pane other than the seat's current locator. */
 function receiptNamesRetiredPane(receipt: PriorReceipt, record: Seat, recorded: Recorded) {
@@ -423,18 +420,23 @@ async function assertPaneGoneBinding(record: Seat, source: Source, target: Targe
   return { mode: PANE_GONE_MODE, retired: { herdr_session: receipt.herdr_session!, pane: receipt.pane! } };
 }
 
+/** Pane ids from one complete global Herdr pane list. */
+function listedPaneIds(raw: string) {
+  const parsed = JSON.parse(raw) as { result?: { panes?: unknown }; panes?: unknown };
+  const panes = (parsed.result ?? parsed).panes;
+  const ids = Array.isArray(panes) ? panes.map((pane) => (pane as { pane_id?: unknown } | null)?.pane_id) : undefined;
+  if (!ids || ids.some((id) => typeof id !== "string")) throw new Error("Pane-gone recovery requires complete global Herdr pane-list evidence.");
+  return ids as string[];
+}
+
+const piSessionId = (path: string) => basename(path).match(/_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i)?.[1];
+
 /** Pane-gone recovery requires the retired pane and the exact recorded Pi to be absent from one complete global pane list and agent list. */
 export function assertPaneGone(agentsRaw: string, panesRaw: string, source: Pick<Source, "pi_session" | "pi_session_path">, retired: { pane: string }) {
-  const incomplete = () => new Error("Pane-gone recovery requires complete global Herdr pane-list evidence.");
-  const parsed = JSON.parse(panesRaw) as { result?: { panes?: unknown }; panes?: unknown };
-  const panes = (parsed.result ?? parsed).panes;
-  if (!Array.isArray(panes) || panes.some((pane) => !pane || typeof pane !== "object" || typeof (pane as { pane_id?: unknown }).pane_id !== "string")) throw incomplete();
-  if (panes.some((pane) => (pane as { pane_id: string }).pane_id === retired.pane)) throw new Error("The retired canonical pane is still listed by Herdr.");
+  if (listedPaneIds(panesRaw).includes(retired.pane)) throw new Error("The retired canonical pane is still listed by Herdr.");
   const agents = listedPiAgents(agentsRaw, "Pane-gone recovery");
   if (agents.some((agent) => agent.pane === retired.pane)) throw new Error("A Pi is live at the retired canonical pane.");
-  const live = agents.some(({ path }) => path === resolve(source.pi_session_path)
-    || basename(path).match(/_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i)?.[1] === source.pi_session);
-  if (live) throw new Error("The exact recorded Pi is still a live Pi agent.");
+  if (agents.some(({ path }) => path === resolve(source.pi_session_path) || piSessionId(path) === source.pi_session)) throw new Error("The exact recorded Pi is still a live Pi agent.");
 }
 
 /** Herdr pane-list evidence plus the authorization and clock that bind the absence proof to one request. */
