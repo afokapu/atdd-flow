@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import { mkdir, readFile, rename, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { parse, stringify } from "yaml";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { clearStaleRuntimeState, clearRuntimeState, heartbeatRuntimeState, ownsRuntimeState, recordMailActivation, registerRuntimeState, runtimeOwnerToken, withOwnedRuntimeState } from "../../src/runtime-state";
@@ -413,6 +414,23 @@ function unmatchedWakeRequest(branch: TranscriptEntry[], identity: WakeIdentity)
 /** The recovery bundle is advisory; any failure falls back to the plain prompt. */
 const recovery = (root: string, seat: string, mode: RecoveryMode, session?: string) => recoveryFor(root, seat, mode, session).catch(() => undefined);
 
+type ReceiptWithLaunchRequest = { handover_replacement?: { request?: unknown } };
+
+/** The request recorded in this seat's own launcher receipt, or undefined when the seat, receipt or embed is absent or unreadable. */
+async function embeddedLaunchRequest(root: string, seat: string) {
+  try {
+    const receiptPath = (await readYaml<Seat>(paths(root).seatFile(seat))).runtime?.launch_receipt;
+    if (!receiptPath) return undefined;
+    return (parse(await readFile(receiptPath, "utf8")) as ReceiptWithLaunchRequest | null)?.handover_replacement?.request;
+  } catch { return undefined; }
+}
+
+/** True when this Pi was launched by the active request: its own receipt embeds exactly that request, so it is the consumed successor, not a source to shut down. */
+async function launchedByRequest(root: string, seat: string, request: unknown) {
+  const embedded = await embeddedLaunchRequest(root, seat);
+  return embedded !== undefined && isDeepStrictEqual(embedded, request);
+}
+
 /** Desk mail is authoritative; the queue is a bounded delivery index and fs.watch only shortens latency. */
 export default function (pi: ExtensionAPI, environment: NodeJS.ProcessEnv = process.env) {
   const root = environment.ATDD_WORKFLOW_ROOT;
@@ -456,7 +474,7 @@ export default function (pi: ExtensionAPI, environment: NodeJS.ProcessEnv = proc
     if (!sourceSession) return;
     try {
       const request = await readHandoverReplacement(root, seat);
-      if (request.source.pi_session !== sourceSession) return;
+      if (request.source.pi_session !== sourceSession || await launchedByRequest(root, seat, request)) return;
       pi.sendMessage({
         customType: "atdd-flow-context-handover-replacement",
         content: `SYSTEM: Validated Path-A request for ${seat} observed. The successor must not start until this Pi has shut down and Herdr reports the exact source pane released.`,

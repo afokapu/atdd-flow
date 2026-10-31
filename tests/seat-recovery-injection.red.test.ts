@@ -20,7 +20,7 @@ const sent = []; const listeners = {};
 installFlowExtension({ on(event, listener) { (listeners[event] ??= []).push(listener); }, sendMessage(message) { sent.push(message); } });
 await listeners.session_start[0]({}, { hasUI: false });
 for (let attempt = 0; attempt < 400 && !sent.some((entry) => entry.customType === "atdd-flow-start"); attempt += 1) await new Promise((resolve) => setTimeout(resolve, 5));
-for (const listener of listeners.turn_end ?? []) await listener({}, { getContextUsage: () => ({ percent: 85 }), shutdown() {} });
+for (const listener of listeners.turn_end ?? []) await listener({}, { getContextUsage: () => ({ percent: 85 }), shutdown() { sent.push({ customType: "shutdown-called" }); } });
 await listeners.session_shutdown?.[0]?.({}, {});
 console.log(JSON.stringify(sent));
 process.exit(0);`;
@@ -61,6 +61,35 @@ test("RED: the Flow extension injects the bundle into the Path-A successor promp
   const successor = sent.find((entry) => entry.customType === "atdd-flow-context-handover-replacement" && entry.content?.includes("H-9"))!;
   expect(successor.content).toContain("RECOVERY BUNDLE driver.pi@demo");
   expect(successor.content).toContain(source);
+});
+
+const sourceNotice = (sent: Sent[]) => sent.filter((entry) => entry.content?.includes("Validated Path-A request"));
+
+/** An active request whose source is this very Pi; `embedded` records it (or another request) in the Pi's own launcher receipt. */
+async function liveSourceRequest(root: string, embedded: "exact" | "other" | "none") {
+  const receipt = join(root, ".atdd-flow", "runtime-launch", "verified.yaml");
+  const launched = Bun.YAML.parse(await readFile(receipt, "utf8")) as Record<string, unknown>;
+  const request = {
+    schema: "atdd-flow/context-handover-replacement-request/v1", seat, task: "t", handover: { id: "H-9", sha256: "x" }, authorization: { id: "A", hash: "h" },
+    source: { pi_session: session, pi_session_path: launched.pi_session_path, herdr_session: "forge", pane: "w1:p2" }, target: { herdr_session: "forge", pane: "w1:p2", cwd: "/tmp" }, created_at: "2026-10-15T09:00:00.000Z",
+  };
+  await atomicYaml(handoverReplacementPath(root, seat), request);
+  if (embedded !== "none") await atomicYaml(receipt, { ...launched, handover_replacement: { request: embedded === "exact" ? request : { ...request, task: "other" }, successor_session: session } });
+}
+
+test("RED: a Pi whose launcher receipt embeds the exact active request is not told to shut down; a genuine unconsumed source request still is", async () => {
+  // Consumed: the request is the one that launched this Pi, so the successor/adopted Pi must not be shut down by its own request.
+  const consumed = await drivePi((root) => liveSourceRequest(root, "exact"));
+  expect(sourceNotice(consumed.sent)).toEqual([]);
+  expect(consumed.sent.some((entry) => entry.customType === "shutdown-called")).toBe(false);
+  // Unconsumed: the live Pi is the request source and no receipt embeds it, so the shutdown notice and shutdown are unchanged.
+  const unconsumed = await drivePi((root) => liveSourceRequest(root, "none"));
+  expect(sourceNotice(unconsumed.sent)).toHaveLength(1);
+  expect(unconsumed.sent.some((entry) => entry.customType === "shutdown-called")).toBe(true);
+  // Identity stays fail-closed: a receipt embedding a different request does not suppress the notice.
+  const mismatched = await drivePi((root) => liveSourceRequest(root, "other"));
+  expect(sourceNotice(mismatched.sent)).toHaveLength(1);
+  expect(mismatched.sent.some((entry) => entry.customType === "shutdown-called")).toBe(true);
 });
 
 test("RED: `atdd-flow recover <address>` prints the bundle read-only", async () => {
