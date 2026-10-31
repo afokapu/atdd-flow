@@ -30,6 +30,11 @@ type Options = {
   /** A binding_mode that lingers in the seat runtime; with `manual`, the genuine manual rebinding mode and receipt. */
   bindingMode?: string;
   manual?: boolean;
+  /**
+   * An active request left by the launch that produced the receipt, shaped as a relocation (source at an older pane, target at the
+   * receipt placement). `embedded` is also recorded in the receipt's handover_replacement.request; the others break one listed link.
+   */
+  active?: "embedded" | "not-embedded" | "embedded-other-request" | "other-pi" | "other-target";
   /** Request flag overrides and authorization tuple. */
   args?: Record<string, string>;
   authorization?: { pi_session?: string; source_pane?: string; target_pane?: string };
@@ -64,6 +69,25 @@ async function fixture(options: Options = {}) {
       backup: { path: backup, bytes: prefix.length, sha256: sha256(prefix) },
     });
   }
+  const activePath = join(root, ".atdd-flow", "handover-replacements", `${encodeURIComponent(address)}.yaml`);
+  let activeBefore: string | undefined;
+  if (options.active) {
+    const otherPath = sessionPath.replace(session, otherSession);
+    const request = {
+      schema: "atdd-flow/context-handover-replacement-request/v1", seat: address, task: "older-takeover",
+      handover: { id: "H-older", sha256: "1".repeat(64) }, authorization: { id: "A-older", hash: "2".repeat(64) },
+      source: options.active === "other-pi" ? { pi_session: otherSession, pi_session_path: otherPath, herdr_session: herdrSession, pane: "w7:p3" }
+        : { pi_session: session, pi_session_path: sessionPath, herdr_session: herdrSession, pane: "w7:p3" },
+      target: { herdr_session: herdrSession, pane: options.active === "other-target" ? "w7:pQ" : retired, cwd }, created_at: "2026-10-20T07:50:00.000Z",
+    };
+    await atomicYaml(activePath, request);
+    if (options.active === "embedded" || options.active === "other-pi" || options.active === "other-target") {
+      receipt.handover_replacement = { request, successor_session: session };
+    } else if (options.active === "embedded-other-request") {
+      receipt.handover_replacement = { request: { ...request, task: "different-takeover" }, successor_session: session };
+    }
+    activeBefore = await readFile(activePath, "utf8");
+  }
   options.receipt?.(receipt);
   await atomicYaml(receiptPath, receipt);
   await atomicYaml(paths(root).seatFile(address), {
@@ -90,7 +114,7 @@ async function fixture(options: Options = {}) {
   const recover = () => invoke(root, "handover", "replace", address, "--recover-stale-main", ...Object.entries(argValues).flat(), env);
   const calls = async () => (await readFile(log, "utf8").catch(() => "")).split("\n").filter(Boolean).map((line) => JSON.parse(line) as string[]);
   return {
-    root, receiptPath, sessionPath, recover, calls, active: join(root, ".atdd-flow", "handover-replacements", `${encodeURIComponent(address)}.yaml`),
+    root, receiptPath, sessionPath, recover, calls, active: activePath, activeBefore,
     seatBefore: await readFile(paths(root).seatFile(address), "utf8"), receiptBefore: await readFile(receiptPath, "utf8"),
   };
 }
@@ -145,7 +169,7 @@ async function refusedUnchanged(options: Options) {
   expect(result.exitCode).not.toBe(0);
   expect(result.output).not.toContain("Unknown command");
   expect(result.output).not.toContain("Unexpected Herdr command");
-  expect(await Bun.file(value.active).exists()).toBe(false);
+  expect(await Bun.file(value.active).exists() ? await readFile(value.active, "utf8") : undefined).toBe(value.activeBefore);
   expect(await readFile(paths(value.root).seatFile(address), "utf8")).toBe(value.seatBefore);
   expect(await readFile(value.receiptPath, "utf8")).toBe(value.receiptBefore);
   expect((await value.calls()).some(mutating)).toBe(false);
@@ -175,6 +199,14 @@ test("RED: a launcher receipt whose canonical pane and exact Pi are absent globa
   await recoveredPaneGone(await fixture({ bindingMode: manualMode }));
   await recoveredPaneGone(await fixture({ bindingMode: "operator-authorized-other" }));
 
+  // Lineage: the active request left by the launch (relocation-shaped, embedded in the receipt's handover_replacement.request) is archived
+  // by hash and replaced; every listed break in that chain keeps the request refused and untouched.
+  await recoveredPaneGone(await fixture({ active: "embedded" }));
+  await refusedUnchanged({ active: "not-embedded" });
+  await refusedUnchanged({ active: "embedded-other-request" });
+  await refusedUnchanged({ active: "other-pi" });
+  await refusedUnchanged({ active: "other-target" });
+
   // A genuine manual rebinding receipt keeps manual routing: pane-gone absence is never accepted for it.
   const manual = await fixture({ manual: true });
   const routed = await manual.recover();
@@ -201,6 +233,11 @@ async function recoveredPaneGone(value: Awaited<ReturnType<typeof fixture>>) {
   expect(archive.sha256).toBe(sha256(value.receiptBefore));
   expect(archive.archive.endsWith(`${archive.sha256}.yaml`)).toBe(true);
   expect(await readFile(archive.archive, "utf8")).toBe(value.receiptBefore);
+  if (value.activeBefore !== undefined) {
+    const prior = request.stale_main_recovery.prior_request;
+    expect(prior.sha256).toBe(sha256(value.activeBefore));
+    expect(await readFile(prior.archive, "utf8")).toBe(value.activeBefore);
+  }
   expect(await readFile(paths(value.root).seatFile(address), "utf8")).toBe(value.seatBefore);
   expect(await readFile(value.receiptPath, "utf8")).toBe(value.receiptBefore);
   const calls = await value.calls();
