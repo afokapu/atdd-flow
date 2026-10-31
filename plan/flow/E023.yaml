@@ -1,0 +1,9 @@
+urn: acc:flow:E023-UNIT-001
+phase: UNIT
+description: >-
+  Git to Jujutsu migration preflight (primary count, distinct worktree paths, dirty state, and Git
+  worktree registry ownership) considers only non-retired Flow seats. Two retired seats that share
+  a recorded worktree path and still carry a runtime locator do not block `project migrate-vcs
+  <project> --to jj --dry-run`, while two ACTIVE seats sharing a path still fail closed with the
+  distinct-worktree-path refusal and create no JJ metadata. A retired seat never excuses an
+  active seat on the same path, and the dry-run mutates neither the repository nor the Desk.
