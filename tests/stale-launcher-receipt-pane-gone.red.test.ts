@@ -17,6 +17,7 @@ const project = "score-demo", address = `main@${project}`;
 const retired = "w7:p8", current = "w7:pG", herdrSession = "forge", cwd = "/work/score-demo";
 const session = "01a11ada-cce4-75c0-8818-579d290aae28", otherSession = "33333333-3333-4333-8333-333333333333";
 const handover = "H-20261030T010000Z-main-score-demo-successor", takeover = "main-takeover-20261030", authorizationId = "A-pane-gone-20261030";
+const manualMode = "operator-authorized-manual-in-place-adoption";
 const roots: string[] = [];
 const sha256 = (content: string) => createHash("sha256").update(content).digest("hex");
 
@@ -26,6 +27,9 @@ type Options = {
   /** Herdr global observations. */
   agents?: "complete" | "exact-pi-at-retired" | "exact-pi-elsewhere" | "exact-pi-at-current" | "other-pi-at-retired" | "no-agent-session" | "not-a-list";
   retiredPanePresent?: boolean;
+  /** A binding_mode that lingers in the seat runtime; with `manual`, the genuine manual rebinding mode and receipt. */
+  bindingMode?: string;
+  manual?: boolean;
   /** Request flag overrides and authorization tuple. */
   args?: Record<string, string>;
   authorization?: { pi_session?: string; source_pane?: string; target_pane?: string };
@@ -49,11 +53,23 @@ async function fixture(options: Options = {}) {
     schema: "atdd-flow/pi-runtime-launch-receipt/v1", seat: address, tasks: [takeover], candidate: "economy",
     pi_session: session, pi_session_path: sessionPath, herdr_session: herdrSession, pane: retired, created_at: "2026-10-20T08:00:01.000Z",
   };
+  if (options.manual) {
+    // A genuine operator manual rebinding receipt for the same retired placement, with its transcript-prefix backup.
+    const prefix = '{"type":"session","id":"recorded"}\n', backup = join(root, "backup.jsonl");
+    await writeFile(backup, prefix);
+    Object.assign(receipt, {
+      schema: "atdd-flow/manual-pi-runtime-rebinding-receipt/v1", id: "MR-20261030T000000Z-main-score-demo", mode: manualMode,
+      authorized_by: "operator@desk", authorization: "M-20261030T000000Z-owner-authorized-manual-main-runtime-rebinding",
+      target: { application: "herdr", herdr_session: herdrSession, pane: retired, cwd, pi_session: session, pi_session_path: sessionPath },
+      backup: { path: backup, bytes: prefix.length, sha256: sha256(prefix) },
+    });
+  }
   options.receipt?.(receipt);
   await atomicYaml(receiptPath, receipt);
   await atomicYaml(paths(root).seatFile(address), {
     schema: "atdd-workflow/seat/v2", address, role: "main", project, worktree: cwd, branch: "main",
-    runtime: { application: "herdr", wake: "native", addresses: { herdr: { session: herdrSession, pane: current } }, pi_session: session, pi_session_path: sessionPath, launch_receipt: receiptPath },
+    runtime: { application: "herdr", wake: "native", addresses: { herdr: { session: herdrSession, pane: current } }, pi_session: session, pi_session_path: sessionPath, launch_receipt: receiptPath,
+      ...(options.manual || options.bindingMode ? { binding_mode: options.bindingMode ?? manualMode } : {}) },
   });
   await atomicYaml(paths(root).handoverFile(address), { schema: "atdd-workflow/handover/v1", seat: address, handover_id: handover, supersedes: "none", recorded_at: "2026-10-30T01:00:00.000Z", text: "exact handover" });
   await atomicYaml(paths(root).taskFile(project, takeover), { schema: "atdd-workflow/task/v1", title: "Main takeover", status: "todo", coordinator: address, assignee: address, done_when: [{ text: "Recovered." }] });
@@ -153,7 +169,23 @@ test("RED: a launcher receipt whose canonical pane and exact Pi are absent globa
   await refusedUnchanged({ authorization: { pi_session: otherSession } });
 
   // The exact pane-gone case: recorded Pi and retired pane absent from one complete global snapshot; target is the current locator.
-  const value = await fixture();
+  await recoveredPaneGone(await fixture());
+
+  // Routing is by receipt schema: a launcher receipt reaches pane-gone recovery even when the seat runtime retains a manual binding_mode.
+  await recoveredPaneGone(await fixture({ bindingMode: manualMode }));
+  await recoveredPaneGone(await fixture({ bindingMode: "operator-authorized-other" }));
+
+  // A genuine manual rebinding receipt keeps manual routing: pane-gone absence is never accepted for it.
+  const manual = await fixture({ manual: true });
+  const routed = await manual.recover();
+  expect(routed.exitCode).not.toBe(0);
+  expect(routed.output).toContain("Stale main relocation receipt recovery refused");
+  expect(routed.output).not.toContain("pane-gone");
+  expect(await Bun.file(manual.active).exists()).toBe(false);
+  expect((await manual.calls()).some(mutating)).toBe(false);
+}, 60_000);
+
+async function recoveredPaneGone(value: Awaited<ReturnType<typeof fixture>>) {
   const result = await value.recover();
   expect(result.output).toContain(`Recorded Path-A replacement request for ${address}.`);
   expect(result.exitCode).toBe(0);
@@ -174,4 +206,4 @@ test("RED: a launcher receipt whose canonical pane and exact Pi are absent globa
   const calls = await value.calls();
   expect(calls.some(mutating)).toBe(false);
   expect(calls.some((argv) => argv.slice(2, 4).join(" ") === "agent list")).toBe(true);
-});
+}

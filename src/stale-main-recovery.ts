@@ -30,6 +30,7 @@ export type StaleMainRecovery = {
   relocation?: Relocation;
 };
 
+const LAUNCH_RECEIPT_SCHEMA = "atdd-flow/pi-runtime-launch-receipt/v1";
 export const MANUAL_REBINDING_SCHEMA = "atdd-flow/manual-pi-runtime-rebinding-receipt/v1";
 export const MANUAL_REBINDING_MODE = "operator-authorized-manual-in-place-adoption";
 
@@ -84,7 +85,7 @@ export function receiptProvesCanonical(receipt: PriorReceipt, seat: string, cano
 }
 
 function launchReceiptProvesCanonical(receipt: PriorReceipt, seat: string, canonical: StaleMainRecovery["canonical_source"]) {
-  return receipt.schema === "atdd-flow/pi-runtime-launch-receipt/v1" && receipt.seat === seat
+  return receipt.schema === LAUNCH_RECEIPT_SCHEMA && receipt.seat === seat
     && receipt.pi_session === canonical.pi_session && receipt.pi_session_path === canonical.pi_session_path
     && receipt.herdr_session === canonical.herdr_session && receipt.pane === canonical.pane;
 }
@@ -264,12 +265,18 @@ export async function buildStaleMainRecovery(root: string, seat: string, intent:
 
 const refuse = (reason: string) => new Error(`Stale main relocation receipt recovery refused: ${reason}.`);
 
-/** True when the seat records a manual binding_mode or its launch receipt is a manual rebinding receipt, rather than a launcher receipt. */
+/** The recorded receipt, or undefined when it is unreadable or malformed. */
+async function readReceipt(path: string) {
+  try { return yaml.parse<PriorReceipt>(await readFile(path, "utf8")); } catch { return undefined; }
+}
+
+/** A launcher receipt is never manual, even if the seat retains a binding_mode; any other receipt is manual when it has the manual schema or the seat records a binding_mode. */
 export async function isManualRebindingReceipt(record: Seat) {
   const path = record.runtime?.launch_receipt;
   if (!path) return false;
-  if (record.runtime?.binding_mode !== undefined) return true;
-  try { return yaml.parse<PriorReceipt>(await readFile(path, "utf8")).schema === MANUAL_REBINDING_SCHEMA; } catch { return false; }
+  const schema = (await readReceipt(path))?.schema;
+  if (schema === LAUNCH_RECEIPT_SCHEMA) return false;
+  return record.runtime?.binding_mode !== undefined || schema === MANUAL_REBINDING_SCHEMA;
 }
 
 /** A backup file must hash to its recorded digest (and size, when recorded) and be the exact byte prefix of the adopted session transcript. */
@@ -390,10 +397,8 @@ export async function relocationFor(record: Seat, source: Source, target: Target
 }
 
 async function readLauncherReceipt(path: string) {
-  try {
-    const receipt = yaml.parse<PriorReceipt>(await readFile(path, "utf8"));
-    return receipt.schema === "atdd-flow/pi-runtime-launch-receipt/v1" ? receipt : undefined;
-  } catch { return undefined; }
+  const receipt = await readReceipt(path);
+  return receipt?.schema === LAUNCH_RECEIPT_SCHEMA ? receipt : undefined;
 }
 
 /** The launcher receipt names this seat's exact recorded Pi at a pane other than the seat's current locator. */
