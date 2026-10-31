@@ -112,3 +112,27 @@ test("one retired seat does not excuse its still-active twin on the shared path"
   expect(plan).not.toContain("driver.second@demo");
   expect(await Bun.file(join(repository, ".jj")).exists()).toBe(false);
 });
+
+test("retired seats on the primary checkout and a shared path do not block the owner's dirty-primary dry-run", async () => {
+  if (!Bun.which("jj")) return;
+  const { desk, repository, shared } = await fixture();
+  await flow(desk, "spawn", "demo", "coordinator", "payments");
+  const coordinatorWorktree = join(shared, "..", "payments");
+  // A retired coordinator still records the primary checkout beside live main, as in the Resolver Desk.
+  await flow(desk, "bind", "coordinator.payments@demo", "--application", "herdr", "--address", "w1:p2", "--session", "fixture");
+  const coordinatorFile = seatFile(desk, "coordinator.payments");
+  const record = Bun.YAML.parse(await readFile(coordinatorFile, "utf8")) as Record<string, unknown>;
+  record.worktree = repository;
+  record.branch = "main";
+  await writeFile(coordinatorFile, Bun.YAML.stringify(record, null, 2));
+  for (const address of ["coordinator.payments", "driver.first", "driver.second"]) await markRetired(desk, address);
+  await exec(repository, "git", "worktree", "remove", shared);
+  await exec(repository, "git", "worktree", "remove", coordinatorWorktree);
+  await writeFile(join(repository, "dirty.txt"), "uncommitted primary work\n");
+
+  const plan = await flow(desk, "project", "migrate-vcs", "demo", "--to", "jj", "--allow-dirty-primary", "--dry-run");
+  expect(plan).toContain("dirty.txt");
+  expect(plan).toContain("main@demo");
+  expect(plan).not.toContain("coordinator.payments@demo");
+  expect(await Bun.file(join(repository, ".jj")).exists()).toBe(false);
+});
