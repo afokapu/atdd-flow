@@ -414,13 +414,21 @@ function unmatchedWakeRequest(branch: TranscriptEntry[], identity: WakeIdentity)
 /** The recovery bundle is advisory; any failure falls back to the plain prompt. */
 const recovery = (root: string, seat: string, mode: RecoveryMode, session?: string) => recoveryFor(root, seat, mode, session).catch(() => undefined);
 
-/** True when this Pi was launched by the active request: its own seat receipt embeds exactly that request, so it is the consumed successor, not a source to shut down. */
-async function launchedByRequest(root: string, seat: string, request: unknown) {
+type ReceiptWithLaunchRequest = { handover_replacement?: { request?: unknown } };
+
+/** The request recorded in this seat's own launcher receipt, or undefined when the seat, receipt or embed is absent or unreadable. */
+async function embeddedLaunchRequest(root: string, seat: string) {
   try {
     const receiptPath = (await readYaml<Seat>(paths(root).seatFile(seat))).runtime?.launch_receipt;
-    const embedded = receiptPath ? (parse(await readFile(receiptPath, "utf8")) as { handover_replacement?: { request?: unknown } })?.handover_replacement?.request : undefined;
-    return embedded !== undefined && isDeepStrictEqual(embedded, request);
-  } catch { return false; }
+    if (!receiptPath) return undefined;
+    return (parse(await readFile(receiptPath, "utf8")) as ReceiptWithLaunchRequest | null)?.handover_replacement?.request;
+  } catch { return undefined; }
+}
+
+/** True when this Pi was launched by the active request: its own receipt embeds exactly that request, so it is the consumed successor, not a source to shut down. */
+async function launchedByRequest(root: string, seat: string, request: unknown) {
+  const embedded = await embeddedLaunchRequest(root, seat);
+  return embedded !== undefined && isDeepStrictEqual(embedded, request);
 }
 
 /** Desk mail is authoritative; the queue is a bounded delivery index and fs.watch only shortens latency. */
