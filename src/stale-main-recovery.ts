@@ -9,6 +9,7 @@
 // Purpose: Evidence rules for operator-authorized stale-main Pi binding recovery.
 
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { type Runtime, type Seat, runOutput, yaml } from "./core";
@@ -48,6 +49,7 @@ type Recorded = { session: string; sessionPath: string; locator: { session: stri
 type Source = HandoverReplacementRequest["source"];
 type Target = HandoverReplacementRequest["target"];
 type PriorReceipt = {
+  handover_replacement?: { request?: unknown };
   schema?: string; seat?: string; pi_session?: string; pi_session_path?: string; herdr_session?: string; pane?: string;
   mode?: string; authorized_by?: string; authorization?: string;
   target?: { cwd?: string; pi_session?: string; pi_session_path?: string; herdr_session?: string; pane?: string };
@@ -288,14 +290,21 @@ export async function backupIsTranscriptPrefix(backup: { path?: string; sha256?:
   } catch { return false; }
 }
 
-/** An existing stale active request must retain exactly the retired placement of the recorded Pi. */
+/** A launcher receipt's own launch request: the active request is exactly that embedded request, for the same Pi, targeting the receipt placement. */
+function isEmbeddedLaunchRequest(request: HandoverReplacementRequest, receipt: PriorReceipt) {
+  return receipt.schema === LAUNCH_RECEIPT_SCHEMA && isDeepStrictEqual(request, receipt.handover_replacement?.request)
+    && request.target.herdr_session === receipt.herdr_session && request.target.pane === receipt.pane;
+}
+
+/** An existing stale active request must retain the retired placement of the recorded Pi: both ends at it, or the launch request embedded in the launcher receipt. */
 async function priorRequestIsRetiredLineage(file: string, receipt: PriorReceipt) {
   let bytes: string;
   try { bytes = await readFile(file, "utf8"); } catch { return true; }
   try {
-    const { source, target } = yaml.parse<HandoverReplacementRequest>(bytes);
-    return source.pi_session === receipt.pi_session && source.pi_session_path === receipt.pi_session_path
-      && [source, target].every((placement) => placement.herdr_session === receipt.herdr_session && placement.pane === receipt.pane);
+    const request = yaml.parse<HandoverReplacementRequest>(bytes), { source, target } = request;
+    if (source.pi_session !== receipt.pi_session || source.pi_session_path !== receipt.pi_session_path) return false;
+    return [source, target].every((placement) => placement.herdr_session === receipt.herdr_session && placement.pane === receipt.pane)
+      || isEmbeddedLaunchRequest(request, receipt);
   } catch { return false; }
 }
 
