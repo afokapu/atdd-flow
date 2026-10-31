@@ -11,6 +11,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { type Runtime, type Seat, runOutput, yaml } from "./core";
 import type { HandoverReplacementRequest, LiveSourceProof } from "./handover";
 
@@ -48,6 +49,7 @@ type Recorded = { session: string; sessionPath: string; locator: { session: stri
 type Source = HandoverReplacementRequest["source"];
 type Target = HandoverReplacementRequest["target"];
 type PriorReceipt = {
+  handover_replacement?: { request?: unknown };
   schema?: string; seat?: string; pi_session?: string; pi_session_path?: string; herdr_session?: string; pane?: string;
   mode?: string; authorized_by?: string; authorization?: string;
   target?: { cwd?: string; pi_session?: string; pi_session_path?: string; herdr_session?: string; pane?: string };
@@ -288,14 +290,22 @@ export async function backupIsTranscriptPrefix(backup: { path?: string; sha256?:
   } catch { return false; }
 }
 
-/** An existing stale active request must retain exactly the retired placement of the recorded Pi. */
+const atReceiptPlacement = (placement: { herdr_session: string; pane: string }, receipt: PriorReceipt) =>
+  placement.herdr_session === receipt.herdr_session && placement.pane === receipt.pane;
+
+/** A launcher receipt's own launch request: the active request is exactly the request embedded in the receipt and targets the receipt placement. */
+function isEmbeddedLaunchRequest(request: HandoverReplacementRequest, receipt: PriorReceipt) {
+  return receipt.schema === LAUNCH_RECEIPT_SCHEMA && isDeepStrictEqual(request, receipt.handover_replacement?.request) && atReceiptPlacement(request.target, receipt);
+}
+
+/** An existing stale active request must be for the recorded Pi and retain the retired placement: both ends at it, or the launch request embedded in the launcher receipt. */
 async function priorRequestIsRetiredLineage(file: string, receipt: PriorReceipt) {
   let bytes: string;
   try { bytes = await readFile(file, "utf8"); } catch { return true; }
   try {
-    const { source, target } = yaml.parse<HandoverReplacementRequest>(bytes);
-    return source.pi_session === receipt.pi_session && source.pi_session_path === receipt.pi_session_path
-      && [source, target].every((placement) => placement.herdr_session === receipt.herdr_session && placement.pane === receipt.pane);
+    const request = yaml.parse<HandoverReplacementRequest>(bytes), { source, target } = request;
+    const samePi = source.pi_session === receipt.pi_session && source.pi_session_path === receipt.pi_session_path;
+    return samePi && ((atReceiptPlacement(source, receipt) && atReceiptPlacement(target, receipt)) || isEmbeddedLaunchRequest(request, receipt));
   } catch { return false; }
 }
 
