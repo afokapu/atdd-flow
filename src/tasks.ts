@@ -3,6 +3,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import {
   type Checkpoint, type Seat, atomicYaml, canonicalAddress, exists, now, paths, project, readYaml, required, runOutput, seat, taskId, values, words,
 } from "./core";
+import { terminalMergeProof } from "./retire-merge-proof";
 import { operatorAuthorizationPayload } from "./task-supersede-authorization";
 import { branchCommit, currentCommit, isAncestor, vcsMode, type VcsMode } from "./vcs";
 
@@ -258,6 +259,21 @@ async function retirementBun(root: string, projectName: string) {
   return [required(Bun.which("atdd-bun") ?? undefined, "atdd-bun in the primary checkout node_modules/.bin or on PATH")];
 }
 
+/**
+ * ATDD Bun removes a clean merged worktree and its branch. When it refuses (a squash-merged or post-JJ branch it cannot prove
+ * merged), retirement proceeds only on independent merge proof; the worktree and branch are then retained and the refusal stands otherwise.
+ */
+async function finishOrProveMerged(root: string, projectName: string, owner: Seat) {
+  const config = await project(root, projectName);
+  try {
+    return await runOutput([...await retirementBun(root, projectName), "worktree", "finish", "--delete-branch", "--vcs", vcsMode(config)], owner.worktree);
+  } catch (error) {
+    const proof = config.repository && await exists(owner.worktree) ? await terminalMergeProof(config.repository, owner) : undefined;
+    if (!proof) throw error;
+    return `Worktree finish refused (${(error as Error).message}); merge proof: ${proof}; worktree ${owner.worktree} and branch ${owner.branch} retained.`;
+  }
+}
+
 async function retireDriver(root: string, projectName: string, assignee: string, id: string, allowAbsentWorktree = false, allowPrimaryCheckout = false) {
   const unfinished = (await allTasks(root, projectName))
     .filter((entry) => entry.id !== id && (entry.task.assignee === assignee || entry.task.coordinator === assignee) && !terminal(entry.task))
@@ -271,7 +287,7 @@ async function retireDriver(root: string, projectName: string, assignee: string,
     const primaryCheckout = allowPrimaryCheckout && primary && await canonicalPath(owner.worktree) === await canonicalPath(primary);
     const summary = (primaryCheckout ? `Primary checkout ${owner.worktree} retained; retired without worktree finish.` : undefined)
       ?? (allowAbsentWorktree ? await absentUnregisteredWorktree(root, projectName, owner) : undefined)
-      ?? await runOutput([...await retirementBun(root, projectName), "worktree", "finish", "--delete-branch", "--vcs", vcsMode(await project(root, projectName))], owner.worktree);
+      ?? await finishOrProveMerged(root, projectName, owner);
     owner.retired = { task: `${projectName}/${id}`, completed_at: now(), summary };
     await atomicYaml(paths(root).seatFile(assignee), owner);
     const checkpoint: Checkpoint = {
