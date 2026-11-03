@@ -5,7 +5,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { discoverAddress, discoverHerdrLocator, notify } from "./adapters";
 import {
   type Checkpoint, type Desk, type ModelCandidate, type ModelPortfolio, type Project, type Role, type Runtime, type Seat,
-  atomicYaml, canonicalAddress, desk, exists, fill, has, migrateDesk, modelPortfolio, now, paths, project, readYaml,
+  atomicYaml, canonicalAddress, desk, exists, fill, has, herdrPaneId, migrateDesk, modelPortfolio, now, paths, project, readYaml,
   required, run, runOutput, runtimeAddress, seat, taskId, words, yaml,
 } from "./core";
 import { type ModelSelectionInput, type ModelSelectionResponse, selectModel } from "./judgment";
@@ -397,7 +397,7 @@ export async function bind(root: string, address: string, args: string[], select
   const nativeAddress = required(words(args, "--address"), "--address");
   const requestedSession = words(args, "--session");
   const addresses = record.runtime?.addresses ?? {};
-  const runtimeBinding = application === "herdr" && requestedSession ? { session: requestedSession, pane: nativeAddress } : nativeAddress;
+  const runtimeBinding = application === "herdr" && requestedSession ? { session: requestedSession, pane: herdrPaneId(requestedSession, nativeAddress) } : nativeAddress;
   record.runtime = {
     ...record.runtime,
     application,

@@ -335,8 +335,16 @@ export async function canonicalAddress(root: string, address: string) {
   return resolved;
 }
 
+/** A Herdr pane id never carries its session; a binding typed as `<session>/<pane>` names that pane. */
+export function herdrPaneId(session: string, pane: string) {
+  return pane.startsWith(`${session}/`) ? pane.slice(session.length + 1) : pane;
+}
+
 export async function seat(root: string, address: string) {
-  return readYaml<Seat>(paths(root).seatFile(await canonicalAddress(root, address)));
+  const record = await readYaml<Seat>(paths(root).seatFile(await canonicalAddress(root, address)));
+  const locator = record.runtime?.addresses.herdr;
+  if (locator && typeof locator === "object") locator.pane = herdrPaneId(locator.session, locator.pane);
+  return record;
 }
 
 export function fill(template: string, entries: Record<string, string>) {
