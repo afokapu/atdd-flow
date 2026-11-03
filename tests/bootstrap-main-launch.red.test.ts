@@ -173,3 +173,15 @@ test("fail-closed: a seat off the exact main topology", async () => { await refu
 test("fail-closed: an invalid request file is never treated as a bootstrap", async () => { await refusedUnchanged({ invalidRequest: true }, refusal); });
 test("fail-closed: target pane occupied by a Pi", async () => { await refusedUnchanged({ targetOccupied: true }, "available shell"); });
 test("fail-closed: host pane is the target pane", async () => { await refusedUnchanged({ hostPane: pane }, "different pane"); });
+
+// Acceptance: acc:flow:E027-UNIT-001 - a pane created by hand has no Flow environment, so launch must export the Desk root into it.
+test("launch exports the Desk root, seat and Herdr tuple into a manually created pane before starting Pi", async () => {
+  const value = await fixture();
+  await value.launch();
+  const exported = value.fake.calls.find((argv) => argv.includes("run") && argv.some((part) => part.startsWith("export ")))!;
+  const line = exported.find((part) => part.startsWith("export "))!;
+  expect(line).toContain("ATDD_WORKFLOW_ROOT=");
+  expect(line).toContain(value.root);
+  expect(line).toContain(address);
+  expect(line).toContain(pane);
+});
