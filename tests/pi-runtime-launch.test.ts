@@ -647,3 +647,20 @@ async function captureStdoutRaw(work: () => Promise<unknown>) {
   try { await work(); } finally { process.stdout.write = write; }
   return shown;
 }
+
+test("DIAGNOSIS: a Herdr-qualified --pane or --source-pane never matches the stored pane tuple and is refused before projection", async () => {
+  const root = await desk();
+  const source = join(root, `legacy_${sessionId}.jsonl`);
+  await writeFile(source, "source");
+  const authorization = await operatorAuthorization(root, source);
+  const args = (pane: string, sourcePane: string) => ["--pane", pane, "--herdr-session", "forge", "--adopt-session", source, "--source-herdr-session", "legacy", "--source-pane", sourcePane, "--authorization", authorization];
+  for (const [pane, sourcePane] of [["forge/w1:p2", "w1:p2"], ["w1:p2", "legacy/w1:p2"], ["forge/w1:p2", "legacy/w1:p2"]]) {
+    const herdr = fakeHerdr({ verifiedPath: source });
+    await expect(launchPiRuntime(root, seat, args(pane!, sourcePane!), { select: selectEconomy, command: herdr.command }))
+      .rejects.toThrow("immutable operator authorization record bound to the exact adoption tuple");
+    expect(herdr.calls.map((call) => call.join(" "))).not.toContainEqual(expect.stringContaining("workspace list"));
+  }
+  // The refusal consumed nothing: the identical record still launches with the canonical unqualified panes.
+  const result = await launchPiRuntime(root, seat, args("w1:p2", "w1:p2"), { select: selectEconomy, command: fakeHerdr({ verifiedPath: source }).command });
+  expect(await readYaml<Record<string, unknown>>(result.receipt)).toMatchObject({ relocation: { authorization: { id: authorization } } });
+});
