@@ -255,7 +255,7 @@ async function taskCoordinatorBase(root: string, config: Project, task: Task, re
     const head = await runOutput(["git", "-C", coordinator.worktree, "rev-parse", "HEAD"]);
     if (head !== branchHead) throw new Error(`Coordinator ${coordinator.address} head is stale relative to ${branch}.`);
   } else {
-    try { await assertBranchReady(mode, coordinator.worktree, branch); }
+    try { await assertBranchReady(mode, coordinator.worktree, branch, coordinator.role === "main"); }
     catch (error) { throw new Error(`Coordinator ${coordinator.address} is not ready: ${(error as Error).message}`); }
   }
   return { coordinator, branch, commit: branchHead };
@@ -331,7 +331,7 @@ async function spawnTaskDriver(root: string, config: Project, role: Role, name: 
     const currentBranch = await branchCommit(mode, base.coordinator.worktree, coordinatorBase.branch);
     if (currentBranch !== coordinatorBase.commit) throw new Error(`Coordinator ${base.coordinator.address} advanced during driver provisioning.`);
     if (!baseArgument) {
-      const current = await assertBranchReady(mode, base.coordinator.worktree, coordinatorBase.branch);
+      const current = await assertBranchReady(mode, base.coordinator.worktree, coordinatorBase.branch, base.coordinator.role === "main");
       if (current !== coordinatorBase.commit) throw new Error(`Coordinator ${base.coordinator.address} advanced during driver provisioning.`);
     }
     await atomicYaml(paths(root).seatFile(address), record);
