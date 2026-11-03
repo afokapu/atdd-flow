@@ -229,11 +229,30 @@ async function failedAdoptionTaskEligible(root: string, record: Seat, address: s
     && await isExactMainSeat(root, record, address);
 }
 
-export async function replacementForMainLaunch(root: string, record: Seat, address: string) {
+export type MainLaunchReplacement = { request?: HandoverReplacementRequest; taskId: string; task: Task; bootstrap?: { handover: string } };
+
+/**
+ * A brand-new exact main seat has no predecessor to name. It may launch once when it records no runtime, has no
+ * Path-A request file, has a recorded handover and exactly one ready self-assigned todo task; nothing is fabricated.
+ */
+async function bootstrapForMainLaunch(root: string, record: Seat, address: string): Promise<MainLaunchReplacement | undefined> {
+  if (record.runtime || await exists(handoverReplacementPath(root, address))) return undefined;
+  const handover = await recorded(root, address);
+  if (!handover) return undefined;
+  const ready = await readyMainTasks(root, record, address);
+  if (ready.length !== 1) return undefined;
+  const taskId = ready[0]!;
+  return { taskId, task: await readYaml<Task>(paths(root).taskFile(record.project, taskId)), bootstrap: { handover: handover.handover_id } };
+}
+
+export async function replacementForMainLaunch(root: string, record: Seat, address: string): Promise<MainLaunchReplacement | undefined> {
   if (!await isExactMainSeat(root, record, address)) return undefined;
-  const request = await readHandoverReplacement(root, address).catch(() => {
+  const request = await readHandoverReplacement(root, address).catch(async () => {
+    const bootstrap = await bootstrapForMainLaunch(root, record, address);
+    if (bootstrap) return bootstrap;
     throw new Error(`${address} requires one validated Path-A replacement request; refusing runtime launch.`);
   });
+  if ("taskId" in request) return request;
   const task = await readYaml<Task>(paths(root).taskFile(record.project, request.task));
   const failedAdoption = await exactFailedAdoptionProof(root, record, address, request,
     (task) => failedAdoptionTaskEligible(root, record, address, task));
@@ -245,7 +264,7 @@ export async function replacementForMainLaunch(root: string, record: Seat, addre
   if (!canonicalLaunch && !failedAdoptionRecovery) {
     throw new Error("Path-A replacement source tuple no longer matches the recorded runtime or ready main takeover task.");
   }
-  return { request, task };
+  return { request, taskId: request.task, task };
 }
 
 export function assertReplacementTarget(request: HandoverReplacementRequest, herdrSession: string, pane: string, worktree: string) {
@@ -254,15 +273,12 @@ export function assertReplacementTarget(request: HandoverReplacementRequest, her
   }
 }
 
-async function exactMainTakeoverTask(root: string, address: string, id: string) {
-  const record = await seat(root, address);
-  if (!await isExactMainSeat(root, record, address)) {
-    throw new Error(`Path-A replacement requires exact main@${record.project} primary-main topology.`);
-  }
+/** Ids of the todo tasks that main@project owns and could start now: unblocked, self-assigned, dependencies terminal. */
+async function readyMainTasks(root: string, record: Seat, address: string) {
   let files: string[];
   try { files = await readdir(paths(root).tasks(record.project)); }
-  catch { throw new Error(`Path-A replacement requires one ready self-assigned main takeover task for ${address}.`); }
-  const ready = (await Promise.all(files.filter((file) => file.endsWith(".yaml") && !file.endsWith(".reviews.yaml")).map(async (file) => {
+  catch { return []; }
+  return (await Promise.all(files.filter((file) => file.endsWith(".yaml") && !file.endsWith(".reviews.yaml")).map(async (file) => {
     const taskId = file.slice(0, -5);
     const task = await readYaml<Task>(paths(root).taskFile(record.project, taskId));
     if (task.schema !== "atdd-workflow/task/v1" || task.status !== "todo" || task.blocker || task.coordinator !== address || task.assignee !== address) return undefined;
@@ -272,6 +288,15 @@ async function exactMainTakeoverTask(root: string, address: string, id: string) 
     }));
     return dependencies.every(Boolean) ? taskId : undefined;
   }))).filter((entry): entry is string => Boolean(entry));
+}
+
+async function exactMainTakeoverTask(root: string, address: string, id: string) {
+  const record = await seat(root, address);
+  if (!await isExactMainSeat(root, record, address)) {
+    throw new Error(`Path-A replacement requires exact main@${record.project} primary-main topology.`);
+  }
+  const ready = await readyMainTasks(root, record, address);
+  if (!ready.length && !await exists(paths(root).tasks(record.project))) throw new Error(`Path-A replacement requires one ready self-assigned main takeover task for ${address}.`);
   if (ready.length !== 1 || ready[0] !== id) throw new Error(`Path-A replacement requires exactly one ready self-assigned main takeover task; found: ${ready.join(", ") || "none"}.`);
   return { record };
 }
@@ -765,8 +790,30 @@ export async function resumedHandover(root: string, address: string) {
   return await isExactOperatorSeat(root, record, resolved) ? operatorResumed(root, record) : resumedHandoverReplacement(root, resolved);
 }
 
+/** A bootstrap successor has no Path-A request: reconcile it against its own launch receipt, Herdr binding and heartbeat. */
+async function resumedBootstrapLaunch(root: string, address: string) {
+  const record = await seat(root, address);
+  const runtime = record.runtime;
+  const locator = runtime?.addresses.herdr;
+  const receipt = runtime?.launch_receipt && await exists(runtime.launch_receipt) ? await readYaml<Record<string, any>>(runtime.launch_receipt) : undefined;
+  const bootstrap = receipt?.bootstrap_launch as { handover?: { id?: string }; task?: string } | undefined;
+  const handover = await recorded(root, address);
+  const runtimeState = await readRuntimeState(root, address);
+  const verified = [
+    Boolean(handover && bootstrap?.handover?.id === handover.handover_id && bootstrap.task && receipt?.seat === address && !receipt.handover_replacement),
+    runtime?.application === "herdr" && runtime.wake === "native",
+    Boolean(runtime?.pi_session && runtime.pi_session_path && receipt?.pi_session === runtime.pi_session && receipt.pi_session_path === runtime.pi_session_path),
+    typeof locator !== "string" && Boolean(locator) && locator?.session === receipt?.herdr_session && locator?.pane === receipt?.pane,
+    Boolean(runtimeState && runtimeState.seat === address),
+  ];
+  const discrepancies = ["bootstrap receipt", "native delivery", "fresh Pi session/JSONL path", "target tuple", "fresh heartbeat"].filter((_, index) => !verified[index]);
+  console.log(`RESUMED; verified ${verified.filter(Boolean).length}/${verified.length}; discrepancies: ${discrepancies.join(", ") || "none"}.`);
+  if (discrepancies.length) throw new Error("Bootstrap successor is not reconciled against the live Desk.");
+}
+
 export async function resumedHandoverReplacement(root: string, address: string) {
   const resolved = await canonicalAddress(root, address);
+  if (!await exists(handoverReplacementPath(root, resolved)) && await isExactMainSeat(root, await seat(root, resolved), resolved)) return resumedBootstrapLaunch(root, resolved);
   const [request, record] = await Promise.all([readHandoverReplacement(root, resolved), seat(root, resolved)]);
   const runtime = record.runtime;
   const locator = runtime?.addresses.herdr;
