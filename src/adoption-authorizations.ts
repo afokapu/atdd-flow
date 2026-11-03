@@ -101,6 +101,23 @@ function same(record: ExactSessionAdoptionAuthorization, expected: ExpectedTuple
   return sameSubject(record, expected) && sameSource(record, expected) && sameTarget(record, expected);
 }
 
+// Field names (never values) that differ between the stored record and the requested tuple, for refusal diagnostics.
+function differingFields(record: ExactSessionAdoptionAuthorization, expected: ExpectedTuple) {
+  const pairs: Array<[string, unknown, unknown]> = [
+    ["seat", record.seat, expected.seat], ["pi_session", record.pi_session, expected.pi_session], ["pi_session_path", record.pi_session_path, expected.pi_session_path],
+    ["source.herdr_session", record.source?.herdr_session, expected.source.herdr_session], ["source.pane", record.source?.pane, expected.source.pane],
+    ["target.herdr_session", record.target?.herdr_session, expected.target.herdr_session], ["target.pane", record.target?.pane, expected.target.pane], ["target.cwd", record.target?.cwd, expected.target.cwd],
+  ];
+  return pairs.filter(([, stored, requested]) => stored !== requested).map(([name]) => name);
+}
+
+const tupleRefusal = "Exact-session adoption requires an immutable operator authorization record bound to the exact adoption tuple.";
+// The refusal keeps its fixed sentence and only appends the differing field names when the tuple itself is well-formed.
+function tupleMismatch(record: ExactSessionAdoptionAuthorization, expected: ExpectedTuple) {
+  const fields = tuple(record) ? differingFields(record, expected) : [];
+  return new Error(fields.length ? `${tupleRefusal} Differing fields: ${fields.join(", ")}.` : tupleRefusal);
+}
+
 // Narrow an unknown YAML value to a plain object so nested receipt fields can be read without casts.
 const asRecord = (value: unknown): Record<string, unknown> | undefined => (value && typeof value === "object" ? (value as Record<string, unknown>) : undefined);
 
@@ -150,7 +167,7 @@ export async function resolveExactSessionAdoptionAuthorization(root: string, id:
   if (!validId(id)) throw new Error("Exact-session adoption requires an immutable operator authorization record id.");
   const { raw, record } = await readRecord(root, id);
   const storedHash = await readStoredHash(root, id, raw);
-  if (!tuple(record) || record.id !== id || !same(record, expected)) throw new Error("Exact-session adoption requires an immutable operator authorization record bound to the exact adoption tuple.");
+  if (!tuple(record) || record.id !== id || !same(record, expected)) throw tupleMismatch(record, expected);
   if (await used(root, id)) throw new Error("Exact-session adoption authorization record was already used.");
   return { id, hash: storedHash };
 }
