@@ -34,6 +34,8 @@ export type ModelCandidate = {
   args?: string[];
   description?: string;
   enabled?: boolean;
+  /** Context window in tokens; the server-side context monitor never guesses one. */
+  context_window?: number;
 };
 export type ModelPortfolio = {
   schema: "atdd-workflow/models/v1";
@@ -300,6 +302,10 @@ function assertModelMigrations(value: unknown, models: ModelCandidate[]) {
   for (const [profile, migration] of Object.entries(value)) assertMigration(profile, migration, models);
 }
 
+function assertContextWindow(model: ModelCandidate) {
+  if (model.context_window !== undefined && !(Number.isInteger(model.context_window) && model.context_window > 0)) throw new Error(`context_window for ${model.id} must be a positive integer of tokens.`);
+}
+
 export async function modelPortfolio(root: string): Promise<ModelPortfolio | undefined> {
   const file = paths(root).models;
   if (!await exists(file)) return undefined;
@@ -311,6 +317,7 @@ export async function modelPortfolio(root: string): Promise<ModelPortfolio | und
     if (!model.id?.trim() || !model.executable?.trim()) throw new Error("Every model requires id and executable.");
     if (ids.has(model.id)) throw new Error(`Duplicate model id in models.yaml: ${model.id}`);
     ids.add(model.id);
+    assertContextWindow(model);
   }
   assertModelMigrations(value.model_migrations, value.models);
   return value;
