@@ -36,7 +36,7 @@ async function fixture() {
   await git(repository, "add", ".");
   await git(repository, "-c", "user.email=f@example.test", "-c", "user.name=F", "commit", "-m", "initial");
   await run(root, "init", site);
-  await run(site, "project", "init", "demo");
+  await run(site, "project", "init", "demo", "--vcs", "git");
   return { root, site, repository, worktrees, projectFile: join(site, "work", "demo", "project.yaml") };
 }
 

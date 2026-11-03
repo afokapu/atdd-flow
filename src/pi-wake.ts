@@ -16,7 +16,7 @@ import {
 
 export const wakeUsage = "Use `atdd-flow pi wake <seat>|--scope project|desk [--model-profile <name>] --by <authorized-seat>`.";
 
-type Outcome = "woke" | "swapped+woke" | "deferred" | "refused" | "skipped" | "failed";
+export type Outcome = "woke" | "swapped+woke" | "deferred" | "refused" | "skipped" | "failed";
 export type WakeRow = { seat: string; outcome: Outcome; detail?: string };
 type Options = { target?: string; scope?: "project" | "desk"; profile?: string; by: string };
 type Target = { provider: string; model: string };
@@ -24,7 +24,7 @@ type Target = { provider: string; model: string };
 type Pane = { agent?: string; status?: string; sessionPath?: string; pids: number[] };
 type Ready = { session: string; pane: string; sessionId: string; sessionPath: string };
 type Inspection = { row: WakeRow } | { ready: Ready };
-type Prepared = { row: WakeRow } | { record: Seat; ready: Ready; inspectedAt: number };
+export type Prepared = { row: WakeRow } | { record: Seat; ready: Ready; inspectedAt: number };
 
 const pollMs = 50;
 /** A runtime heartbeat older than this is not a live Pi (the extension beats every 15 s). */
@@ -40,11 +40,11 @@ const timeouts = () => {
   return { step: explicit ?? 30_000, idle: explicit ?? 300_000 };
 };
 const pause = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
-const row = (seat: string, outcome: Outcome, detail?: string): WakeRow => ({ seat, outcome, ...(detail ? { detail } : {}) });
-const hold = (seat: string, outcome: Outcome, detail: string): { row: WakeRow } => ({ row: row(seat, outcome, detail) });
+export const row = (seat: string, outcome: Outcome, detail?: string): WakeRow => ({ seat, outcome, ...(detail ? { detail } : {}) });
+export const hold = (seat: string, outcome: Outcome, detail: string): { row: WakeRow } => ({ row: row(seat, outcome, detail) });
 const object = (value: unknown): Record<string, unknown> | undefined => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 const text = (value: unknown) => typeof value === "string" ? value : undefined;
-const message = (error: unknown) => error instanceof Error ? error.message : String(error);
+export const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 
 /** Polls until `read` yields a value or the bound elapses; one read always happens. */
 async function until<T>(read: () => Promise<T | undefined>, timeoutMs: number) {
@@ -77,7 +77,7 @@ export function parseWakeArguments(args: string[]): Options {
   return { ...(targets[0] ? { target: targets[0] } : {}), ...(scope ? { scope } : {}), ...(profile ? { profile } : {}), by };
 }
 
-async function herdr(session: string, ...args: string[]) {
+export async function herdr(session: string, ...args: string[]) {
   const child = Bun.spawn(["herdr", "--session", session, ...args], { stdout: "pipe", stderr: "pipe" });
   const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
   if (code !== 0) throw new Error(`herdr ${args.slice(0, 2).join(" ")} failed: ${stderr.trim() || stdout.trim()}`);
@@ -100,7 +100,7 @@ async function observe(session: string, pane: string): Promise<Pane> {
 }
 
 /** The transcript's active branch: the chain from the newest entry, excluding abandoned siblings. */
-const readBranch = async (path: string) => activeBranch(parseTranscript(await readFile(path, "utf8")));
+export const readBranch = async (path: string) => activeBranch(parseTranscript(await readFile(path, "utf8")));
 
 /** Resolve a profile mapping for the seat's current model. `{}` means wake without a swap. */
 function resolveSwap(portfolio: ModelPortfolio, profile: string, branch: TranscriptEntry[]): { candidate?: string; target?: Target } | { refused: string } {
@@ -161,7 +161,7 @@ const capabilityOf = (branch: TranscriptEntry[], ready: Ready, address: string) 
   customEntries(branch, wakeCapabilityType).filter((entry) => entry.data?.seat === address && entry.data.pi_session === ready.sessionId && entry.data.pane === ready.pane);
 
 /** Classify one seat without sending anything; every non-eligible seat resolves to its final row. */
-async function prepare(root: string, address: string, actor: string): Promise<Prepared> {
+export async function prepare(root: string, address: string, actor: string): Promise<Prepared> {
   if (address === actor) return hold(address, "skipped", "invoking seat");
   const record = await readYaml<Seat>(paths(root).seatFile(address)).catch(() => undefined);
   if (!record) return hold(address, "skipped", "no seat record");
@@ -248,7 +248,7 @@ async function seatAddresses(root: string, project: string) {
 }
 
 /** Authorization is by address: the operator may wake anything; a project main only its own project. */
-async function targetAddresses(root: string, options: Options, actor: string) {
+export async function targetAddresses(root: string, options: Options, actor: string) {
   const operator = actor === "operator@desk";
   if (options.target) {
     const target = await canonicalAddress(root, options.target), project = addressParts(target).project;

@@ -287,7 +287,7 @@ async function prepareLaunch(root: string, address: string, args: string[], depe
   const resolved = await canonicalAddress(root, address), record = await seat(root, resolved), config = await desk(root);
   const options = parseLaunchOptions(args), existingPane = existingPaneForResume(record, options);
   const replacement = await replacementForMainLaunch(root, record, resolved);
-  const active = replacement ? [{ id: replacement.request.task, task: replacement.task }] : await launchEligibleTasks(root, record, resolved);
+  const active = replacement ? [{ id: replacement.taskId, task: replacement.task }] : await launchEligibleTasks(root, record, resolved);
   const operator = await isExactOperatorSeat(root, record, resolved);
   if (!active.length && !operator) throw new Error(`${resolved} has no launch-eligible task; refusing runtime launch.`);
   const selection = await chooseLaunchModel(root, config, record, required(await modelPortfolio(root), "models.yaml for Pi runtime launch"), dependencies.select);
@@ -306,7 +306,7 @@ function assertProjectedPane(launch: PreparedLaunch, pane: string) {
   const { options, existingPane, replacement, record } = launch;
   if (options.resume && pane !== existingPane) throw new Error("Resume cannot relocate a Pi session across a Herdr session or pane; use explicit exact-session adoption.");
   if (options.requestedPane && options.requestedPane !== pane) throw new Error("The asserted --pane does not match the seat-scoped Herdr projection.");
-  if (replacement) assertReplacementTarget(replacement.request, options.herdrSession, pane, record.worktree);
+  if (replacement?.request) assertReplacementTarget(replacement.request, options.herdrSession, pane, record.worktree);
 }
 
 const sameTerminalRefusal = "Run this from a different pane; the target pane must be an idle shell.";
@@ -446,7 +446,8 @@ async function persistLaunch(launch: PreparedLaunch, plan: LaunchPlan["plan"], s
   const receiptRecord = {
     schema: "atdd-flow/pi-runtime-launch-receipt/v1", seat: resolved, tasks: active.map((entry) => entry.id), candidate: selection.candidate.id,
     selection: receiptSelection(launch), pi_session: piSession, pi_session_path: sessionPath, herdr_session: options.herdrSession, pane: plan.pane,
-    ...(replacement ? { handover_replacement: { request: replacement.request, successor_session: piSession } } : {}),
+    ...(replacement?.request ? { handover_replacement: { request: replacement.request, successor_session: piSession } } : {}),
+    ...(replacement?.bootstrap ? { bootstrap_launch: { handover: { id: replacement.bootstrap.handover }, task: replacement.taskId } } : {}),
     ...(relocation ? { relocation: { source_herdr_session: options.sourceHerdrSession, source_pane: options.sourcePane, authorization: authorizationRecord, backup: relocation.backup, backup_sha256: relocation.sha256 } } : {}),
     created_at: dependencies.at?.() ?? now(),
   };

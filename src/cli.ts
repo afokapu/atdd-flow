@@ -7,6 +7,7 @@
 
 import { basename, resolve } from "node:path";
 import { init, initProject, configureProject, migrateNamedCoordinatorTopology, spawn, bind, useApplication, attach, describe, checkpoint, launchPiRuntime, migrate, openSeat, piExtensionPath } from "./seats";
+import { formatMonitorRow, monitorContext } from "./context-monitor";
 import { formatWakeRow, wakePi } from "./pi-wake";
 import { createExactSessionAdoptionAuthorization } from "./adoption-authorizations";
 import { addParticipant, openThread, post, readMessage, receipt, result, startThread } from "./threads";
@@ -33,7 +34,7 @@ Legacy coordination.yaml registries are read safely and can be migrated.
 Usage:
   atdd-flow init <desk-directory> [--git]
   atdd-flow desk migrate
-  atdd-flow project init <project>
+  atdd-flow project init <project> [--vcs <git|jj>]   (default: jj)
   atdd-flow project configure <project> [--vcs <git|jj>] [--repository <primary-checkout>] [--worktree-root <directory>]
   atdd-flow project migrate-vcs <project> --to jj [--allow-dirty-primary [--retain-large-primary-file <path>:<sha256>:<bytes>:<mode> ...]] [--dry-run]
   atdd-flow project migrate-named-coordinator-topology <project> --baseline <40-lowercase-hex-remote-main-sha>
@@ -116,11 +117,11 @@ async function main() {
       throw new Error("Use `atdd-flow desk migrate`.");
     },
     project: async () => {
-      if (rest[0] === "init") return initProject(root, required(rest[1], "project"));
+      if (rest[0] === "init") return initProject(root, required(rest[1], "project"), rest.slice(2));
       if (rest[0] === "configure") return configureProject(root, required(rest[1], "project"), rest.slice(2));
       if (rest[0] === "migrate-vcs") return migrateProjectVcs(root, required(rest[1], "project"), rest.slice(2));
       if (rest[0] === "migrate-named-coordinator-topology") return migrateNamedCoordinatorTopology(root, required(rest[1], "project"), rest.slice(2));
-      throw new Error("Use `atdd-flow project init <project>`, `atdd-flow project configure <project> [--vcs <git|jj>] [--repository <primary-checkout>] [--worktree-root <directory>]`, `atdd-flow project migrate-vcs <project> --to jj [--allow-dirty-primary [--retain-large-primary-file <path>:<sha256>:<bytes>:<mode> ...]] [--dry-run]`, or `atdd-flow project migrate-named-coordinator-topology <project> --baseline <40-lowercase-hex-remote-main-sha>`.");
+      throw new Error("Use `atdd-flow project init <project> [--vcs <git|jj>]`, `atdd-flow project configure <project> [--vcs <git|jj>] [--repository <primary-checkout>] [--worktree-root <directory>]`, `atdd-flow project migrate-vcs <project> --to jj [--allow-dirty-primary [--retain-large-primary-file <path>:<sha256>:<bytes>:<mode> ...]] [--dry-run]`, or `atdd-flow project migrate-named-coordinator-topology <project> --baseline <40-lowercase-hex-remote-main-sha>`.");
     },
     spawn: () => spawn(root, required(rest[0], "project"), required(rest[1], "role"), required(rest[2], "name"), rest.slice(3)),
     bind: () => bind(root, required(rest[0], "address"), rest.slice(1)),
@@ -133,6 +134,12 @@ async function main() {
         if (rows.length !== 1) console.log(`pi wake: ${rows.length} seat(s) — ${["woke", "swapped+woke", "deferred", "refused", "skipped", "failed"].map((outcome) => [outcome, rows.filter((entry) => entry.outcome === outcome).length] as const).filter(([, count]) => count).map(([outcome, count]) => `${count} ${outcome}`).join(", ") || "none"}`);
         return;
       }
+      if (rest[0] === "context-monitor") {
+        const { rows, success } = await monitorContext(root, rest.slice(1), (entry) => console.log(formatMonitorRow(entry)));
+        if (!success) process.exitCode = 1;
+        if (rows.length !== 1) console.log(`pi context-monitor: ${rows.length} seat(s) — ${["prompted", "would-prompt", "below", "already", "deferred", "refused", "skipped", "failed"].map((outcome) => [outcome, rows.filter((entry) => entry.outcome === outcome).length] as const).filter(([, count]) => count).map(([outcome, count]) => `${count} ${outcome}`).join(", ") || "none"}`);
+        return;
+      }
       if (rest[0] === "runtime" && rest[1] === "authorize-adoption") return createExactSessionAdoptionAuthorization(root, required(rest[2], "authorization id"), rest.slice(3));
       if (rest[0] === "runtime" && rest[1] === "launch") {
         const plan = await launchPiRuntime(root, required(rest[2], "address"), rest.slice(3));
@@ -140,7 +147,7 @@ async function main() {
         else console.log(`Launched Pi runtime for ${required(rest[2], "address")} with ${plan.candidate}.`);
         return;
       }
-      throw new Error("Use `pi extension-path`, `pi wake <seat>|--scope project|desk [--model-profile <name>] --by <authorized-seat>`, `pi runtime authorize-adoption <id> ...`, or `pi runtime launch <address> [--pane <asserted-pane>] --herdr-session <session> [--resume] [--dry-run] [--adopt-session <exact-jsonl> --source-herdr-session <session> --source-pane <pane> --authorization <record-id>]`.");
+      throw new Error("Use `pi extension-path`, `pi wake <seat>|--scope project|desk [--model-profile <name>] --by <authorized-seat>`, `pi context-monitor <seat>|--scope project|desk --by <authorized-seat> [--dry-run]`, `pi runtime authorize-adoption <id> ...`, or `pi runtime launch <address> [--pane <asserted-pane>] --herdr-session <session> [--resume] [--dry-run] [--adopt-session <exact-jsonl> --source-herdr-session <session> --source-pane <pane> --authorization <record-id>]`.");
     },
     application: async () => {
       if (rest[0] === "use") return useApplication(root, required(rest[1], "address"), required(rest[2], "application"));

@@ -1,0 +1,9 @@
+urn: acc:flow:E026-UNIT-001
+phase: UNIT
+description: >-
+  Every new project defaults to Jujutsu. `project init <project>` records `vcs: jj` explicitly, so a later
+  `project configure --repository <jj-colocated-checkout>` followed by `spawn` provisions main, coordinator and
+  driver workspaces and bookmarks through JJ without any VCS flag. Git is an explicit per-project opt-out
+  (`project init <project> --vcs git`); a Git checkout configured on a default project is refused with a
+  diagnostic naming JJ and the opt-out. An unknown VCS value is refused, and a legacy project record that
+  carries no `vcs` field keeps reading as Git so existing projects are never silently reinterpreted.

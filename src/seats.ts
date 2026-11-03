@@ -5,7 +5,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { discoverAddress, discoverHerdrLocator, notify } from "./adapters";
 import {
   type Checkpoint, type Desk, type ModelCandidate, type ModelPortfolio, type Project, type Role, type Runtime, type Seat,
-  atomicYaml, canonicalAddress, desk, exists, fill, has, migrateDesk, modelPortfolio, now, paths, project, readYaml,
+  addressAliasResolver, atomicYaml, canonicalAddress, desk, exists, fill, has, herdrPaneId, migrateDesk, modelPortfolio, now, paths, project, readYaml,
   required, run, runOutput, runtimeAddress, seat, taskId, words, yaml,
 } from "./core";
 import { type ModelSelectionInput, type ModelSelectionResponse, selectModel } from "./judgment";
@@ -65,12 +65,16 @@ export async function migrate(root: string) {
   await projectCollaborationPolicy(root);
 }
 
-export async function initProject(root: string, name: string) {
+const initUsage = "Use `atdd-flow project init <project> [--vcs <git|jj>]`; new projects default to Jujutsu (jj).";
+
+/** New projects default to Jujutsu; Git is an explicit per-project opt-out. Legacy records without `vcs` keep reading as Git. */
+export async function initProject(root: string, name: string, args: string[] = []) {
+  if (args.length && (args.length !== 2 || args[0] !== "--vcs" || (args[1] !== "git" && args[1] !== "jj"))) throw new Error(initUsage);
   await desk(root);
-  const config: Project = { schema: "atdd-workflow/project/v1", project: name, roles: defaultRoles(Boolean(await modelPortfolio(root))) };
+  const config: Project = { schema: "atdd-workflow/project/v1", project: name, roles: defaultRoles(Boolean(await modelPortfolio(root))), vcs: (args[1] ?? "jj") as "git" | "jj" };
   await mkdir(paths(root).seats(name), { recursive: true });
   await atomicYaml(paths(root).projectFile(name), config);
-  console.log(`Initialized project ${name}`);
+  console.log(`Initialized project ${name} (vcs: ${config.vcs})`);
 }
 
 const configureUsage = "Use `atdd-flow project configure <project> [--vcs <git|jj>] [--repository <primary-checkout>] [--worktree-root <directory>]`.";
@@ -197,7 +201,7 @@ export async function configureProject(root: string, name: string, args: string[
   const repositoryPath = configuredRepository ? resolve(configuredRepository) : undefined;
   if (repositoryPath && (repository || selectedVcs)) {
     try { await assertRepository(mode, repositoryPath); }
-    catch (error) { throw new Error((error as Error).message); }
+    catch (error) { throw new Error(mode === "jj" && !selectedVcs ? `${(error as Error).message} Project ${name} uses Jujutsu by default; colocate the checkout with \`jj git init --colocate\` or opt out with \`--vcs git\`.` : (error as Error).message); }
     config.repository = repositoryPath;
   }
   if (selectedVcs) config.vcs = mode;
@@ -397,7 +401,7 @@ export async function bind(root: string, address: string, args: string[], select
   const nativeAddress = required(words(args, "--address"), "--address");
   const requestedSession = words(args, "--session");
   const addresses = record.runtime?.addresses ?? {};
-  const runtimeBinding = application === "herdr" && requestedSession ? { session: requestedSession, pane: nativeAddress } : nativeAddress;
+  const runtimeBinding = application === "herdr" && requestedSession ? { session: requestedSession, pane: herdrPaneId(requestedSession, nativeAddress) } : nativeAddress;
   record.runtime = {
     ...record.runtime,
     application,
@@ -493,11 +497,12 @@ export async function openSeat(root: string, address: string) {
   const checkpointFile = paths(root).checkpointFile(resolved);
   if (await exists(checkpointFile)) console.log(yaml.print(await readYaml<Checkpoint>(checkpointFile)));
   const threadIds = await readdir(paths(root).threads);
+  const resolve = await addressAliasResolver(root);
   for (const threadId of threadIds) {
     const file = paths(root).threadFile(threadId);
     if (!await exists(file)) continue;
     const entry = await readYaml<{ participants: string[]; state: string; subject: string }>(file);
-    if (entry.participants.includes(resolved)) console.log(`${threadId}  ${entry.state}  ${entry.subject}`);
+    if (entry.participants.map(resolve).includes(resolved)) console.log(`${threadId}  ${entry.state}  ${entry.subject}`);
   }
   console.log(`Convention: ${lifecycleConventionPath}`);
 }

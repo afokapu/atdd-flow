@@ -34,6 +34,8 @@ export type ModelCandidate = {
   args?: string[];
   description?: string;
   enabled?: boolean;
+  /** Context window in tokens; the server-side context monitor never guesses one. */
+  context_window?: number;
 };
 export type ModelPortfolio = {
   schema: "atdd-workflow/models/v1";
@@ -300,6 +302,10 @@ function assertModelMigrations(value: unknown, models: ModelCandidate[]) {
   for (const [profile, migration] of Object.entries(value)) assertMigration(profile, migration, models);
 }
 
+function assertContextWindow(model: ModelCandidate) {
+  if (model.context_window !== undefined && !(Number.isInteger(model.context_window) && model.context_window > 0)) throw new Error(`context_window for ${model.id} must be a positive integer of tokens.`);
+}
+
 export async function modelPortfolio(root: string): Promise<ModelPortfolio | undefined> {
   const file = paths(root).models;
   if (!await exists(file)) return undefined;
@@ -311,6 +317,7 @@ export async function modelPortfolio(root: string): Promise<ModelPortfolio | und
     if (!model.id?.trim() || !model.executable?.trim()) throw new Error("Every model requires id and executable.");
     if (ids.has(model.id)) throw new Error(`Duplicate model id in models.yaml: ${model.id}`);
     ids.add(model.id);
+    assertContextWindow(model);
   }
   assertModelMigrations(value.model_migrations, value.models);
   return value;
@@ -322,21 +329,40 @@ export async function project(root: string, name: string) {
   return value;
 }
 
-export async function canonicalAddress(root: string, address: string) {
+/**
+ * Follows the Desk's alias chain without validating the result, so stored history written under a renamed seat's
+ * old address reads as its current address. One Desk read serves a whole batch; a cycle fails closed.
+ */
+export async function addressAliasResolver(root: string) {
   const aliases = (await desk(root)).aliases ?? {};
-  const visited = new Set<string>();
-  let resolved = address;
-  while (aliases[resolved]) {
-    if (visited.has(resolved)) throw new Error(`Address alias cycle: ${address}`);
-    visited.add(resolved);
-    resolved = aliases[resolved];
-  }
+  return (address: string) => {
+    const visited = new Set<string>();
+    let resolved = address;
+    while (aliases[resolved]) {
+      if (visited.has(resolved)) throw new Error(`Address alias cycle: ${address}`);
+      visited.add(resolved);
+      resolved = aliases[resolved];
+    }
+    return resolved;
+  };
+}
+
+export async function canonicalAddress(root: string, address: string) {
+  const resolved = (await addressAliasResolver(root))(address);
   addressParts(resolved);
   return resolved;
 }
 
+/** A Herdr pane id never carries its session; a binding typed as `<session>/<pane>` names that pane. */
+export function herdrPaneId(session: string, pane: string) {
+  return pane.startsWith(`${session}/`) ? pane.slice(session.length + 1) : pane;
+}
+
 export async function seat(root: string, address: string) {
-  return readYaml<Seat>(paths(root).seatFile(await canonicalAddress(root, address)));
+  const record = await readYaml<Seat>(paths(root).seatFile(await canonicalAddress(root, address)));
+  const locator = record.runtime?.addresses.herdr;
+  if (locator && typeof locator === "object") locator.pane = herdrPaneId(locator.session, locator.pane);
+  return record;
 }
 
 export function fill(template: string, entries: Record<string, string>) {

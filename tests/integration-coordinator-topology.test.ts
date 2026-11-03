@@ -66,7 +66,7 @@ test("RED: defaults make main primary and named coordinators bounded integration
   await git(repository, "-c", "user.email=fixture@example.test", "-c", "user.name=Fixture", "commit", "-m", "initial");
 
   await run(root, "init", site);
-  await run(site, "project", "init", "demo");
+  await run(site, "project", "init", "demo", "--vcs", "git");
   const projectFile = join(site, "work", "demo", "project.yaml");
   const project = Bun.YAML.parse(await Bun.file(projectFile).text()) as Record<string, unknown>;
   project.repository = repository;
@@ -91,7 +91,7 @@ test("RED: legacy unscoped Herdr records report unverified without inferring ano
   roots.push(root);
   const site = join(root, "desk");
   await run(root, "init", site);
-  await run(site, "project", "init", "demo");
+  await run(site, "project", "init", "demo", "--vcs", "git");
   await run(site, "spawn", "demo", "driver", "legacy", "--worktree", join(root, "legacy"));
   // A scalar legacy locator might name a pane that exists in some other Herdr
   // session. It contains no session, Pi identity/path, receipt, or heartbeat,
@@ -120,7 +120,7 @@ test("assigned drivers record provable task-coordinator base evidence without ga
   await git(repository, "-c", "user.email=fixture@example.test", "-c", "user.name=Fixture", "commit", "-m", "initial");
 
   await run(root, "init", site);
-  await run(site, "project", "init", "demo");
+  await run(site, "project", "init", "demo", "--vcs", "git");
   const projectFile = join(site, "work", "demo", "project.yaml");
   const project = Bun.YAML.parse(await Bun.file(projectFile).text()) as Record<string, unknown>;
   project.repository = repository;
@@ -164,7 +164,7 @@ test("RED: task-aware driver spawn must atomically derive from its exact task co
   await git(repository, "add", "README.md");
   await git(repository, "-c", "user.email=fixture@example.test", "-c", "user.name=Fixture", "commit", "-m", "initial");
   await run(root, "init", site);
-  await run(site, "project", "init", "demo");
+  await run(site, "project", "init", "demo", "--vcs", "git");
   const projectFile = join(site, "work", "demo", "project.yaml");
   const project = Bun.YAML.parse(await Bun.file(projectFile).text()) as Record<string, unknown>;
   project.repository = repository;
@@ -210,8 +210,8 @@ async function roleNeutralFixture() {
   roots.push(root);
   const site = join(root, "desk");
   await run(root, "init", site);
-  await run(site, "project", "init", "demo");
-  await run(site, "project", "init", "other");
+  await run(site, "project", "init", "demo", "--vcs", "git");
+  await run(site, "project", "init", "other", "--vcs", "git");
   await mkdir(join(root, "main"));
   await mkdir(join(root, "coord"));
   await mkdir(join(root, "driver"));

@@ -1,0 +1,11 @@
+urn: acc:flow:E024-UNIT-001
+phase: UNIT
+description: >-
+  A brand-new exact main seat (`main@<project>` on the primary checkout, no recorded Pi session, session path or
+  launch receipt - a staged shell-pane Herdr binding is allowed - and no Path-A request) with a recorded handover and exactly one ready self-assigned todo task is launched by the
+  public `pi runtime launch` command into its available non-host shell pane with a fresh Pi session, no
+  fabricated predecessor tuple and no transcript adoption. The launch receipt records the exact handover
+  and task, and `handover resumed` reconciles the successor against the receipt, the Herdr binding and a
+  fresh heartbeat. The launch happens once: a recorded Pi identity, a missing handover, no ready task, a
+  blocked or foreign task, more than one ready task, a seat off the exact main topology, an invalid
+  request file, an occupied target and a launcher-host target stay fail-closed without mutation.

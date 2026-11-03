@@ -41,7 +41,7 @@ async function fixture(): Promise<Fixture> {
   await writeFile(join(repository, "README.md"), "initial\n"); await git(repository, "add", "README.md"); await git(repository, "commit", "-m", "initial");
   await writeFile(join(repository, "BASELINE.md"), "explicit baseline\n"); await git(repository, "add", "BASELINE.md"); await git(repository, "commit", "-m", "baseline");
   const base = await git(repository, "rev-parse", "HEAD");
-  await run(root, "init", site); await run(site, "project", "init", "demo");
+  await run(root, "init", site); await run(site, "project", "init", "demo", "--vcs", "git");
   const projectFile = join(site, "work", "demo", "project.yaml");
   const project = Bun.YAML.parse(await Bun.file(projectFile).text()) as Record<string, unknown>;
   project.repository = repository; project.worktree_root = worktrees; await Bun.write(projectFile, Bun.YAML.stringify(project));
