@@ -290,7 +290,7 @@ test("a no-checkout workspace with a different label is never adopted or renamed
   const herdr = statefulHerdr([{ workspace_id: "wx", label: "scratch", worktree: null }]);
   const projected = await projectHerdrSeat(fixture.site, "main@demo", "chosen", herdr.command);
   expect(projected.workspace).not.toBe("wx");
-  expect(herdr.calls).toContain(`workspace create --cwd ${fixture.repository} --label demo --no-focus`);
+  expect(herdr.calls).toContain(`workspace create --cwd ${fixture.repository} --label demo --no-focus --env ATDD_WORKFLOW_ROOT=${fixture.site}`);
   expect(herdr.calls.some((call) => call.includes("wx"))).toBe(false);
 });
 
