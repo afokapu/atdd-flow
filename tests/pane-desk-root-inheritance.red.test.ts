@@ -35,7 +35,8 @@ printf '%s\\n' "$*" >> '${log}'
 case "$3:$4" in
   workspace:list) printf '%s' '{"result":{"workspaces":[]}}' ;;
   workspace:create) printf '%s' '{"result":{"workspace":{"workspace_id":"w1"}}}' ;;
-  worktree:open) printf '%s' '{"result":{"workspace":{"workspace_id":"w2"},"root_tab":{"tab_id":"w2:t1"},"root_pane":{"pane_id":"w2:p1"}}}' ;;
+  worktree:open) case "$*" in *--env*) printf '%s\\n' 'unknown option: --env' >&2; exit 2 ;; esac
+    printf '%s' '{"result":{"workspace":{"workspace_id":"w2"},"root_tab":{"tab_id":"w2:t1"},"root_pane":{"pane_id":"w2:p1"}}}' ;;
   tab:list) printf '%s' '{"result":{"tabs":[]}}' ;;
   tab:create) printf '%s' '{"result":{"tab":{"tab_id":"w1:t1"},"root_pane":{"pane_id":"w1:p1"}}}' ;;
   pane:list) printf '%s' '{"result":{"panes":[]}}' ;;
@@ -46,14 +47,19 @@ esac
   return { site, log, environment: { ...process.env, ATDD_WORKFLOW_ROOT: undefined, ATDD_WORKFLOW_SEAT: undefined, HERDR_SESSION: undefined, PATH: `${bin}:${process.env.PATH ?? ""}` } };
 }
 
-test("RED: every workspace, linked worktree and tab Flow creates carries the Desk root as an environment variable", async () => {
+test("RED: workspace and tab creation carry the Desk root; Herdr 0.9.3 worktree open has no --env so none is passed", async () => {
   const { site, log, environment } = await fixture();
   const child = Bun.spawn([process.execPath, cli, "multiplexer", "apply", "herdr", "--session", "chosen"], { cwd: site, env: environment, stdout: "pipe", stderr: "pipe" });
   const [, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
   expect(code, stderr).toBe(0);
-  const creates = (await readFile(log, "utf8")).split("\n").filter((line) => /(workspace|worktree|tab) (create|open)/.test(line));
-  expect(creates.length).toBeGreaterThanOrEqual(3);
+  const lines = (await readFile(log, "utf8")).split("\n");
+  const creates = lines.filter((line) => /(workspace|tab) create/.test(line));
+  expect(creates.length).toBeGreaterThanOrEqual(2);
   for (const line of creates) expect(line, line).toContain(`--env ATDD_WORKFLOW_ROOT=${site}`);
+  // Installed Herdr 0.9.3 rejects `worktree open --env` ("unknown option"); the real CLI lists no such flag.
+  const opens = lines.filter((line) => /worktree open/.test(line));
+  expect(opens.length).toBeGreaterThanOrEqual(1);
+  for (const line of opens) expect(line, line).not.toContain("--env");
   // The environment is appended: the established argument order is unchanged.
   expect(creates.find((line) => line.includes("workspace create"))).toContain("--label demo --no-focus --env");
 });
