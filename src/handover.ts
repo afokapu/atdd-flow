@@ -232,11 +232,16 @@ async function failedAdoptionTaskEligible(root: string, record: Seat, address: s
 export type MainLaunchReplacement = { request?: HandoverReplacementRequest; taskId: string; task: Task; bootstrap?: { handover: string } };
 
 /**
- * A brand-new exact main seat has no predecessor to name. It may launch once when it records no runtime, has no
+ * A brand-new exact main seat has no predecessor to name. It may launch once when it records no Pi identity, has no
  * Path-A request file, has a recorded handover and exactly one ready self-assigned todo task; nothing is fabricated.
  */
+/** A staged shell-pane binding is a Herdr locator only; any Pi session, path or receipt proves a Pi already ran. */
+function hasPiIdentity(runtime: Runtime | undefined) {
+  return Boolean(runtime?.pi_session || runtime?.pi_session_path || runtime?.launch_receipt);
+}
+
 async function bootstrapForMainLaunch(root: string, record: Seat, address: string): Promise<MainLaunchReplacement | undefined> {
-  if (record.runtime || await exists(handoverReplacementPath(root, address))) return undefined;
+  if (hasPiIdentity(record.runtime) || await exists(handoverReplacementPath(root, address))) return undefined;
   const handover = await recorded(root, address);
   if (!handover) return undefined;
   const ready = await readyMainTasks(root, record, address);
