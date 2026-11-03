@@ -240,7 +240,10 @@ function matchWorkspace(workspaces: Workspace[], target: Target) {
   return workspaces.find((entry) => checkoutOf(entry) === undefined && entry.label === target.project);
 }
 
-/** Panes Flow creates inherit the Desk root, so a spawned seat resolves the Desk without a manual export. */
+/**
+ * Workspaces and tabs Flow creates inherit the Desk root. Herdr 0.9.3 `worktree open` has no `--env`, so a linked
+ * worktree's reused root tab gets the root from `pi runtime launch`, which exports it into the pane before Pi starts.
+ */
 const deskEnv = (root: string) => ["--env", `ATDD_WORKFLOW_ROOT=${root}`];
 
 async function ensureWorkspace(root: string, session: string, target: Target, workspaces: Workspace[], command: HerdrCommand, primary?: WorkspaceState) {
@@ -248,7 +251,7 @@ async function ensureWorkspace(root: string, session: string, target: Target, wo
   if (!current) {
     const args = target.workspaceLabel === target.project
       ? ["workspace", "create", "--cwd", target.worktree, "--label", target.workspaceLabel, "--no-focus", ...deskEnv(root)]
-      : ["worktree", "open", "--workspace", primary?.id ?? "", "--path", target.worktree, "--label", target.workspaceLabel, "--no-focus", ...deskEnv(root)];
+      : ["worktree", "open", "--workspace", primary?.id ?? "", "--path", target.worktree, "--label", target.workspaceLabel, "--no-focus"];
     if (args.includes("")) throw new Error(`Project primary workspace is required to open linked worktree ${target.worktree}.`);
     const created = json(await command(["herdr", "--session", session, ...args]));
     current = { workspace_id: workspaceId(created), label: target.workspaceLabel, worktree: { checkout_path: target.worktree } };
