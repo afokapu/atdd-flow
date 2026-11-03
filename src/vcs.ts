@@ -103,7 +103,11 @@ export async function isAncestor(cwd: string, ancestor: string, descendant: stri
   catch { return false; }
 }
 
-export async function assertBranchReady(mode: VcsMode, cwd: string, branch: string) {
+/**
+ * A branch is ready when its checkout is clean and at the branch tip. `allowDirtyParent` additionally accepts a Jujutsu working copy
+ * whose parent is exactly the branch tip with uncommitted changes (a migrated dirty primary); conflicts and any other lineage stay refused.
+ */
+export async function assertBranchReady(mode: VcsMode, cwd: string, branch: string, allowDirtyParent = false) {
   if (mode === "git") {
     if (await runOutput(["git", "-C", cwd, "status", "--porcelain"])) throw new Error(`Worktree ${cwd} is dirty.`);
     const checkedOut = await runOutput(["git", "-C", cwd, "branch", "--show-current"]);
@@ -120,7 +124,7 @@ export async function assertBranchReady(mode: VcsMode, cwd: string, branch: stri
       runOutput(["jj", "log", "-r", "@-", "--no-graph", "-T", "commit_id"], cwd),
       runOutput(["jj", "diff", "-r", "@", "--name-only"], cwd),
     ]);
-    if (parent === expected && !changed) return expected;
+    if (parent === expected && (!changed || allowDirtyParent)) return expected;
   }
   throw new Error(`Worktree ${cwd} is stale relative to ${branch}.`);
 }
