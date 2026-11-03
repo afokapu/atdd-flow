@@ -629,5 +629,5 @@ export default function (pi: ExtensionAPI, environment: NodeJS.ProcessEnv = proc
       ? noticeActivation("inactive")
       : noticeActivation(current.active ? "active" : "inactive", error instanceof Error ? error.message : String(error)));
   });
-  pi.on("session_shutdown", () => { void runtime?.stop(); });
+  pi.on("session_shutdown", async () => { await runtime?.stop(); });
 }

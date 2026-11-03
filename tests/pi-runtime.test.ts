@@ -217,7 +217,7 @@ test("RED: reload reconstructs one unmatched request from the active branch and 
   const piSession = "01a12345-6789-7abc-8def-0123456789ab", pane = "w1:p2", sessionPath = join(root, `run_${piSession}.jsonl`), receipt = join(root, "receipt.yaml");
   const names = ["ATDD_WORKFLOW_ROOT", "ATDD_WORKFLOW_SEAT", "ATDD_FLOW_PI_SESSION", "ATDD_FLOW_HERDR_SESSION", "ATDD_FLOW_HERDR_PANE"] as const;
   const saved = names.map((name) => [name, process.env[name]] as const);
-  let start: ((event: unknown, context: unknown) => Promise<void>) | undefined, shutdown: (() => void) | undefined;
+  let start: ((event: unknown, context: unknown) => Promise<void>) | undefined, shutdown: (() => unknown) | undefined;
   const entries: Array<{ customType: string; data: Record<string, unknown> }> = [], sent: Array<{ value: { customType: string; content: string }; options?: { triggerTurn?: boolean } }> = [];
   try {
     Object.assign(process.env, { ATDD_WORKFLOW_ROOT: root, ATDD_WORKFLOW_SEAT: seat, ATDD_FLOW_PI_SESSION: piSession, ATDD_FLOW_HERDR_SESSION: "forge", ATDD_FLOW_HERDR_PANE: pane });
@@ -240,7 +240,11 @@ test("RED: reload reconstructs one unmatched request from the active branch and 
     expect(triggered[0]?.value.content).toContain("RECOVERY BUNDLE");
     expect(triggered[0]?.value.content).toContain("authoritative next action");
     expect(await readRuntimeState(root, seat)).not.toHaveProperty("capabilities");
-    shutdown?.();
+    // Shutdown must be awaitable: teardown that removes the Desk must not race the runtime-state lock (Publish run 41585329225).
+    const stopped = shutdown?.() as unknown;
+    expect(stopped).toBeInstanceOf(Promise);
+    await stopped;
+    expect(await readRuntimeState(root, seat)).toBeUndefined();
   } finally {
     for (const [name, value] of saved) { if (value === undefined) delete process.env[name]; else process.env[name] = value; }
     await rm(root, { recursive: true, force: true });
