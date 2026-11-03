@@ -7,7 +7,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { atomicYaml, paths, readYaml, seat, yaml } from "./core";
+import { addressAliasResolver, atomicYaml, paths, readYaml, seat, yaml } from "./core";
 
 /** The one exact tuple an operator@desk message may carry to authorize `task supersede` by main. */
 export type SupersedeAuthorization = {
@@ -26,6 +26,7 @@ const sha256 = (content: string) => createHash("sha256").update(content).digest(
 export async function operatorAuthorizationPayload(root: string, reference: string, main: string): Promise<unknown> {
   type Found = { schema?: string; id?: string; from?: string; to?: "all" | string[]; authorization?: unknown };
   const folders = await readdir(paths(root).threads, { withFileTypes: true });
+  const resolve = await addressAliasResolver(root);
   const matches = (await Promise.all(folders.filter((entry) => entry.isDirectory() && entry.name.startsWith("T-"))
     .map(async (entry) => {
       try {
@@ -36,7 +37,7 @@ export async function operatorAuthorizationPayload(root: string, reference: stri
         return { thread, message };
       } catch { return undefined; }
     }))).filter((entry): entry is NonNullable<typeof entry> =>
-      entry?.thread.schema === "atdd-workflow/thread/v1" && entry.thread.participants?.includes(main) === true
+      entry?.thread.schema === "atdd-workflow/thread/v1" && entry.thread.participants?.map(resolve).includes(main) === true
       && entry.message.schema === "atdd-workflow/message/v1" && entry.message.id === reference);
   if (matches.length !== 1 || matches[0]?.message.from !== "operator@desk") {
     throw new Error(`Authorization ${reference} is not an owner-authorized topology plan.`);

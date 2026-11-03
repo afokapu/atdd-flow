@@ -5,7 +5,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { discoverAddress, discoverHerdrLocator, notify } from "./adapters";
 import {
   type Checkpoint, type Desk, type ModelCandidate, type ModelPortfolio, type Project, type Role, type Runtime, type Seat,
-  atomicYaml, canonicalAddress, desk, exists, fill, has, herdrPaneId, migrateDesk, modelPortfolio, now, paths, project, readYaml,
+  addressAliasResolver, atomicYaml, canonicalAddress, desk, exists, fill, has, herdrPaneId, migrateDesk, modelPortfolio, now, paths, project, readYaml,
   required, run, runOutput, runtimeAddress, seat, taskId, words, yaml,
 } from "./core";
 import { type ModelSelectionInput, type ModelSelectionResponse, selectModel } from "./judgment";
@@ -497,11 +497,12 @@ export async function openSeat(root: string, address: string) {
   const checkpointFile = paths(root).checkpointFile(resolved);
   if (await exists(checkpointFile)) console.log(yaml.print(await readYaml<Checkpoint>(checkpointFile)));
   const threadIds = await readdir(paths(root).threads);
+  const resolve = await addressAliasResolver(root);
   for (const threadId of threadIds) {
     const file = paths(root).threadFile(threadId);
     if (!await exists(file)) continue;
     const entry = await readYaml<{ participants: string[]; state: string; subject: string }>(file);
-    if (entry.participants.includes(resolved)) console.log(`${threadId}  ${entry.state}  ${entry.subject}`);
+    if (entry.participants.map(resolve).includes(resolved)) console.log(`${threadId}  ${entry.state}  ${entry.subject}`);
   }
   console.log(`Convention: ${lifecycleConventionPath}`);
 }

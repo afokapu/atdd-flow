@@ -4,7 +4,7 @@ import { notify } from "./adapters";
 import { seatTasks, terminal } from "./tasks";
 import { type SupersedeAuthorization, parseSupersedeAuthorization } from "./task-supersede-authorization";
 import {
-  atomicYaml, canonicalAddress, desk, has, id, now, paths, project, readYaml,
+  addressAliasResolver, atomicYaml, canonicalAddress, desk, has, id, now, paths, project, readYaml,
   required, runtimeAddress, seat, words,
 } from "./core";
 
@@ -33,14 +33,27 @@ export type Message = {
   authorization?: TransferAuthorization | SupersedeAuthorization;
 };
 
-async function thread(root: string, threadId: string) {
-  return readYaml<Thread>(paths(root).threadFile(threadId));
+type Resolve = (address: string) => string;
+
+/** A thread as its current seats see it: addresses written before a seat rename read as the new address. The file is untouched. */
+export function canonicalThread(record: Thread, resolve: Resolve): Thread {
+  return { ...record, participants: [...new Set(record.participants.map(resolve))] };
 }
 
-export async function messages(root: string, threadId: string) {
+export function canonicalMessage(message: Message, resolve: Resolve): Message {
+  return { ...message, from: resolve(message.from), to: message.to === "all" ? "all" : [...new Set(message.to.map(resolve))] };
+}
+
+async function thread(root: string, threadId: string, resolve?: Resolve) {
+  const record = await readYaml<Thread>(paths(root).threadFile(threadId));
+  return canonicalThread(record, resolve ?? await addressAliasResolver(root));
+}
+
+export async function messages(root: string, threadId: string, resolve?: Resolve) {
   const folder = paths(root).thread(threadId);
   const files = (await readdir(folder)).filter((file) => file.startsWith("M-") && file.endsWith(".yaml")).sort();
-  return Promise.all(files.map((file) => readYaml<Message>(`${folder}/${file}`)));
+  const resolver = resolve ?? await addressAliasResolver(root);
+  return Promise.all(files.map(async (file) => canonicalMessage(await readYaml<Message>(`${folder}/${file}`), resolver)));
 }
 
 async function replyTarget(root: string, threadId: string, messageId: string, from: string, needsResult: boolean) {
@@ -384,9 +397,10 @@ export function pendingResponders(participants: string[], all: Message[], messag
 
 export async function status(root: string) {
   const threadIds = (await readdir(paths(root).threads)).sort();
+  const resolve = await addressAliasResolver(root);
   for (const threadId of threadIds) {
-    const record = await thread(root, threadId);
-    const all = await messages(root, threadId);
+    const record = await thread(root, threadId, resolve);
+    const all = await messages(root, threadId, resolve);
     const pending = all.flatMap((message) => message.expects_result
       ? pendingResponders(record.participants, all, message).map((address) => `${message.id}@${address}`) : []);
     console.log(`${threadId}  ${record.state}  ${record.subject}${pending.length ? `  waiting:${pending.join(",")}` : ""}`);
@@ -396,7 +410,8 @@ export async function status(root: string) {
 export async function threadsForSeat(root: string, address: string) {
   const resolved = await canonicalAddress(root, address);
   const threadIds = await readdir(paths(root).threads);
-  const records = await Promise.all(threadIds.map(async (threadId) => ({ threadId, record: await thread(root, threadId) })));
+  const resolve = await addressAliasResolver(root);
+  const records = await Promise.all(threadIds.map(async (threadId) => ({ threadId, record: await thread(root, threadId, resolve) })));
   return records.filter(({ record }) => record.participants.includes(resolved));
 }
 

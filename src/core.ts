@@ -329,15 +329,26 @@ export async function project(root: string, name: string) {
   return value;
 }
 
-export async function canonicalAddress(root: string, address: string) {
+/**
+ * Follows the Desk's alias chain without validating the result, so stored history written under a renamed seat's
+ * old address reads as its current address. One Desk read serves a whole batch; a cycle fails closed.
+ */
+export async function addressAliasResolver(root: string) {
   const aliases = (await desk(root)).aliases ?? {};
-  const visited = new Set<string>();
-  let resolved = address;
-  while (aliases[resolved]) {
-    if (visited.has(resolved)) throw new Error(`Address alias cycle: ${address}`);
-    visited.add(resolved);
-    resolved = aliases[resolved];
-  }
+  return (address: string) => {
+    const visited = new Set<string>();
+    let resolved = address;
+    while (aliases[resolved]) {
+      if (visited.has(resolved)) throw new Error(`Address alias cycle: ${address}`);
+      visited.add(resolved);
+      resolved = aliases[resolved];
+    }
+    return resolved;
+  };
+}
+
+export async function canonicalAddress(root: string, address: string) {
+  const resolved = (await addressAliasResolver(root))(address);
   addressParts(resolved);
   return resolved;
 }
