@@ -52,7 +52,7 @@ async function fixture() {
   await exec(repository, "git", "add", "README.md");
   await exec(repository, "git", "commit", "-m", "initial");
   await flow(root, "init", desk);
-  await flow(desk, "project", "init", "demo");
+  await flow(desk, "project", "init", "demo", "--vcs", "git");
   await flow(desk, "project", "configure", "demo", "--repository", repository, "--worktree-root", worktrees);
   await flow(desk, "spawn", "demo", "main", "primary");
   await flow(desk, "spawn", "demo", "driver", "healthy");

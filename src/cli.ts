@@ -34,7 +34,7 @@ Legacy coordination.yaml registries are read safely and can be migrated.
 Usage:
   atdd-flow init <desk-directory> [--git]
   atdd-flow desk migrate
-  atdd-flow project init <project>
+  atdd-flow project init <project> [--vcs <git|jj>]   (default: jj)
   atdd-flow project configure <project> [--vcs <git|jj>] [--repository <primary-checkout>] [--worktree-root <directory>]
   atdd-flow project migrate-vcs <project> --to jj [--allow-dirty-primary [--retain-large-primary-file <path>:<sha256>:<bytes>:<mode> ...]] [--dry-run]
   atdd-flow project migrate-named-coordinator-topology <project> --baseline <40-lowercase-hex-remote-main-sha>
@@ -117,11 +117,11 @@ async function main() {
       throw new Error("Use `atdd-flow desk migrate`.");
     },
     project: async () => {
-      if (rest[0] === "init") return initProject(root, required(rest[1], "project"));
+      if (rest[0] === "init") return initProject(root, required(rest[1], "project"), rest.slice(2));
       if (rest[0] === "configure") return configureProject(root, required(rest[1], "project"), rest.slice(2));
       if (rest[0] === "migrate-vcs") return migrateProjectVcs(root, required(rest[1], "project"), rest.slice(2));
       if (rest[0] === "migrate-named-coordinator-topology") return migrateNamedCoordinatorTopology(root, required(rest[1], "project"), rest.slice(2));
-      throw new Error("Use `atdd-flow project init <project>`, `atdd-flow project configure <project> [--vcs <git|jj>] [--repository <primary-checkout>] [--worktree-root <directory>]`, `atdd-flow project migrate-vcs <project> --to jj [--allow-dirty-primary [--retain-large-primary-file <path>:<sha256>:<bytes>:<mode> ...]] [--dry-run]`, or `atdd-flow project migrate-named-coordinator-topology <project> --baseline <40-lowercase-hex-remote-main-sha>`.");
+      throw new Error("Use `atdd-flow project init <project> [--vcs <git|jj>]`, `atdd-flow project configure <project> [--vcs <git|jj>] [--repository <primary-checkout>] [--worktree-root <directory>]`, `atdd-flow project migrate-vcs <project> --to jj [--allow-dirty-primary [--retain-large-primary-file <path>:<sha256>:<bytes>:<mode> ...]] [--dry-run]`, or `atdd-flow project migrate-named-coordinator-topology <project> --baseline <40-lowercase-hex-remote-main-sha>`.");
     },
     spawn: () => spawn(root, required(rest[0], "project"), required(rest[1], "role"), required(rest[2], "name"), rest.slice(3)),
     bind: () => bind(root, required(rest[0], "address"), rest.slice(1)),

@@ -30,7 +30,7 @@ test("four repository lanes complete local and cross-coordinator threads", async
     }));
 
     await seat(root, "init", site);
-    await Promise.all(repositories.map(({ name }) => seat(site, "project", "init", name)));
+    await Promise.all(repositories.map(({ name }) => seat(site, "project", "init", name, "--vcs", "git")));
 
     for (const { name, repository } of repositories) {
       const roles = {

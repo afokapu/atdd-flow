@@ -83,8 +83,13 @@ atdd-flow project init example-app
 atdd-flow project configure example-app --repository /Users/you/Github/example-app --worktree-root /Users/you/Github/worktrees/example-app
 ```
 
-`project configure` sets only `repository` and `worktree_root`. It fails closed, leaving the project
-unchanged, when `--repository` is not the top level of a Git repository or a flag is unknown, repeated,
+New projects default to Jujutsu: `project init` records `vcs: jj`, so `--repository` must be a JJ checkout
+(`jj git init --colocate` on an existing Git clone) and every spawned main, coordinator and driver worktree is a JJ
+workspace. Git is an explicit opt-out (`atdd-flow project init example-app --vcs git`); a legacy project record
+without a `vcs` field keeps reading as Git.
+
+`project configure` sets only `repository` and `worktree_root` (and `vcs` when asked). It fails closed, leaving the project
+unchanged, when `--repository` is not the top level of a repository of the project's VCS or a flag is unknown, repeated,
 or missing its value. It never changes seats, runtimes, tasks, branches, worktrees, or repository
 content; it lists each seat whose recorded placement violates the topology as `unprojected`.
 

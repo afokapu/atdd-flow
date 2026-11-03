@@ -59,7 +59,7 @@ async function fixture(): Promise<Fixture> {
   await git(repository, "-c", "user.email=fixture@example.test", "-c", "user.name=Fixture", "commit", "-m", "initial");
 
   await run(root, "init", site);
-  await run(site, "project", "init", "demo");
+  await run(site, "project", "init", "demo", "--vcs", "git");
   const projectFile = join(site, "work", "demo", "project.yaml");
   const project = Bun.YAML.parse(await readFile(projectFile, "utf8")) as Record<string, unknown>;
   project.repository = repository;
