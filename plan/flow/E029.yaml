@@ -1,0 +1,10 @@
+urn: acc:flow:E029-UNIT-001
+phase: UNIT
+description: >-
+  Retiring a terminal driver whose JJ workspace ATDD Bun's `worktree finish` refuses (squash-merged or
+  deleted-origin bookmark, or zero bookmarks after `jj bookmark forget`) is accepted only when the
+  workspace is clean (empty, conflict-free working copy) and its delivered head, the working copy's
+  parent, is reachable from main or is the head of a merged PR whose merge commit is on main, with
+  zero or one bookmark that names that head. Dirty, conflicted, and unmerged work, a bookmark that has
+  moved past the merged head, and an unauthorized actor stay refused, and the worktree and any
+  bookmark are always retained.
