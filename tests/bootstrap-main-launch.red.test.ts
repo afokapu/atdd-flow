@@ -23,6 +23,10 @@ const mutating = (argv: string[]) => argv.some((part) => ["run", "start", "bind"
 
 type Options = {
   runtime?: boolean;
+  /** The staged shell-pane binding `attach` records: a Herdr locator only, no Pi session, path or receipt. */
+  shellBound?: boolean;
+  /** A partial Pi identity left on the seat: one of the fields that proves a Pi ever ran. */
+  stale?: "pi_session_path" | "launch_receipt";
   noHandover?: boolean;
   noTask?: boolean;
   twoReady?: boolean;
@@ -47,6 +51,8 @@ async function fixture(options: Options = {}) {
   await atomicYaml(paths(root).seatFile(address), {
     schema: "atdd-workflow/seat/v2", address, role: "main", project, worktree: cwd, branch: options.branch ?? "main",
     ...(options.runtime ? { runtime: { application: "herdr", wake: "native", addresses: { herdr: { session: herdrSession, pane } }, pi_session: "55555555-5555-4555-8555-555555555555" } } : {}),
+    ...(options.shellBound || options.stale ? { runtime: { application: "herdr", wake: "native", addresses: { herdr: { session: herdrSession, pane } }, attached_at: "2026-11-03T02:04:56.031Z",
+      ...(options.stale ? { [options.stale]: "/gone" } : {}) } } : {}),
   });
   if (!options.noHandover) await atomicYaml(paths(root).handoverFile(address), { schema: "atdd-workflow/handover/v1", seat: address, handover_id: handover, supersedes: "none", recorded_at: "2026-11-03T01:37:37.150Z", text: "exact handover" });
   const ready = { schema: "atdd-workflow/task/v1", title: "Review", status: "todo", coordinator: address, assignee: address, done_when: [{ text: "Reviewed." }] };
@@ -130,6 +136,16 @@ test("RED: a brand-new exact main seat launches into its shell pane with no Path
   expect(result.exitCode).toBe(0);
 }, 60_000);
 
+test("RED: the staged shell-pane binding (Herdr locator only) still bootstraps and reconciles RESUMED", async () => {
+  const value = await fixture({ shellBound: true });
+  const launched = await value.launch();
+  const seat = await readYaml<Record<string, any>>(paths(value.root).seatFile(address));
+  expect(seat.runtime).toMatchObject({ pi_session: launched.piSession, addresses: { herdr: { session: herdrSession, pane } } });
+  await registerRuntimeState(value.root, { seat: address, owner_token: `owner-${launched.piSession}`, pid: 84314, model: "economy", cwd }, at);
+  expect((await resumed(value.root)).output).toContain("RESUMED; verified 5/5; discrepancies: none.");
+  await expect(value.launch()).rejects.toThrow("requires one validated Path-A replacement request");
+}, 60_000);
+
 test("a bootstrap launch happens once: the recorded runtime makes a second launch fail closed", async () => {
   const value = await fixture();
   await value.launch();
@@ -146,6 +162,8 @@ test("bootstrap resumed fails closed without a fresh heartbeat", async () => {
 
 const refusal = "requires one validated Path-A replacement request";
 test("fail-closed: a recorded runtime is not a bootstrap", async () => { await refusedUnchanged({ runtime: true }, refusal); });
+test("fail-closed: a leftover Pi session path is not a bootstrap", async () => { await refusedUnchanged({ stale: "pi_session_path" }, refusal); });
+test("fail-closed: a leftover launch receipt is not a bootstrap", async () => { await refusedUnchanged({ stale: "launch_receipt" }, refusal); });
 test("fail-closed: no recorded handover", async () => { await refusedUnchanged({ noHandover: true }, refusal); });
 test("fail-closed: no ready task", async () => { await refusedUnchanged({ noTask: true }, refusal); });
 test("fail-closed: a blocked task is not ready", async () => { await refusedUnchanged({ blockedTask: true }, refusal); });
