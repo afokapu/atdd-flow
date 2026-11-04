@@ -1,0 +1,10 @@
+urn: acc:flow:E041-UNIT-001
+phase: UNIT
+description: >-
+  Flow owns the owner-inspection record lifecycle per docs/owner-inspection-shared-contract.adoc.
+  A complete candidate or merge packet publishes one immutable, reference-only record. Missing owner,
+  surface, scenario, data classification, health, smoke, teardown, or rendered evidence is a named
+  negative result; N/A rendered evidence is accepted only for a toolkit surface with a rationale and
+  CI, ratchet, or package evidence. Production, implicit, or fabricated targets are rejected. Only
+  operator@desk appends immutable acknowledgements. An unacknowledged record holds parent completion
+  and dependent unblock through the existing Flow hold seam, and advisory status never mutates tasks.
