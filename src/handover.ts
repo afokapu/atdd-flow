@@ -896,7 +896,7 @@ export async function resumedHandoverReplacement(root: string, address: string) 
   const resolved = await canonicalAddress(root, address);
   const main = await seat(root, resolved);
   if (await isExactMainSeat(root, main, resolved)) {
-    const adoption = await requestlessAdoptionEvidence(root, main, resolved, (task) => failedAdoptionTaskEligible(root, main, resolved, task));
+    const adoption = await requestlessAdoptionEvidence(root, main, resolved);
     if (adoption) return resumedExactAdoption(main, resolved, adoption);
   }
   if (!await exists(handoverReplacementPath(root, resolved)) && await isExactMainSeat(root, await seat(root, resolved), resolved)) return resumedBootstrapLaunch(root, resolved);
