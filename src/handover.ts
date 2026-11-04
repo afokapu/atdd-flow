@@ -819,7 +819,6 @@ async function supersedeConsumedReplacement(root: string, resolved: string, file
   }
 }
 
-
 /** The active request must be a valid prior request of this seat whose takeover task is terminal (so it can never launch) and whose authorization is not the fresh one. */
 async function inertActiveRequest(root: string, resolved: string, file: string, intent: Awaited<ReturnType<typeof prepareReplacement>>, authorization: { id: string; hash: string }) {
   const { bytes, request } = await readConsumedRequest(file, resolved);
