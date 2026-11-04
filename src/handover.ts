@@ -359,6 +359,19 @@ function assertSinglePiWriter(raw: string) {
 
 type PiSource = Pick<HandoverReplacementRequest["source"], "pi_session" | "pi_session_path">;
 
+/**
+ * Prove an operator-authorized Pi already occupies its target pane: the pane, agent, session path and cwd match the
+ * authorized tuple, it is the pane's single Pi writer, it is listed exactly once Herdr-wide, and the stale recorded
+ * Pi (when one differs) is not live anywhere. Read-only; any other evidence fails closed.
+ */
+export async function verifyLiveAdoptionTarget(source: HandoverReplacementRequest["source"], cwd: string, authorizationHash: string, command: (command: string[]) => Promise<string>, stale?: PiSource) {
+  try {
+    await verifyLegacySource(source, { herdr_session: source.herdr_session, pane: source.pane, cwd }, authorizationHash, { command }, stale);
+    const listed = listedPiAgents(await command(herdr(source.herdr_session, "agent", "list")), "In-place adoption").filter(({ path }) => path === resolve(source.pi_session_path));
+    if (listed.length !== 1 || listed[0]!.pane !== source.pane) throw new Error("the authorized Pi must be listed exactly once, at the target pane.");
+  } catch (error) { throw new Error(`In-place adoption requires the authorized Pi to be live in the target pane: ${(error as Error).message}`); }
+}
+
 function assertCanonicalSourceNotLive(raw: string, canonical: PiSource) {
   const live = listedPiAgents(raw, "Consumed Path-A replacement").some(({ path }) => path === resolve(canonical.pi_session_path)
     || basename(path).match(/_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i)?.[1] === canonical.pi_session);

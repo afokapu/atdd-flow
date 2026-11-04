@@ -31,7 +31,7 @@ import { type ModelSelectionInput, type ModelSelectionResponse, selectModel } fr
 import { type Task, seatTasks, terminal } from "./tasks";
 import { projectHerdrSeat } from "./multiplexer";
 import { resolveExactSessionAdoptionAuthorization } from "./adoption-authorizations";
-import { assertReplacementTarget, mainLaunchReplacement } from "./handover";
+import { assertReplacementTarget, mainLaunchReplacement, verifyLiveAdoptionTarget } from "./handover";
 import { canonicalLaunchCommand, isExactOperatorSeat } from "./operator-launch";
 
 export type PiRuntimeLaunchDependencies = {
@@ -229,12 +229,20 @@ type LaunchOptions = {
   sourcePane?: string;
   authorization?: string;
   adopting: boolean;
+  /** Reconcile the authorized Pi already occupying the target pane instead of launching a second one. */
+  inPlace: boolean;
 };
 
 type PreparedLaunch = Awaited<ReturnType<typeof prepareLaunch>>;
 type LaunchPlan = ReturnType<typeof buildLaunchPlan>;
 
 function optionalArgument(name: string, value?: string) { return value ? [name, value] : []; }
+
+/** In-place reconcile adopts a live Pi: it needs adoption without resume, and the source pane must be the target pane. */
+function assertInPlaceOptions(o: { adopting: boolean; resume: boolean; requestedPane?: string; herdrSession: string; sourcePane?: string; sourceHerdrSession?: string }) {
+  if (!o.adopting || o.resume) throw new Error("--in-place reconciles an authorized live Pi and requires exact-session adoption without --resume.");
+  if (o.sourcePane !== o.requestedPane || o.sourceHerdrSession !== o.herdrSession) throw new Error("--in-place requires the authorized source pane to be the target pane.");
+}
 
 /** Parse the closed launch grammar before reading or changing external state. */
 function parseLaunchOptions(args: string[]): LaunchOptions {
@@ -245,13 +253,14 @@ function parseLaunchOptions(args: string[]): LaunchOptions {
   const sourceHerdrSession = words(args, "--source-herdr-session"), sourcePane = words(args, "--source-pane");
   const authorization = words(args, "--authorization");
   const adoptionFields = [adoptedSessionPath, sourceHerdrSession, sourcePane, authorization];
-  const adopting = adoptionFields.some(Boolean);
-  const allowed = ["--herdr-session", herdrSession, "--resume", "--dry-run", ...optionalArgument("--pane", requestedPane),
+  const adopting = adoptionFields.some(Boolean), inPlace = args.includes("--in-place");
+  const allowed = ["--herdr-session", herdrSession, "--resume", "--dry-run", "--in-place", ...optionalArgument("--pane", requestedPane),
     ...optionalArgument("--adopt-session", adoptedSessionPath), ...optionalArgument("--source-herdr-session", sourceHerdrSession),
     ...optionalArgument("--source-pane", sourcePane), ...optionalArgument("--authorization", authorization)];
   if (args.some((argument) => !allowed.includes(argument))) throw new Error("Use `pi runtime launch <seat> [--pane <asserted-pane>] --herdr-session <session> [--resume] [--dry-run] [--adopt-session <exact-jsonl> --source-herdr-session <session> --source-pane <pane> --authorization <owner-reference>]`.");
   if (adopting && (resume || !adoptionFields.every(Boolean))) throw new Error("Exact-session adoption requires --adopt-session, --source-herdr-session, --source-pane, and --authorization without --resume.");
-  return { requestedPane, herdrSession, resume, dryRun, adoptedSessionPath, sourceHerdrSession, sourcePane, authorization, adopting };
+  if (inPlace) assertInPlaceOptions({ adopting, resume, requestedPane, herdrSession, sourcePane, sourceHerdrSession });
+  return { requestedPane, herdrSession, resume, dryRun, adoptedSessionPath, sourceHerdrSession, sourcePane, authorization, adopting, inPlace };
 }
 
 /** Legacy resume is constrained to the seat's already-recorded Herdr location. */
@@ -327,7 +336,7 @@ async function assertVacantTarget(launch: PreparedLaunch, pane: string) {
   const hostPid = dependencies.hostPid ?? process.pid;
   if (processReport(JSON.parse(processRaw)).processes.some((entry) => entry.pid === hostPid)) throw new Error(sameTerminalRefusal);
   if (currentPane.agent || piProcess(processReport(JSON.parse(processRaw)).processes)) {
-    throw new Error(options.resume ? "Resume requires the prior Pi to have exited and been released." : "New launch requires an available shell pane.");
+    throw new Error(options.resume ? "Resume requires the prior Pi to have exited and been released." : `New launch requires an available shell pane.${options.adopting ? " If the authorized Pi already occupies this pane, reconcile it with --in-place." : ""}`);
   }
 }
 
@@ -372,7 +381,7 @@ function buildLaunchPlan(launch: PreparedLaunch, pane: string, sessionPath?: str
   const request: HerdrRequest = { session: options.herdrSession, pane, seat: resolved, root, piSession,
     ...(sessionPath ? { sessionPath } : {}), resume: options.resume || options.adopting, args: [...model.args, "--extension", piExtensionPath()] };
   const plan = { candidate: selection.candidate.id, piSession, pane, herdrSession: options.herdrSession,
-    receipt: receiptPath(root, piSession), command: startCommand(request),
+    receipt: receiptPath(root, piSession), command: options.inPlace ? [] : startCommand(request), ...(options.inPlace ? { inPlace: true } : {}),
     ...(launch.operator ? { canonicalCommand: canonicalLaunchCommand(resolved, options.herdrSession) } : {}), ...(options.dryRun ? { dryRun: true } : {}) };
   return { request, plan };
 }
@@ -448,7 +457,7 @@ async function persistLaunch(launch: PreparedLaunch, plan: LaunchPlan["plan"], s
     schema: "atdd-flow/pi-runtime-launch-receipt/v1", seat: resolved, tasks: active.map((entry) => entry.id), candidate: selection.candidate.id,
     selection: receiptSelection(launch), pi_session: piSession, pi_session_path: sessionPath, herdr_session: options.herdrSession, pane: plan.pane,
     ...(replacement?.request ? { handover_replacement: { request: replacement.request, successor_session: piSession } } : {}),
-    ...(replacement?.exactAdoption ? { launch_basis: { kind: "exact-adoption", task: replacement.taskId } } : {}),
+    ...(replacement?.exactAdoption ? { launch_basis: { kind: "exact-adoption", task: replacement.taskId, ...(options.inPlace ? { in_place: true } : {}) } } : {}),
     ...(replacement?.bootstrap ? { bootstrap_launch: { handover: { id: replacement.bootstrap.handover }, task: replacement.taskId } } : {}),
     ...(relocation ? { relocation: { source_herdr_session: options.sourceHerdrSession, source_pane: options.sourcePane, authorization: authorizationRecord, backup: relocation.backup, backup_sha256: relocation.sha256 } } : {}),
     created_at: dependencies.at?.() ?? now(),
@@ -458,11 +467,26 @@ async function persistLaunch(launch: PreparedLaunch, plan: LaunchPlan["plan"], s
   await bind(root, resolved, ["--application", "herdr", "--address", plan.pane, "--session", options.herdrSession], selection.candidate.id, "native", piSession, sessionPath, plan.receipt);
 }
 
+/** Bind the authorized Pi that already occupies the target pane: verify it live, back up its JSONL, record the receipt; never start a process. */
+async function reconcileInPlace(launch: PreparedLaunch, pane: string, bind: Bind) {
+  const { root, record, options, command, piSession, authorizationRecord } = launch;
+  const adoptedPath = required(launch.adoptedPath, "an exact adopted Pi session path");
+  const recorded = record.runtime;
+  const stale = recorded?.pi_session && recorded.pi_session_path ? { pi_session: recorded.pi_session, pi_session_path: recorded.pi_session_path } : undefined;
+  await verifyLiveAdoptionTarget({ pi_session: piSession, pi_session_path: adoptedPath, herdr_session: options.herdrSession, pane }, resolve(record.worktree),
+    required(authorizationRecord, "an immutable operator authorization record").hash, command, stale);
+  const { plan } = buildLaunchPlan(launch, pane, adoptedPath);
+  if (options.dryRun) return plan;
+  await persistLaunch(launch, plan, adoptedPath, await immutableSessionBackup(root, adoptedPath, piSession), bind);
+  return plan;
+}
+
 /** A deliberately narrow Pi+Herdr launch using only installed CLI commands on an existing shell pane. */
 export async function launchPiRuntimeImplementation(root: string, address: string, args: string[], bind: Bind, dependencies: PiRuntimeLaunchDependencies = {}) {
   const launch = await prepareLaunch(root, address, args, dependencies);
   const pane = (await projectHerdrSeat(root, launch.resolved, launch.options.herdrSession, launch.command)).pane;
   assertProjectedPane(launch, pane);
+  if (launch.options.inPlace) return reconcileInPlace(launch, pane, bind);
   await assertVacantTarget(launch, pane);
   await assertResumeReceipt(launch, pane);
   const priorPath = priorSessionPath(launch);
