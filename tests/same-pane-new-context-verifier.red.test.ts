@@ -7,6 +7,16 @@
 // `/new` mints a new Pi session id and JSONL (feasibility M-20261104T180404Z), so the stale launcher env and the seat's recorded
 // pi_session/pi_session_path no longer match the live Pi. The Flow extension must, on session_start reason "new", verify the lineage
 // and refresh the durable runtime binding itself, with no Path-A request, no launch, no bind, no pane change and no compaction.
+//
+// Quiescence (returned RED M-20261104T202408Z): `/new` is allowed only from a quiescent point, meaning no in-flight push, rebase,
+// review submission or test run. The supported signals GREEN must verify, each fail-closed when false OR unavailable/unknown:
+//   (1) live Pi: on `session_before_switch` (reason "new") ctx.isIdle() === true and ctx.hasPendingMessages() === false. Both functions
+//       must exist; a host that lacks either is "quiescence unknown" and refuses. A tool call (push, rebase, review, test) keeps the agent
+//       non-idle, so this is the Pi-visible proof that none is running.
+//   (2) source-authored: the recorded handover's section 2 declares exactly `- IN-FLIGHT: none`; any other IN-FLIGHT operation, or no
+//       IN-FLIGHT line at all, is not quiescent.
+//   (3) the gate leaves a durable attestation, so session_start (a reloaded extension instance in the same process) refuses a `/new` that
+//       never passed the gate. A refused gate returns { cancel: true } from session_before_switch, so the switch does not happen.
 import { expect, test } from "bun:test";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -25,7 +35,11 @@ const otherSession = "99999999-9999-4999-8999-999999999999";
 type Sent = { customType?: string; content?: string; options?: { triggerTurn?: boolean } };
 type Scenario = {
   role?: "driver" | "main";
-  handover?: "valid" | "none" | "malformed" | "other-seat" | "third-party";
+  handover?: "valid" | "none" | "malformed" | "other-seat" | "third-party" | "in-flight" | "no-inflight-line";
+  /** Pi-visible quiescence at session_before_switch; "unknown" means the host exposes neither isIdle nor hasPendingMessages. */
+  quiescence?: "idle" | "busy" | "pending" | "unknown";
+  /** false: the switch reaches session_start without passing the session_before_switch gate. */
+  gate?: boolean;
   /** Live Herdr pane / session when it differs from the bound pane. */
   pane?: string;
   herdrSession?: string;
@@ -45,6 +59,8 @@ type Scenario = {
 type Outcome = {
   sent: Sent[];
   forbidden: string[];
+  /** The session_before_switch gate returned { cancel: true }, so Pi never switched sessions. */
+  cancelled: boolean;
   herdrCalls: string[];
   before: string;
   after: string;
@@ -53,8 +69,9 @@ type Outcome = {
   receipt: Record<string, any> | undefined;
 };
 
-const handoverText = (seat: string, writer: string, runtimeSession: string) =>
-  `HANDOVER ${writer} | 2026-10-15T11:00:00Z | handover-id ${handoverId} | supersedes none\nRuntime: herdr forge:w1:p2 | pi session ${runtimeSession} | model test/pi | context 85%\n\n1. SEAT, AUTHORITY, TOOLKIT AND HAZARDS\n- exact ${seat}\n\n2. OPEN WORK AND IN-FLIGHT OPERATIONS\n- task alpha\n\n3. DEPENDENCIES (both directions)\n- none\n\n4. RESUME PROCEDURE AND NEXT ACTIONS\n- run bun test\n`;
+const inFlight = { valid: "- IN-FLIGHT: none", "in-flight": "- IN-FLIGHT: git push origin delivery/x | started 2026-10-15T10:59:00Z | check: git status | retry-safe: yes", "no-inflight-line": "- no operations listed" };
+const handoverText = (seat: string, writer: string, runtimeSession: string, flight: string = inFlight.valid) =>
+  `HANDOVER ${writer} | 2026-10-15T11:00:00Z | handover-id ${handoverId} | supersedes none\nRuntime: herdr forge:w1:p2 | pi session ${runtimeSession} | model test/pi | context 85%\n\n1. SEAT, AUTHORITY, TOOLKIT AND HAZARDS\n- exact ${seat}\n\n2. OPEN WORK AND IN-FLIGHT OPERATIONS\n- task alpha\n${flight}\n\n3. DEPENDENCIES (both directions)\n- none\n\n4. RESUME PROCEDURE AND NEXT ACTIONS\n- run bun test\n`;
 
 // Fake Pi host. Session replacement, compaction and reload are never legitimate here, so any call is recorded as forbidden.
 // The launcher env is deliberately stale after `/new`: it still names the original session.
@@ -69,21 +86,29 @@ installFlowExtension({
 });
 const trap = (ctx) => { for (const name of ["compact", "newSession", "fork", "switchSession", "navigateTree", "reload"]) ctx[name] = () => { forbidden.push(name); throw new Error(name + " is not allowed"); }; return ctx; };
 const context = (id, path) => trap({ hasUI: false, getContextUsage: () => ({ percent: 5 }), shutdown() { forbidden.push("shutdown"); }, sessionManager: { getSessionId: () => id, getSessionFile: () => path, getBranch: () => [] } });
+const quiescence = scenario.quiescence ?? "idle";
+const gateContext = (id, path) => { const ctx = context(id, path); if (quiescence !== "unknown") { ctx.isIdle = () => quiescence !== "busy"; ctx.hasPendingMessages = () => quiescence === "pending"; } return ctx; };
+let cancelled = false;
+// Pi calls session_before_switch first; a { cancel: true } result stops the switch, so session_start never follows.
+const gate = async (id, path, target) => { if (scenario.gate === false) return; for (const listener of listeners.session_before_switch ?? []) { const result = await listener({ type: "session_before_switch", reason: "new", targetSessionFile: target }, gateContext(id, path)); if (result?.cancel === true) cancelled = true; } };
 const done = new Set(["atdd-flow-same-pane-new-resumed", "atdd-flow-same-pane-new-refused"]);
 const settle = async (count) => { for (let i = 0; i < 600 && sent.filter((entry) => done.has(entry.customType)).length < count; i += 1) await new Promise((resolve) => setTimeout(resolve, 5)); await new Promise((resolve) => setTimeout(resolve, 60)); };
 const emit = async (event, payload, ctx) => { for (const listener of listeners[event] ?? []) await listener(payload, ctx); };
 const live = scenario.sameSession ? process.env.NEW_BOUND_SESSION : process.env.NEW_SESSION;
 const livePath = scenario.sameSession ? process.env.NEW_BOUND_PATH : process.env.NEW_PATH;
 const previous = scenario.previous === "other" ? process.env.NEW_OTHER_PATH : process.env.NEW_BOUND_PATH;
-await emit("session_start", { reason: scenario.reason ?? "new", previousSessionFile: previous }, context(live, livePath));
-await settle(scenario.reason && scenario.reason !== "new" ? 0 : 1);
+const isNew = !scenario.reason || scenario.reason === "new";
+if (isNew) await gate(process.env.NEW_BOUND_SESSION, process.env.NEW_BOUND_PATH, livePath);
+if (!cancelled) await emit("session_start", { reason: scenario.reason ?? "new", previousSessionFile: previous }, context(live, livePath));
+await settle(isNew ? 1 : 0);
 if (scenario.replay) {
   await emit("session_shutdown", { reason: "new" }, {});
+  await gate(process.env.NEW_SESSION, process.env.NEW_PATH, process.env.NEW_SECOND_PATH);
   await emit("session_start", { reason: "new", previousSessionFile: process.env.NEW_PATH }, context(process.env.NEW_SECOND_SESSION, process.env.NEW_SECOND_PATH));
   await settle(2);
 }
 await emit("session_shutdown", { reason: "quit" }, {});
-console.log(JSON.stringify({ sent, forbidden }));
+console.log(JSON.stringify({ sent, forbidden, cancelled }));
 process.exit(0);`;
 
 async function run(scenario: Scenario): Promise<Outcome> {
@@ -105,7 +130,8 @@ async function run(scenario: Scenario): Promise<Outcome> {
   await chmod(join(bin, "herdr"), 0o755);
   const source = scenario.handover === "third-party" ? otherSession : session;
   if (scenario.handover && scenario.handover !== "none") {
-    const text = scenario.handover === "malformed" ? "not a handover\n" : handoverText(seat, scenario.handover === "other-seat" ? "driver.other@demo" : seat, source);
+    const flight = scenario.handover === "in-flight" || scenario.handover === "no-inflight-line" ? inFlight[scenario.handover] : inFlight.valid;
+    const text = scenario.handover === "malformed" ? "not a handover\n" : handoverText(seat, scenario.handover === "other-seat" ? "driver.other@demo" : seat, source, flight);
     await atomicYaml(paths(root).handoverFile(seat), { schema: "atdd-workflow/handover/v1", seat, handover_id: handoverId, supersedes: "none", recorded_at: "2026-10-15T11:00:00.000Z", text });
   }
   if (scenario.request) {
@@ -125,13 +151,13 @@ async function run(scenario: Scenario): Promise<Outcome> {
   const child = Bun.spawn([process.execPath, "-e", driver], { cwd: root, env, stdout: "pipe", stderr: "pipe" });
   const [stdout, stderr, exitCode] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
   expect(`${exitCode} ${exitCode ? stderr : ""}`.trim()).toBe("0");
-  const { sent, forbidden } = JSON.parse(stdout.trim().split("\n").at(-1)!) as { sent: Sent[]; forbidden: string[] };
+  const { sent, forbidden, cancelled } = JSON.parse(stdout.trim().split("\n").at(-1)!) as { sent: Sent[]; forbidden: string[]; cancelled: boolean };
   const after = await readFile(seatFile, "utf8");
   const record = Bun.YAML.parse(after) as { runtime?: { launch_receipt?: string } };
   const receiptPath = record.runtime?.launch_receipt;
   const receipt = receiptPath && receiptPath !== (Bun.YAML.parse(before) as any).runtime?.launch_receipt ? Bun.YAML.parse(await readFile(receiptPath, "utf8")) as Record<string, any> : undefined;
   const herdrCalls = await readFile(log, "utf8").then((text) => text.split("\n").filter(Boolean), () => []);
-  return { sent, forbidden, herdrCalls, before, after, seat, newPath, receipt };
+  return { sent, forbidden, cancelled, herdrCalls, before, after, seat, newPath, receipt };
 }
 
 const resumed = (outcome: Outcome) => outcome.sent.filter((entry) => entry.customType === "atdd-flow-same-pane-new-resumed");
@@ -204,4 +230,38 @@ test("GUARD: only session_start reason new may refresh the binding", async () =>
     const outcome = await run({ handover: "valid", reason });
     expect({ reason, unchanged: outcome.after === outcome.before, resumed: resumed(outcome).length, forbidden: outcome.forbidden }).toEqual({ reason, unchanged: true, resumed: 0, forbidden: [] });
   }
+});
+
+// Quiescence. Each case must refuse with exactly one display-only notice, leave seat.yaml byte-identical, and never launch, bind,
+// change a pane, compact or replace the session. `cancel` says whether the refusal happens at the gate (the switch is cancelled)
+// or, for a switch that bypassed the gate, at session_start.
+const quiescence: [string, Scenario, string, boolean][] = [
+  ["the agent is not idle (a push, rebase, review submission or test run may be running)", { handover: "valid", quiescence: "busy" }, "not quiescent", true],
+  ["messages are pending delivery", { handover: "valid", quiescence: "pending" }, "not quiescent", true],
+  ["the host exposes no isIdle/hasPendingMessages, so quiescence is unknown", { handover: "valid", quiescence: "unknown" }, "quiescence unknown", true],
+  ["the handover declares an IN-FLIGHT operation", { handover: "in-flight" }, "in-flight", true],
+  ["the handover has no IN-FLIGHT declaration", { handover: "no-inflight-line" }, "in-flight", true],
+  ["the switch reached session_start without passing the session_before_switch gate", { handover: "valid", gate: false }, "quiescence", false],
+];
+
+for (const [label, scenario, reason, cancel] of quiescence) {
+  test(`RED: fail closed when quiescence is not proven: ${label}`, async () => {
+    const outcome = await run(scenario);
+    expect(outcome.cancelled).toBe(cancel);
+    expect(outcome.after).toBe(outcome.before);
+    expect(outcome.receipt).toBeUndefined();
+    expect(resumed(outcome)).toHaveLength(0);
+    expect(refused(outcome)).toHaveLength(1);
+    expect(refused(outcome)[0]!.content!.toLowerCase()).toContain(reason);
+    expect(refused(outcome)[0]!.options?.triggerTurn).not.toBe(true);
+    expect(outcome.herdrCalls).toEqual([]);
+    expect(outcome.forbidden).toEqual([]);
+  });
+}
+
+test("RED: a quiescent seat passes the gate (not cancelled) and is refreshed", async () => {
+  const outcome = await run({ handover: "valid", quiescence: "idle" });
+  expect(outcome.cancelled).toBe(false);
+  expect(runtimeOf(outcome.after)).toMatchObject({ pi_session: newSession, pi_session_path: outcome.newPath });
+  expect(resumed(outcome)).toHaveLength(1);
 });
