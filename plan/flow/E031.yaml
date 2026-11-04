@@ -1,0 +1,9 @@
+urn: acc:flow:E031-UNIT-001
+phase: UNIT
+description: >-
+  An operator-authorized Pi that already occupies the target pane (source pane equals target pane) is
+  reconciled in place by an explicit --in-place adoption: the live pane, agent, session path, working
+  directory and single Pi writer are verified against the immutable authorization, the authorized and
+  stale recorded sessions are absent from every other pane, and the seat is bound with a receipt and
+  immutable backup without any second launch. Tuple, one-shot authorization, task-evidence and
+  ambiguity guards stay fail-closed; a plain adoption of an occupied pane is still refused.
