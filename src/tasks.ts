@@ -836,6 +836,22 @@ async function assigneeDirective(root: string, projectName: string, id: string, 
   return { ...as, lifecycle, action: `${phaseActions[current]}.`, command: phaseCommand(projectName, id, address, current) };
 }
 
+/**
+ * Read-only continuation for an assignee whose task is already in_progress, so no surface recommends a
+ * refused in_progress->in_progress start. A REFACTOR acceptance with unproven done_when items points at
+ * `task prove`, because `task review` would refuse until every item has proof.
+ */
+export async function assigneeContinuation(root: string, projectName: string, id: string, task: Task): Promise<TaskDirective | undefined> {
+  if (task.status !== "in_progress" || !task.assignee || terminal(task)) return undefined;
+  const directive = await assigneeDirective(root, projectName, id, task, task.assignee);
+  const unproven = task.done_when.findIndex((entry) => !entry.proof);
+  if (directive.command?.startsWith(`atdd-flow task review `) && unproven >= 0) {
+    return { ...directive, action: "REFACTOR accepted; record proof for every done_when item before submitting the task for review.",
+      command: `atdd-flow task prove ${projectName} ${id} --by ${task.assignee} --item ${unproven + 1} --proof <message-or-reference>` };
+  }
+  return directive;
+}
+
 function coordinatorDirective(projectName: string, id: string, task: Task, address: string): TaskDirective | undefined {
   const as = { project: projectName, task: id, role: "coordinator" as const };
   if (task.blocker) return { ...as, lifecycle: "BLOCKED", action: `Resolve the blocker (${task.blocker}) and then unblock the task.`, command: `atdd-flow task unblock ${projectName} ${id} --by ${address}` };
