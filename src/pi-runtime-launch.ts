@@ -31,7 +31,7 @@ import { type ModelSelectionInput, type ModelSelectionResponse, selectModel } fr
 import { type Task, seatTasks, terminal } from "./tasks";
 import { projectHerdrSeat } from "./multiplexer";
 import { resolveExactSessionAdoptionAuthorization } from "./adoption-authorizations";
-import { assertReplacementTarget, replacementForMainLaunch } from "./handover";
+import { assertReplacementTarget, mainLaunchReplacement } from "./handover";
 import { canonicalLaunchCommand, isExactOperatorSeat } from "./operator-launch";
 
 export type PiRuntimeLaunchDependencies = {
@@ -286,7 +286,11 @@ async function adoptionAuthorization(root: string, resolved: string, record: Sea
 async function prepareLaunch(root: string, address: string, args: string[], dependencies: PiRuntimeLaunchDependencies) {
   const resolved = await canonicalAddress(root, address), record = await seat(root, resolved), config = await desk(root);
   const options = parseLaunchOptions(args), existingPane = existingPaneForResume(record, options);
-  const replacement = await replacementForMainLaunch(root, record, resolved);
+  const piSession = launchSessionId(record, options, dependencies);
+  const adoptedPath = options.adopting ? resolve(required(options.adoptedSessionPath, "an exact adopted Pi session path")) : undefined;
+  // An adopting launch resolves its operator record first: it alone may stand in for a missing Path-A request.
+  const authorizationRecord = piSession ? await adoptionAuthorization(root, resolved, record, options, piSession, adoptedPath) : undefined;
+  const replacement = await mainLaunchReplacement(root, record, resolved, Boolean(authorizationRecord));
   const active = replacement ? [{ id: replacement.taskId, task: replacement.task }] : await launchEligibleTasks(root, record, resolved);
   const operator = await isExactOperatorSeat(root, record, resolved);
   if (!active.length && !operator) throw new Error(`${resolved} has no launch-eligible task; refusing runtime launch.`);
@@ -294,10 +298,7 @@ async function prepareLaunch(root: string, address: string, args: string[], depe
   const model = resolveModelCommand(config, selection.candidate);
   if (basename(model.agent) !== "pi") throw new Error(`Pi runtime launch requires a Pi candidate, received ${selection.candidate.id}.`);
   const command = dependencies.command ?? runOutput;
-  const piSession = launchSessionId(record, options, dependencies);
   if (!piSession) throw new Error("Resume requires the exact Pi session stored on the seat.");
-  const adoptedPath = options.adopting ? resolve(required(options.adoptedSessionPath, "an exact adopted Pi session path")) : undefined;
-  const authorizationRecord = await adoptionAuthorization(root, resolved, record, options, piSession, adoptedPath);
   return { root, resolved, record, operator, options, existingPane, replacement, active, selection, model, command, piSession, adoptedPath, authorizationRecord, dependencies };
 }
 
@@ -447,6 +448,7 @@ async function persistLaunch(launch: PreparedLaunch, plan: LaunchPlan["plan"], s
     schema: "atdd-flow/pi-runtime-launch-receipt/v1", seat: resolved, tasks: active.map((entry) => entry.id), candidate: selection.candidate.id,
     selection: receiptSelection(launch), pi_session: piSession, pi_session_path: sessionPath, herdr_session: options.herdrSession, pane: plan.pane,
     ...(replacement?.request ? { handover_replacement: { request: replacement.request, successor_session: piSession } } : {}),
+    ...(replacement?.exactAdoption ? { launch_basis: { kind: "exact-adoption", task: replacement.taskId } } : {}),
     ...(replacement?.bootstrap ? { bootstrap_launch: { handover: { id: replacement.bootstrap.handover }, task: replacement.taskId } } : {}),
     ...(relocation ? { relocation: { source_herdr_session: options.sourceHerdrSession, source_pane: options.sourcePane, authorization: authorizationRecord, backup: relocation.backup, backup_sha256: relocation.sha256 } } : {}),
     created_at: dependencies.at?.() ?? now(),

@@ -1,0 +1,9 @@
+urn: acc:flow:E030-UNIT-001
+phase: UNIT
+description: >-
+  An exact main whose recorded Pi binding is stale is reconciled by a resolved immutable operator
+  exact-adoption record without a valid Path-A replacement request, provided exactly one ready or
+  evidence-empty in-progress self-assigned task exists; a never-bound main bootstraps from its
+  recorded handover plus exactly one ready todo task. Neither basis fabricates a predecessor, and
+  the authorization tuple, one-shot use, source release, vacant target, immutable backup, task
+  evidence and ambiguity guards remain fail-closed.
