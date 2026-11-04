@@ -29,7 +29,9 @@ export const readyTask = { title: "Main takeover", status: "todo", done_when: [{
 /** What the fake Herdr currently reports for the target pane. */
 export type Live = { path?: string; cwd: string; pi: number; others: Array<{ pane: string; path: string }>; startable?: boolean;
   /** How a hand-started Pi answers `agent get`: a foreign record without cwd, or an error. Absent: the Flow-launch shape. */
-  agentGet?: "foreign" | "unknown" };
+  agentGet?: "foreign" | "unknown";
+  /** Pane id the fake Herdr reports for the target pane (default: the requested pane). */
+  reportedPane?: string };
 
 const sessionOf = (value: string) => ({ kind: "path", source: "herdr:pi", value });
 
@@ -56,7 +58,7 @@ export function harness(name: Name, live: Live, repository: string) {
     "workspace list": () => ({ workspaces: [{ workspace_id: "w1", label: name, worktree: { checkout_path: repository } }] }),
     "tab list": () => ({ tabs: [{ tab_id: "w1:t1", workspace_id: "w1", label: `main@${name}` }] }),
     "pane list": () => ({ panes: [{ pane_id: pane, tab_id: "w1:t1", label: `main@${name}`, agent: live.path ? "pi" : null, agent_status: live.path ? "idle" : "unknown" }] }),
-    "pane get": () => ({ pane: paneRecord(pane, live) }),
+    "pane get": () => ({ pane: paneRecord(live.reportedPane ?? pane, live) }),
     "pane process-info": () => ({ process_info: { pane_id: pane, shell_pid: 42,
       foreground_processes: Array.from({ length: live.path ? live.pi : 0 }, (_, index) => ({ name: "node", argv0: "pi", pid: 100 + index, cwd: live.cwd })) } }),
     "agent get": () => {

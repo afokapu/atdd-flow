@@ -47,3 +47,19 @@ test("the target tuple stays strict without the legacy agent record", async () =
   stale.runtime.live.others = [{ pane: "w7:p7", path: stale.stalePath }];
   await expectRefused(stale, "still a live Pi agent");
 });
+
+test("each authorized target field mismatch is refused by name: pane id, session id, session path, cwd", async () => {
+  const live: Partial<Live> = { agentGet: "foreign" };
+  const pane = await fixture("atdd-flow", { live: { ...live, reportedPane: "w5:pZ" } });
+  await expectRefused(pane, /pane\/session\/path\/cwd does not match the authorized target tuple/);
+  // Same directory, same file name stem, but another session id in the file name: the id is compared, not only the path.
+  const session = await fixture("atdd-flow", { live });
+  session.runtime.live.path = session.livePath.replace(targets["atdd-flow"].session, "01a19f3a-0000-7000-8000-000000000000");
+  await expectRefused(session, /authorized target tuple/);
+  const path = await fixture("atdd-flow", { live });
+  path.runtime.live.path = join(path.root, "elsewhere", path.livePath.split("/").pop()!);
+  await expectRefused(path, /authorized target tuple/);
+  const cwd = await fixture("atdd-flow", { live });
+  cwd.runtime.live.cwd = join(cwd.cwd, "..", "other");
+  await expectRefused(cwd, /authorized target tuple/);
+});
