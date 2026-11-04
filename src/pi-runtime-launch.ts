@@ -469,12 +469,11 @@ async function persistLaunch(launch: PreparedLaunch, plan: LaunchPlan["plan"], s
 
 /** Bind the authorized Pi that already occupies the target pane: verify it live, back up its JSONL, record the receipt; never start a process. */
 async function reconcileInPlace(launch: PreparedLaunch, pane: string, bind: Bind) {
-  const { root, record, options, command, piSession, authorizationRecord } = launch;
+  const { root, record, options, command, piSession } = launch;
   const adoptedPath = required(launch.adoptedPath, "an exact adopted Pi session path");
   const recorded = record.runtime;
   const stale = recorded?.pi_session && recorded.pi_session_path ? { pi_session: recorded.pi_session, pi_session_path: recorded.pi_session_path } : undefined;
-  await verifyLiveAdoptionTarget({ pi_session: piSession, pi_session_path: adoptedPath, herdr_session: options.herdrSession, pane }, resolve(record.worktree),
-    required(authorizationRecord, "an immutable operator authorization record").hash, command, stale);
+  await verifyLiveAdoptionTarget({ pi_session: piSession, pi_session_path: adoptedPath, herdr_session: options.herdrSession, pane }, resolve(record.worktree), command, stale);
   const { plan } = buildLaunchPlan(launch, pane, adoptedPath);
   if (options.dryRun) return plan;
   await persistLaunch(launch, plan, adoptedPath, await immutableSessionBackup(root, adoptedPath, piSession), bind);

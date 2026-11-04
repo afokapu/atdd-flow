@@ -6,7 +6,7 @@
 // Purpose: Validate, preserve, publish, and reconcile governed context handover evidence.
 
 import { createHash } from "node:crypto";
-import { link, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { link, mkdir, readFile, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { type Runtime, type Seat, atomicYaml, canonicalAddress, desk, exists, has, now, paths, project, readYaml, required, runOutput, seat, words, yaml } from "./core";
 import { type Task, terminal } from "./tasks";
@@ -366,16 +366,39 @@ function assertSinglePiWriter(raw: string) {
 
 type PiSource = Pick<HandoverReplacementRequest["source"], "pi_session" | "pi_session_path">;
 
+/** The same directory by any symlink spelling; an unreadable path only equals its own resolved spelling. */
+async function sameDirectory(left: string, right: string) {
+  const real = (path: string) => realpath(path).catch(() => resolve(path));
+  return await real(left) === await real(right);
+}
+
+/** The pane's own record must show the authorized Pi session in the authorized working directory. */
+async function assertTargetPane(raw: string, target: HandoverReplacementRequest["source"], cwd: string) {
+  const observed = legacyPaneObservation(raw);
+  const id = basename(observed.sessionPath).match(/_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i)?.[1];
+  if (observed.pane !== target.pane || resolve(observed.sessionPath) !== resolve(target.pi_session_path) || id !== target.pi_session || !await sameDirectory(observed.cwd, cwd)) {
+    throw new Error("In-place adoption live pane/session/path/cwd does not match the authorized target tuple.");
+  }
+}
+
 /**
- * Prove an operator-authorized Pi already occupies its target pane: the pane, agent, session path and cwd match the
- * authorized tuple, it is the pane's single Pi writer, it is listed exactly once Herdr-wide, and the stale recorded
- * Pi (when one differs) is not live anywhere. Read-only; any other evidence fails closed.
+ * Prove an operator-authorized Pi already occupies its target pane from read-only Herdr evidence about that pane alone:
+ * the pane record (pane, session path and id, cwd), the pane's single Pi writer, and the Herdr-wide agent list (the
+ * authorized Pi listed exactly once, at the target pane; the stale recorded Pi, when one differs, not live anywhere).
+ * The per-agent record is deliberately not consulted: a Pi started outside Flow has no Flow agent name to match.
  */
-export async function verifyLiveAdoptionTarget(source: HandoverReplacementRequest["source"], cwd: string, authorizationHash: string, command: (command: string[]) => Promise<string>, stale?: PiSource) {
+export async function verifyLiveAdoptionTarget(target: HandoverReplacementRequest["source"], cwd: string, command: (command: string[]) => Promise<string>, stale?: PiSource) {
   try {
-    await verifyLegacySource(source, { herdr_session: source.herdr_session, pane: source.pane, cwd }, authorizationHash, { command }, stale);
-    const listed = listedPiAgents(await command(herdr(source.herdr_session, "agent", "list")), "In-place adoption").filter(({ path }) => path === resolve(source.pi_session_path));
-    if (listed.length !== 1 || listed[0]!.pane !== source.pane) throw new Error("the authorized Pi must be listed exactly once, at the target pane.");
+    const [paneRaw, processRaw, listRaw] = await Promise.all([
+      command(herdr(target.herdr_session, "pane", "get", target.pane)),
+      command(herdr(target.herdr_session, "pane", "process-info", "--pane", target.pane)),
+      command(herdr(target.herdr_session, "agent", "list")),
+    ]);
+    await assertTargetPane(paneRaw, target, cwd);
+    assertSinglePiWriter(processRaw);
+    const listed = listedPiAgents(listRaw, "In-place adoption").filter(({ path }) => path === resolve(target.pi_session_path));
+    if (listed.length !== 1 || listed[0]!.pane !== target.pane) throw new Error("the authorized Pi must be listed exactly once, at the target pane.");
+    if (stale && (stale.pi_session !== target.pi_session || resolve(stale.pi_session_path) !== resolve(target.pi_session_path))) assertCanonicalSourceNotLive(listRaw, stale);
   } catch (error) { throw new Error(`In-place adoption requires the authorized Pi to be live in the target pane: ${(error as Error).message}`); }
 }
 
