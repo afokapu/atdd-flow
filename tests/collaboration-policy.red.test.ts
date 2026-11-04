@@ -76,22 +76,81 @@ test("canonical policy requires inbox-first, task-message, operator-routing, and
   expect(policy).toContain("Only main@project executes that project repository merge");
 });
 
-test("projection caps each Markdown instruction file at 20 lines and fails closed without changing over-cap user content", async () => {
+const seatManagement = "Manage every project main, coordinator, and driver seat only through atdd-flow canonical commands (spawn, bind, pi runtime launch, task lifecycle, handover); start, stop, rebind, or succeed a seat by hand only under explicit owner direction and always complete the supported bind/reconciliation immediately after.";
+const lines = (count: number, prefix = "owner line") => Array.from({ length: count }, (_, index) => `${prefix} ${index + 1}`).join("\n");
+const lineTotal = (text: string) => text ? text.replace(/\r?\n$/, "").split(/\r?\n/).length : 0;
+
+test("S1: canonical policy and runtime startup carry the operator seat-management instruction verbatim", () => {
+  expect(canonicalCollaborationPolicy()).toContain(seatManagement);
+  expect(runtimeStartupInstruction("driver.runtime@demo")).toContain(seatManagement);
+});
+
+test("S2: a long owner file keeps every owner byte and gains only the managed block", async () => {
   const root = await workspace();
-  const agents = join(root, "AGENTS.md");
-  const claude = join(root, "CLAUDE.md");
-  const overCap = `${Array.from({ length: 21 }, (_, index) => `user line ${index + 1}`).join("\n")}\n`;
-  await writeFile(agents, overCap, "utf8");
-  await writeFile(claude, "user content\n", "utf8");
+  const owner = `${lines(40)}\n`;
+  await writeFile(join(root, "AGENTS.md"), owner, "utf8");
+  await writeFile(join(root, "CLAUDE.md"), owner, "utf8");
 
-  await expect(projectCollaborationPolicy(root)).rejects.toThrow("exceeds the 20-line cap");
-  expect(await readFile(agents, "utf8")).toBe(overCap);
-  expect(await readFile(claude, "utf8")).toBe("user content\n");
+  await projectCollaborationPolicy(root);
 
-  const capped = await workspace();
-  await projectCollaborationPolicy(capped);
   for (const name of ["AGENTS.md", "CLAUDE.md"]) {
-    expect((await readFile(join(capped, name), "utf8")).trimEnd().split(/\r?\n/)).toHaveLength(3);
+    expect(await readFile(join(root, name), "utf8")).toBe(`${owner}\n${managed}`);
+  }
+});
+
+test("S2: same-size managed block replacement in a long file preserves all owner bytes outside the markers", async () => {
+  const root = await workspace();
+  const before = `${lines(30, "before")}\n`;
+  const after = `\n${lines(30, "after")}\n`;
+  const stale = `${start}\nATDD Flow collaboration policy: stale pointer ${"x".repeat(pointer.length - 33)}\n${end}\n`;
+  const path = join(root, "AGENTS.md");
+  await writeFile(path, `${before}${stale}${after}`, "utf8");
+
+  await projectCollaborationPolicy(root);
+  const projected = await readFile(path, "utf8");
+  expect(projected).toBe(`${before}${managed}${after}`);
+
+  await projectCollaborationPolicy(root);
+  expect(await readFile(path, "utf8")).toBe(projected);
+});
+
+test("S2: empty, whitespace-only and placeholder files never lose owner bytes", async () => {
+  const cases: Record<string, string> = {
+    empty: "",
+    whitespace: "  \t\n\n   ",
+    placeholder: "<!-- placeholder: add project instructions -->\n",
+    placeholderNoNewline: "TODO",
+    ownerSeatLine: `${seatManagement}\n`,
+  };
+  for (const [label, owner] of Object.entries(cases)) {
+    const root = await workspace();
+    await writeFile(join(root, "AGENTS.md"), owner, "utf8");
+    await writeFile(join(root, "CLAUDE.md"), owner, "utf8");
+
+    await projectCollaborationPolicy(root);
+    for (const name of ["AGENTS.md", "CLAUDE.md"]) {
+      const projected = await readFile(join(root, name), "utf8");
+      expect(projected.includes(managed), label).toBe(true);
+      expect(projected.replace(managed, ""), label).toContain(owner);
+      expect(projected.startsWith(owner), label).toBe(true);
+    }
+  }
+});
+
+test("S2: the cap bounds only the managed projection delta, never owner content", async () => {
+  const root = await workspace();
+  const owner = `${lines(500)}\n`;
+  await writeFile(join(root, "AGENTS.md"), owner, "utf8");
+
+  await projectCollaborationPolicy(root);
+  const projected = await readFile(join(root, "AGENTS.md"), "utf8");
+  expect(lineTotal(projected) - lineTotal(owner)).toBeLessThanOrEqual(4);
+  expect(projected.split(start)).toHaveLength(2);
+
+  const fresh = await workspace();
+  await projectCollaborationPolicy(fresh);
+  for (const name of ["AGENTS.md", "CLAUDE.md"]) {
+    expect(lineTotal(await readFile(join(fresh, name), "utf8"))).toBe(3);
   }
 });
 

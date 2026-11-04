@@ -1,0 +1,16 @@
+urn: acc:flow:E037-UNIT-001
+phase: UNIT
+description: >-
+  The same-session compaction handover engine (T1-derived contract, Pi 1.4.0) runs entirely inside
+  one seat's live Pi session. In the context window from the Desk handover threshold through 90%
+  inclusive it fires once per session; above 90% it returns a typed fallback and records nothing.
+  Only the seat itself may self-service the primary path. A handover that fails validation records
+  neither handover nor checkpoint. A valid one records the handover and checkpoint and yields a
+  compaction draft with firstKeptEntryId null (self-retaining), whose summary carries the handover
+  and recovery bundle; an explicit firstKeptEntryId must be in the branch entries. The seat's Pi
+  session, session path, Herdr session and pane, and launch receipt are snapshotted before and
+  must be identical after, with the seat record byte-for-byte unchanged and no session, pane,
+  binding, or handover-replacement request created. ctx.compact refusals (nothing to compact,
+  already compacted, errors) and any postcondition failure (entry not self-retaining, handover not
+  the recorded one, identity drift) return a typed fallback-needed result; the engine never
+  relaunches (the PR #111 fallback is wired by T3).

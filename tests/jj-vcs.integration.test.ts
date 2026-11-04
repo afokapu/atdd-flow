@@ -49,7 +49,7 @@ test("JJ integration: project selection provisions colocated workspaces and book
   await exec(repository, "git", "commit", "-m", "initial");
 
   await flow(root, "init", desk);
-  await flow(desk, "project", "init", "demo");
+  await flow(desk, "project", "init", "demo", "--vcs", "git");
   const rejected = await failFlow(desk, "project", "configure", "demo", "--vcs", "jj", "--repository", repository, "--worktree-root", worktrees);
   expect(rejected).toContain("jj");
   expect(await readFile(join(desk, "work", "demo", "project.yaml"), "utf8")).not.toContain("vcs: jj");

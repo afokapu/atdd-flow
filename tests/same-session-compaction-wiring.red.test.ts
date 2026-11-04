@@ -1,5 +1,5 @@
 // URN: test:flow:same-session-compaction-wiring
-// Acceptance: acc:flow:E032-UNIT-001
+// Acceptance: acc:flow:E038-UNIT-001
 // Phase: UNIT
 // Layer: integration
 import { expect, test } from "bun:test";

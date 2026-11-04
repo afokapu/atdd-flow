@@ -1,0 +1,9 @@
+urn: acc:flow:E036-UNIT-001
+phase: UNIT
+description: >-
+  The lifecycle convention and README state the operator-approved context-reset policy: at 80-90%
+  context, same-session compaction is the primary handover, self-serviced by every seat, with a
+  validated handover/checkpoint and recovery bundle, continuing in the same Pi session, JSONL,
+  Herdr pane, and Flow binding. The verified PR #111 new-pane successor path is the fail-closed
+  fallback and operator intervention is fallback-only. The docs record that runtime prompt and
+  behavior remain pending T2/T3; this acceptance changes text only, no runtime behavior.

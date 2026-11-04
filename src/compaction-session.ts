@@ -1,4 +1,4 @@
-// URN: component:flow:e032:compaction-session:backend:application
+// URN: component:flow:e038:compaction-session:backend:application
 // Tested-By:
 // - test:flow:same-session-compaction-wiring
 // Runtime: bun

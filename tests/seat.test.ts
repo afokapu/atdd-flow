@@ -56,7 +56,7 @@ test("a request remains outstanding until its linked result exists", async () =>
   const site = join(root, "site");
 
   await run(root, "init", site);
-  await run(site, "project", "init", "demo");
+  await run(site, "project", "init", "demo", "--vcs", "git");
   await run(site, "spawn", "demo", "coordinator", "main", "--worktree", "/tmp/demo-main");
   await run(site, "spawn", "demo", "driver", "runtime", "--worktree", "/tmp/demo-runtime");
   await run(site, "describe", "driver.runtime@demo", "--purpose", "Own the runtime rollout.");
@@ -79,7 +79,7 @@ test("a message can be read directly without opening its entire thread", async (
   roots.push(root);
   const site = join(root, "site");
   await run(root, "init", site);
-  await run(site, "project", "init", "demo");
+  await run(site, "project", "init", "demo", "--vcs", "git");
   await run(site, "spawn", "demo", "coordinator", "main", "--worktree", "/tmp/demo-main");
   await run(site, "spawn", "demo", "driver", "runtime", "--worktree", "/tmp/demo-runtime");
   const thread = await run(site, "thread", "start", "--with", "coordinator@demo,driver.runtime@demo", "--subject", "Direct mail");
@@ -109,7 +109,7 @@ test("new thread and message IDs are readable, body-free, and preserve legacy fi
   roots.push(root);
   const site = join(root, "site");
   await run(root, "init", site);
-  await run(site, "project", "init", "demo");
+  await run(site, "project", "init", "demo", "--vcs", "git");
   await run(site, "spawn", "demo", "coordinator", "main", "--worktree", "/tmp/demo-main");
   await run(site, "spawn", "demo", "driver", "runtime", "--worktree", "/tmp/demo-runtime");
 
@@ -142,7 +142,7 @@ test("durable inbox reconciliation recovers missed mail without duplicate delive
   roots.push(root);
   const site = join(root, "site");
   await run(root, "init", site);
-  await run(site, "project", "init", "demo");
+  await run(site, "project", "init", "demo", "--vcs", "git");
   await run(site, "spawn", "demo", "coordinator", "main", "--worktree", "/tmp/demo-main");
   await run(site, "spawn", "demo", "driver", "pi", "--worktree", "/tmp/demo-pi");
   const seat = "driver.pi@demo";
@@ -187,7 +187,7 @@ test("RED: active native post and receipt recover a queue deleted after drain wi
   roots.push(root);
   const site = join(root, "site");
   await run(root, "init", site);
-  await run(site, "project", "init", "demo");
+  await run(site, "project", "init", "demo", "--vcs", "git");
   await run(site, "spawn", "demo", "coordinator", "main", "--worktree", "/tmp/demo-main");
   await run(site, "spawn", "demo", "driver", "pi", "--worktree", "/tmp/demo-pi");
   const coordinator = "coordinator@demo";
@@ -240,7 +240,7 @@ test("a Pi-designated unbound seat queues ordered native mail in bounded segment
   roots.push(root);
   const site = join(root, "site");
   await run(root, "init", site);
-  await run(site, "project", "init", "demo");
+  await run(site, "project", "init", "demo", "--vcs", "git");
   await run(site, "spawn", "demo", "coordinator", "main", "--worktree", "/tmp/demo-main");
   await run(site, "spawn", "demo", "driver", "offline", "--worktree", "/tmp/demo-offline");
   const seat = "driver.offline@demo";
@@ -285,7 +285,7 @@ test("concurrent native posts survive queue rollover without losing references",
   roots.push(root);
   const site = join(root, "site");
   await run(root, "init", site);
-  await run(site, "project", "init", "demo");
+  await run(site, "project", "init", "demo", "--vcs", "git");
   await run(site, "spawn", "demo", "coordinator", "main", "--worktree", "/tmp/demo-main");
   await run(site, "spawn", "demo", "driver", "pi", "--worktree", "/tmp/demo-pi");
   const seat = "driver.pi@demo";
@@ -307,7 +307,7 @@ test("a failed rollover child write leaves later native mail recoverable", async
   roots.push(root);
   const site = join(root, "site");
   await run(root, "init", site);
-  await run(site, "project", "init", "demo");
+  await run(site, "project", "init", "demo", "--vcs", "git");
   await run(site, "spawn", "demo", "coordinator", "main", "--worktree", "/tmp/demo-main");
   await run(site, "spawn", "demo", "driver", "pi", "--worktree", "/tmp/demo-pi");
   const seat = "driver.pi@demo";
@@ -343,7 +343,7 @@ test("an incomplete inbox intent never delivers or blocks later durable mail", a
   roots.push(root);
   const site = join(root, "site");
   await run(root, "init", site);
-  await run(site, "project", "init", "demo");
+  await run(site, "project", "init", "demo", "--vcs", "git");
   await run(site, "spawn", "demo", "coordinator", "main", "--worktree", "/tmp/demo-main");
   await run(site, "spawn", "demo", "driver", "pi", "--worktree", "/tmp/demo-pi");
   const seat = "driver.pi@demo";
@@ -423,7 +423,7 @@ test("a migration can record a completed task from authoritative proof without i
   roots.push(root);
   const site = join(root, "site");
   await run(root, "init", site);
-  await run(site, "project", "init", "demo");
+  await run(site, "project", "init", "demo", "--vcs", "git");
   await run(site, "spawn", "demo", "coordinator", "main", "--worktree", "/tmp/demo-main");
   await run(site, "task", "add", "demo", "legacy-delivery", "--title", "Legacy delivery", "--coordinator", "coordinator@demo", "--done-when", "Merged PR evidence is recorded.");
 
@@ -445,7 +445,7 @@ test("a configured driver worktree is created on its declared branch", async () 
   await git(repository, "config", "user.name", "Test");
   await git(repository, "commit", "--allow-empty", "-m", "initial");
   await run(root, "init", site);
-  await run(site, "project", "init", "demo");
+  await run(site, "project", "init", "demo", "--vcs", "git");
   await writeFile(join(site, "work", "demo", "project.yaml"), `schema: atdd-workflow/project/v1
 project: demo
 repository: ${repository}
@@ -469,7 +469,7 @@ test("a broadcast request remains open until every targeted participant replies"
   roots.push(root);
   const site = join(root, "site");
   await run(root, "init", site);
-  await run(site, "project", "init", "demo");
+  await run(site, "project", "init", "demo", "--vcs", "git");
   await run(site, "spawn", "demo", "coordinator", "main", "--worktree", "/tmp/demo-main");
   await run(site, "spawn", "demo", "driver", "one", "--worktree", "/tmp/demo-one");
   await run(site, "spawn", "demo", "driver", "two", "--worktree", "/tmp/demo-two");
@@ -487,7 +487,7 @@ test("a receipt or result must reply to a message addressed to its sender", asyn
   roots.push(root);
   const site = join(root, "site");
   await run(root, "init", site);
-  await run(site, "project", "init", "demo");
+  await run(site, "project", "init", "demo", "--vcs", "git");
   await run(site, "spawn", "demo", "coordinator", "main", "--worktree", "/tmp/demo-main");
   await run(site, "spawn", "demo", "driver", "one", "--worktree", "/tmp/demo-one");
   await run(site, "spawn", "demo", "driver", "two", "--worktree", "/tmp/demo-two");
@@ -505,8 +505,8 @@ test("a driver routes through its coordinator and replies only to the requesting
   roots.push(root);
   const site = join(root, "site");
   await run(root, "init", site);
-  await run(site, "project", "init", "demo");
-  await run(site, "project", "init", "desk");
+  await run(site, "project", "init", "demo", "--vcs", "git");
+  await run(site, "project", "init", "desk", "--vcs", "git");
   await writeFile(join(site, "work", "demo", "project.yaml"), `schema: atdd-workflow/project/v1
 project: demo
 roles:
@@ -556,7 +556,7 @@ test("a replacement agent resumes an outstanding seat and completes its work", a
   roots.push(root);
   const site = join(root, "site");
   await run(root, "init", site);
-  await run(site, "project", "init", "demo");
+  await run(site, "project", "init", "demo", "--vcs", "git");
   await run(site, "spawn", "demo", "coordinator", "main", "--worktree", "/tmp/demo-main");
   await run(site, "spawn", "demo", "driver", "runtime", "--worktree", "/tmp/demo-runtime");
   const driver = "driver.runtime@demo";
@@ -587,7 +587,7 @@ test("a legacy alias resolves to one canonical seat", async () => {
   roots.push(root);
   const site = join(root, "site");
   await run(root, "init", site);
-  await run(site, "project", "init", "example-app");
+  await run(site, "project", "init", "example-app", "--vcs", "git");
   await run(site, "spawn", "example-app", "coordinator", "main", "--worktree", "/tmp/example-app-main");
   await writeFile(join(site, "desk.yaml"), `schema: atdd-workflow/desk/v1
 desk: site
@@ -607,7 +607,7 @@ test("a seat retains native addresses and can switch its active application", as
   roots.push(root);
   const site = join(root, "site");
   await run(root, "init", site);
-  await run(site, "project", "init", "demo");
+  await run(site, "project", "init", "demo", "--vcs", "git");
   await run(site, "spawn", "demo", "driver", "runtime", "--worktree", "/tmp/demo-runtime");
 
   await run(site, "bind", "driver.runtime@demo", "--application", "herdr", "--address", "w89e05ef9ff16:p2f1de975e7b0");
@@ -661,7 +661,7 @@ test("a host-attached replacement preserves its durable work and wakes the curre
   });
 
   await run(root, "init", site, "--git");
-  await run(site, "project", "init", "demo");
+  await run(site, "project", "init", "demo", "--vcs", "git");
   await run(site, "spawn", "demo", "coordinator", "main", "--worktree", "/tmp/demo-main");
   await run(site, "spawn", "demo", "driver", "runtime", "--worktree", "/tmp/demo-runtime");
   const coordinator = "coordinator@demo";
@@ -707,7 +707,7 @@ test("a native-wake runtime keeps durable mail but skips host text injection", a
   };
 
   await run(root, "init", site);
-  await run(site, "project", "init", "demo");
+  await run(site, "project", "init", "demo", "--vcs", "git");
   await run(site, "spawn", "demo", "coordinator", "main", "--worktree", "/tmp/demo-main");
   await run(site, "spawn", "demo", "driver", "pi", "--worktree", "/tmp/demo-pi");
   const coordinator = "coordinator@demo";
@@ -727,7 +727,7 @@ test("binding an existing seat may update its legacy launch agent", async () => 
   const site = join(root, "site");
   await run(root, "init", site);
   await rm(join(site, "models.yaml"));
-  await run(site, "project", "init", "demo");
+  await run(site, "project", "init", "demo", "--vcs", "git");
   await run(site, "spawn", "demo", "driver", "receiver", "--worktree", "/tmp/demo-receiver");
 
   const replacement = join(root, "replacement-worktree");
@@ -746,7 +746,7 @@ test("legacy Desks may still pin a seat executable when no model portfolio exist
   const site = join(root, "site");
   await run(root, "init", site);
   await rm(join(site, "models.yaml"));
-  await run(site, "project", "init", "demo");
+  await run(site, "project", "init", "demo", "--vcs", "git");
   expect(await readFile(join(site, "work", "demo", "project.yaml"), "utf8")).toContain("agent: pi");
   await run(site, "spawn", "demo", "driver", "receiver", "--worktree", "/tmp/demo-receiver", "--agent", "cat");
   expect(await run(site, "open", "driver.receiver@demo")).toContain("agent: cat");
@@ -757,7 +757,7 @@ test("portfolio Desks reject static model pins", async () => {
   roots.push(root);
   const site = join(root, "site");
   await run(root, "init", site);
-  await run(site, "project", "init", "demo");
+  await run(site, "project", "init", "demo", "--vcs", "git");
   expect(await fail(site, "spawn", "demo", "driver", "receiver", "--worktree", "/tmp/demo-receiver", "--agent", "cat")).toContain("models.yaml owns model allocation");
 });
 
@@ -775,7 +775,7 @@ test("task completion retires an idle driver through ATDD Bun housekeeping", asy
   await git(repository, "add", ".gitignore", "atdd-bun.yaml");
   await git(repository, "commit", "-m", "configure worktrees");
   await run(root, "init", site);
-  await run(site, "project", "init", "demo");
+  await run(site, "project", "init", "demo", "--vcs", "git");
   await writeFile(join(site, "work", "demo", "project.yaml"), `schema: atdd-workflow/project/v1
 project: demo
 repository: ${repository}
@@ -817,7 +817,7 @@ test("a coordinator unlocks dependent tasks only after reviewing their proof", a
   roots.push(root);
   const site = join(root, "site");
   await run(root, "init", site);
-  await run(site, "project", "init", "demo");
+  await run(site, "project", "init", "demo", "--vcs", "git");
   await run(site, "spawn", "demo", "coordinator", "main", "--worktree", "/tmp/demo-main");
   await run(site, "spawn", "demo", "driver", "plan", "--worktree", "/tmp/demo-plan");
   await run(site, "spawn", "demo", "driver", "api", "--worktree", "/tmp/demo-api");
@@ -849,7 +849,7 @@ test("status gives an operator one view of seats, tasks, and threads", async () 
   roots.push(root);
   const site = join(root, "site");
   await run(root, "init", site);
-  await run(site, "project", "init", "demo");
+  await run(site, "project", "init", "demo", "--vcs", "git");
   await run(site, "spawn", "demo", "coordinator", "main", "--worktree", "/tmp/demo-main");
   await run(site, "spawn", "demo", "driver", "runtime", "--worktree", "/tmp/demo-runtime");
   await run(site, "task", "add", "demo", "W-runtime", "--title", "Run runtime work", "--coordinator", "coordinator@demo", "--assignee", "driver.runtime@demo", "--done-when", "Coordinator accepts evidence.");
@@ -886,7 +886,7 @@ test("a task can preserve an exact source body through the canonical amend comma
   roots.push(root);
   const site = join(root, "site");
   await run(root, "init", site);
-  await run(site, "project", "init", "demo");
+  await run(site, "project", "init", "demo", "--vcs", "git");
   await run(site, "spawn", "demo", "coordinator", "main", "--worktree", "/tmp/demo-main");
   await run(site, "task", "add", "demo", "W-source", "--title", "Imported slice", "--coordinator", "coordinator@demo", "--body", "Temporary projection", "--done-when", "Coordinator accepts evidence.");
   await run(site, "task", "amend", "demo", "W-source", "--body", "Exact source wording.", "--source", "repo@sha:docs/program.adoc#row-42");
@@ -901,7 +901,7 @@ test("only a task coordinator can atomically assign an unassigned todo task", as
   roots.push(root);
   const site = join(root, "site");
   await run(root, "init", site);
-  await run(site, "project", "init", "demo");
+  await run(site, "project", "init", "demo", "--vcs", "git");
   await run(site, "spawn", "demo", "coordinator", "main", "--worktree", "/tmp/demo-main");
   await run(site, "spawn", "demo", "driver", "one", "--worktree", "/tmp/demo-one");
   await run(site, "spawn", "demo", "driver", "two", "--worktree", "/tmp/demo-two");
@@ -929,7 +929,7 @@ test("only a coordinator clears an explicit TODO or in-progress blocker without 
   roots.push(root);
   const site = join(root, "site");
   await run(root, "init", site);
-  await run(site, "project", "init", "demo");
+  await run(site, "project", "init", "demo", "--vcs", "git");
   await run(site, "spawn", "demo", "coordinator", "main", "--worktree", "/tmp/demo-main");
   await run(site, "spawn", "demo", "driver", "runtime", "--worktree", "/tmp/demo-runtime");
   const coordinator = "coordinator@demo";
@@ -976,7 +976,7 @@ test("new project roles leave model allocation to the Desk portfolio", async () 
   roots.push(root);
   const site = join(root, "site");
   await run(root, "init", site);
-  await run(site, "project", "init", "demo");
+  await run(site, "project", "init", "demo", "--vcs", "git");
   const project = await readFile(join(site, "work", "demo", "project.yaml"), "utf8");
   expect(project).not.toContain("agent:");
   await run(site, "spawn", "demo", "driver", "runtime", "--worktree", "/tmp/demo-runtime");

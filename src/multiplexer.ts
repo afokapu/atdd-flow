@@ -240,11 +240,17 @@ function matchWorkspace(workspaces: Workspace[], target: Target) {
   return workspaces.find((entry) => checkoutOf(entry) === undefined && entry.label === target.project);
 }
 
-async function ensureWorkspace(session: string, target: Target, workspaces: Workspace[], command: HerdrCommand, primary?: WorkspaceState) {
+/**
+ * Workspaces and tabs Flow creates inherit the Desk root. Herdr 0.9.3 `worktree open` has no `--env`, so a linked
+ * worktree's reused root tab gets the root from `pi runtime launch`, which exports it into the pane before Pi starts.
+ */
+const deskEnv = (root: string) => ["--env", `ATDD_WORKFLOW_ROOT=${root}`];
+
+async function ensureWorkspace(root: string, session: string, target: Target, workspaces: Workspace[], command: HerdrCommand, primary?: WorkspaceState) {
   let current = matchWorkspace(workspaces, target);
   if (!current) {
     const args = target.workspaceLabel === target.project
-      ? ["workspace", "create", "--cwd", target.worktree, "--label", target.workspaceLabel, "--no-focus"]
+      ? ["workspace", "create", "--cwd", target.worktree, "--label", target.workspaceLabel, "--no-focus", ...deskEnv(root)]
       : ["worktree", "open", "--workspace", primary?.id ?? "", "--path", target.worktree, "--label", target.workspaceLabel, "--no-focus"];
     if (args.includes("")) throw new Error(`Project primary workspace is required to open linked worktree ${target.worktree}.`);
     const created = json(await command(["herdr", "--session", session, ...args]));
@@ -270,7 +276,7 @@ async function panes(session: string, workspace: string, command: HerdrCommand) 
   return result.panes as Pane[];
 }
 
-async function ensureSeatTab(session: string, workspace: WorkspaceState, target: Target & { seat: Seat }, command: HerdrCommand): Promise<HerdrSeatProjection> {
+async function ensureSeatTab(root: string, session: string, workspace: WorkspaceState, target: Target & { seat: Seat }, command: HerdrCommand): Promise<HerdrSeatProjection> {
   let entries = await tabs(session, workspace.id, command);
   let tab = entries.find((entry) => entry.label === target.seat.address);
   let pane: string | undefined;
@@ -280,7 +286,7 @@ async function ensureSeatTab(session: string, workspace: WorkspaceState, target:
     tab.label = target.seat.address;
   }
   if (!tab) {
-    const created = json(await command(["herdr", "--session", session, "tab", "create", "--workspace", workspace.id, "--cwd", target.worktree, "--label", target.seat.address, "--no-focus"]));
+    const created = json(await command(["herdr", "--session", session, "tab", "create", "--workspace", workspace.id, "--cwd", target.worktree, "--label", target.seat.address, "--no-focus", ...deskEnv(root)]));
     const id = tabId(created);
     if (!id) throw new Error("Herdr did not return a tab id.");
     tab = { tab_id: id, workspace_id: workspace.id, label: target.seat.address };
@@ -295,9 +301,9 @@ async function ensureSeatTab(session: string, workspace: WorkspaceState, target:
   return { session, workspace: workspace.id, tab: tab.tab_id, pane: first, worktree: target.worktree, label: target.seat.address };
 }
 
-async function ensureTarget(session: string, target: Target, workspaces: Workspace[], command: HerdrCommand, primary: WorkspaceState) {
-  const workspace = target.workspaceLabel === target.project ? primary : await ensureWorkspace(session, target, workspaces, command, primary);
-  return target.seat ? ensureSeatTab(session, workspace, target as Target & { seat: Seat }, command) : undefined;
+async function ensureTarget(root: string, session: string, target: Target, workspaces: Workspace[], command: HerdrCommand, primary: WorkspaceState) {
+  const workspace = target.workspaceLabel === target.project ? primary : await ensureWorkspace(root, session, target, workspaces, command, primary);
+  return target.seat ? ensureSeatTab(root, session, workspace, target as Target & { seat: Seat }, command) : undefined;
 }
 
 /** Reconciles exactly one Desk seat into a labeled Herdr workspace/tab/pane. */
@@ -309,8 +315,8 @@ export async function projectHerdrSeat(root: string, address: string, session: s
   const primaryTarget = desired.find((entry) => entry.project === target.project && entry.workspaceLabel === target.project && !entry.seat);
   if (!primaryTarget) throw new Error(`Project ${target.project} has no declared primary workspace.`);
   const workspaces = await liveWorkspaces(session, command);
-  const primary = await ensureWorkspace(session, primaryTarget, workspaces, command);
-  return (await ensureTarget(session, target, workspaces, command, primary))!;
+  const primary = await ensureWorkspace(root, session, primaryTarget, workspaces, command);
+  return (await ensureTarget(root, session, target, workspaces, command, primary))!;
 }
 
 type StaleWorkspace = { workspace: Workspace; address: string; reason: "retired" | "no active task" };
@@ -453,10 +459,10 @@ export async function multiplexer(root: string, args: string[]) {
     if (!projectPrimary) {
       const primaryTarget = desired.find((entry) => entry.project === target.project && entry.workspaceLabel === target.project && !entry.seat);
       if (!primaryTarget) throw new Error(`Project ${target.project} has no declared primary workspace.`);
-      projectPrimary = await ensureWorkspace(session, primaryTarget, workspaces, command);
+      projectPrimary = await ensureWorkspace(root, session, primaryTarget, workspaces, command);
       primary.set(target.project, projectPrimary);
     }
-    await ensureTarget(session, target, workspaces, command, projectPrimary);
+    await ensureTarget(root, session, target, workspaces, command, projectPrimary);
   }
   for (const entry of unprojected) console.log(`unprojected  ${entry.address}: ${entry.reason}`);
   // Decided at close time with the same read-only rule `status` reports.

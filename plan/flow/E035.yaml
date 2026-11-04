@@ -1,0 +1,8 @@
+urn: acc:flow:E035-UNIT-001
+phase: UNIT
+description: >-
+  In-place adoption validates the live authorized Pi against the authorized target tuple from the
+  pane record, the pane's single Pi writer and the Herdr-wide agent list (pane, session path), and
+  never through the legacy source-bootstrap `agent get` record, whose name, kind and cwd a
+  hand-started Pi need not report. A cwd that is the same directory by symlink is accepted. A
+  different session path, directory, writer count, duplicate or live stale Pi still refuses.

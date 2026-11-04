@@ -7,6 +7,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { clearStaleRuntimeState, clearRuntimeState, heartbeatRuntimeState, ownsRuntimeState, recordMailActivation, registerRuntimeState, runtimeOwnerToken, withOwnedRuntimeState } from "../../src/runtime-state";
 import { modelPortfolio, paths, piModel, readYaml, type Seat } from "../../src/core";
 import { type TranscriptEntry, customEntries, wakeCapabilityType, wakeRequestIdPattern, wakeRequestType, wakeResultType, wakeStartType } from "../../src/pi-wake-protocol";
+import { inPlaceAdoptionReceiptMatches } from "../../src/exact-adoption-recovery";
 import { activationNotice, diagnoseMailActivation, expectsNativeMail } from "../../src/mail-activation-notice";
 import { type NoticeState, createNoticeState, deliveredDirectiveText, refreshDelivered, sendSettledDirective, sendTaskDirective, shouldNotifyMail } from "../../src/next-action-notices";
 import { runtimeStartupInstruction, successorInstruction } from "../../src/collaboration-policy";
@@ -354,14 +355,17 @@ export async function activateWithRetry(activate: () => Promise<boolean>, attemp
 export async function hostAttachedActivation({ root, seat, herdrSession, pane, piSession, piSessionPath }: { root: string; seat: string; herdrSession?: string; pane?: string; piSession?: string; piSessionPath?: string }) {
   if (!herdrSession || !pane) return false;
   try {
-    const runtime = (await readYaml<Seat>(paths(root).seatFile(seat))).runtime;
-    return nativeScopedTo(runtime, herdrSession, pane) && sessionUnsetOrEqual(runtime, piSession, piSessionPath);
+    const record = await readYaml<Seat>(paths(root).seatFile(seat)), runtime = record.runtime;
+    if (!nativeScopedTo(runtime, herdrSession, pane)) return false;
+    // A launch receipt normally proves a Flow-launched Pi, which has launcher variables; the one host-visible exception is an in-place adoption.
+    if (!runtime?.launch_receipt) return sessionUnsetOrEqual(runtime, piSession, piSessionPath);
+    return inPlaceAdoptionReceiptMatches(root, record, { piSession, piSessionPath });
   } catch { return false; }
 }
 
 function nativeScopedTo(runtime: Seat["runtime"], herdrSession: string, pane: string) {
   const locator = runtime?.addresses.herdr;
-  return runtime?.application === "herdr" && runtime.wake === "native" && !runtime.launch_receipt
+  return runtime?.application === "herdr" && runtime.wake === "native"
     && typeof locator === "object" && locator.session === herdrSession && locator.pane === pane;
 }
 
@@ -626,5 +630,5 @@ export default function (pi: ExtensionAPI, environment: NodeJS.ProcessEnv = proc
       ? noticeActivation("inactive")
       : noticeActivation(current.active ? "active" : "inactive", error instanceof Error ? error.message : String(error)));
   });
-  pi.on("session_shutdown", () => { void runtime?.stop(); });
+  pi.on("session_shutdown", async () => { await runtime?.stop(); });
 }

@@ -55,7 +55,17 @@ function lineCount(text: string) {
   return text ? text.replace(/\r?\n$/, "").split(/\r?\n/).length : 0;
 }
 
-/** Idempotently projects the canonical pointer while preserving user content and refusing oversized instruction files. */
+/** The managed block plus one separator line is the most a projection may add to any file. */
+const maxManagedDeltaLines = lineCount(block()) + 1;
+
+/** Fails closed when a projection would grow a file by more than the managed block; owner content is never counted. */
+function assertBoundedDelta(name: string, source: string, next: string) {
+  if (lineCount(next) - lineCount(source) > maxManagedDeltaLines) {
+    throw new Error(`${name} projection would add more than ${maxManagedDeltaLines} managed lines; refusing projection without changing user content.`);
+  }
+}
+
+/** Idempotently projects the canonical pointer while preserving every owner byte outside the managed markers. */
 export async function projectCollaborationPolicy(root: string) {
   const projections = await Promise.all(["AGENTS.md", "CLAUDE.md"].map(async (name) => {
     const file = join(root, name);
@@ -66,11 +76,7 @@ export async function projectCollaborationPolicy(root: string) {
     }
     return { name, file, source, next: projectCollaborationPolicyText(source) };
   }));
-  for (const { name, source, next } of projections) {
-    if (lineCount(source) > 20 || lineCount(next) > 20) {
-      throw new Error(`${name} exceeds the 20-line cap; refusing projection without changing user content.`);
-    }
-  }
+  for (const { name, source, next } of projections) assertBoundedDelta(name, source, next);
   await Promise.all(projections.map(async ({ file, source, next }) => {
     if (next !== source) await writeFile(file, next, "utf8");
   }));

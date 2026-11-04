@@ -92,7 +92,7 @@ async function desk(drivers: string[]) {
   await mkdir(join(repository, "node_modules", ".bin"), { recursive: true });
   await symlink(join(import.meta.dir, "..", "node_modules", ".bin", "atdd-bun"), join(repository, "node_modules", ".bin", "atdd-bun"));
   await run(root, clean, "init", site);
-  await run(site, clean, "project", "init", "demo");
+  await run(site, clean, "project", "init", "demo", "--vcs", "git");
   await writeFile(join(site, "work", "demo", "project.yaml"), `schema: atdd-workflow/project/v1
 project: demo
 repository: ${repository}
@@ -472,7 +472,7 @@ process.exit(child.exitCode ?? 1);
     await symlink(join(import.meta.dir, "..", "node_modules", ".bin", "atdd-bun"), join(repository, "node_modules", ".bin", "atdd-bun"));
   }
   await run(root, environment, "init", site);
-  await run(site, environment, "project", "init", "demo");
+  await run(site, environment, "project", "init", "demo", "--vcs", "git");
   await writeFile(join(site, "work", "demo", "project.yaml"), `schema: atdd-workflow/project/v1
 project: demo
 repository: ${repository}

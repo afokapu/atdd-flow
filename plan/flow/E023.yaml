@@ -1,9 +1,11 @@
 urn: acc:flow:E023-UNIT-001
 phase: UNIT
 description: >-
-  Git to Jujutsu migration preflight (primary count, distinct worktree paths, dirty state, and Git
-  worktree registry ownership) considers only non-retired Flow seats. Two retired seats that share
-  a recorded worktree path and still carry a runtime locator do not block `project migrate-vcs
-  <project> --to jj --dry-run`, while two ACTIVE seats sharing a path still fail closed with the
-  distinct-worktree-path refusal and create no JJ metadata. A retired seat never excuses an
-  active seat on the same path, and the dry-run mutates neither the repository nor the Desk.
+  A context-exhausted main whose consumed Path-A request, launch receipt and recorded Pi all name a closed
+  pane, while its seat is rebound to an available shell pane, is succeeded through the public
+  `handover replace --recover-stale-main`, `pi runtime launch` and `handover resumed` commands with a fresh
+  Pi session and no transcript adoption. A seat Herdr binding typed as `<session>/<pane>` is read and
+  written as the pane id, so the exact current-locator comparison holds. The consumed request is archived
+  by hash; a listed source Pi, a listed retired pane, an occupied target, a launcher-host target pane,
+  a missing authorization, more than one ready takeover task and a runtime that no longer matches stay
+  fail-closed without partial mutation.

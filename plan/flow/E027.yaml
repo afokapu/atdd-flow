@@ -1,0 +1,9 @@
+urn: acc:flow:E027-UNIT-001
+phase: UNIT
+description: >-
+  Every pane Flow creates inherits the Desk root. `multiplexer apply herdr` and launch projection pass
+  `--env ATDD_WORKFLOW_ROOT=<desk>` on each Herdr `workspace create` and `tab create`, so a freshly spawned
+  pane resolves the Desk without a manual export. Herdr 0.9.3 `worktree open` has no `--env` flag and
+  rejects it, so Flow never passes one there; the reused linked-worktree root tab gets the root from launch. A pane created by hand has no such
+  environment, so `pi runtime launch` exports the Desk root, seat, Pi session and Herdr tuple into its shell
+  before starting Pi. Seat, task, runtime and Desk records are never changed by projection.

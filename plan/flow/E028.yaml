@@ -1,0 +1,9 @@
+urn: acc:flow:E028-UNIT-001
+phase: UNIT
+description: >-
+  A seat renamed through a Desk alias (old address to new address) keeps its thread participation. Threads and
+  messages written under the old address are read through the alias, so the new address may post to, receive
+  on, receipt and answer a result for those threads, `status` no longer reports the renamed seat as a waiting
+  responder once it answered, and a thread list for either address includes them. New mail addressed to
+  the old address is delivered to the new address. History files are never rewritten, and a Desk without
+  aliases behaves exactly as before.

@@ -1,15 +1,10 @@
 urn: acc:flow:E032-UNIT-001
 phase: UNIT
 description: >-
-  The Flow Pi extension wires the same-session compaction engine into production. At the Desk
-  handover threshold through 90% inclusive a seat is asked once per Pi session to record a validated
-  handover for same-session compaction; when its run is about to settle, the extension adopts the
-  handover recorded after that prompt, writes the checkpoint, and returns one self-retaining
-  compaction entry (firstKeptEntryId null) with continue true. After Pi reports session_compact the
-  postcondition (identity unchanged, entry self-retaining, summary carries the handover) must hold,
-  and success re-arms the session. Every other outcome fails closed to the verified Path-A fallback:
-  above 90%, no live identity, no handover recorded after the prompt, a stale or invalid recorded
-  handover, identity drift, a failed or non-self-retaining compaction. The fallback directive
-  names the typed reason and says not to compact or release a session; it creates no session, pane,
-  binding, or replacement request, and writes no checkpoint. The engine module is reachable from
-  the extension entry point through real imports.
+  `handover resumed` for a main reconciled by an exact adoption that has no Path-A request verifies
+  the exact-adoption receipt itself: the receipt names a still-eligible self-assigned task, its
+  operator authorization record is immutable and bound to the receipt tuple, the receipt is the only
+  one that consumed it, its JSONL backup is a prefix of the adopted session, the seat is bound to the
+  receipt session, path and pane with native delivery, and a heartbeat started after the receipt
+  exists. Any missing or contradictory evidence reports a named discrepancy and fails; a stray or
+  invalid Path-A request neither blocks nor is rewritten.

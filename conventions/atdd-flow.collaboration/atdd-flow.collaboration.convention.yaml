@@ -33,6 +33,10 @@ content:
     receipts inbound communication from any seat, but sends substantive direction, results, and
     wakes only to main@project. Only main@project executes that project repository merge; the
     operator may authorize, relay, or inspect but never merges.
+    Manage every project main, coordinator, and driver seat only through atdd-flow
+    canonical commands (spawn, bind, pi runtime launch, task lifecycle, handover); start,
+    stop, rebind, or succeed a seat by hand only under explicit owner direction and always
+    complete the supported bind/reconciliation immediately after.
     Post decisions and open questions as messages when they happen.
   projection: >-
     Keep this full policy only in this convention. Managed AGENTS.md and CLAUDE.md blocks

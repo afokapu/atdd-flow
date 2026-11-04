@@ -1,0 +1,12 @@
+urn: acc:flow:E025-UNIT-001
+phase: UNIT
+description: >-
+  The context-threshold handover trigger runs server-side in Flow, without session cooperation or `/reload`.
+  `atdd-flow pi context-monitor <seat>|--scope project|desk --by <authorized-seat> [--dry-run]` reads each
+  live Pi seat's exact transcript, takes the last assistant `usage.totalTokens`, divides it by the
+  `context_window` that models.yaml declares for the transcript's exact provider/model, compares it with the
+  Desk `context_handover.threshold_percent` policy and, on crossing, delivers the standard threshold handover
+  prompt to the bound Herdr pane exactly once per Pi session (create-only marker). A seat is only prompted at an
+  idle/done boundary with a verified live runtime; an undeclared context window, a session already prompted by the
+  extension, an unauthorized actor and a working or foreign pane are reported and never guessed or prompted.
+  `--dry-run` reports the same rows without a marker or a prompt.

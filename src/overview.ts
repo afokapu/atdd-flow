@@ -1,9 +1,9 @@
 import { readdir } from "node:fs/promises";
-import { canonicalAddress, desk, exists, paths, readYaml, type Checkpoint, type Seat } from "./core";
+import { addressAliasResolver, canonicalAddress, desk, exists, paths, readYaml, type Checkpoint, type Seat } from "./core";
 import { type Task, type TaskHandoff, type TaskStatus, terminal } from "./tasks";
 import { isRuntimeStateStale, readRuntimeState } from "./runtime-state";
 import { describeActivation, nativeMailInactive } from "./mail-activation-notice";
-import { type Message, type Thread } from "./threads";
+import { type Message, type Thread, canonicalMessage, canonicalThread } from "./threads";
 
 type ListedTask = { project: string; id: string; task: Task; waiting: string[] };
 type ListedSeat = { project: string; record: Seat; checkpoint?: Checkpoint };
@@ -62,13 +62,14 @@ async function tasks(root: string, project: string): Promise<ListedTask[]> {
 
 async function threads(root: string): Promise<ListedThread[]> {
   const ids = await names(paths(root).threads);
+  const resolve = await addressAliasResolver(root);
   return (await Promise.all(ids.map(async (id) => {
     const threadFile = paths(root).threadFile(id);
     if (!await exists(threadFile)) return undefined;
-    const record = await readYaml<Thread>(threadFile);
+    const record = canonicalThread(await readYaml<Thread>(threadFile), resolve);
     const messages = await Promise.all((await names(paths(root).thread(id)))
       .filter((file) => file.startsWith("M-") && file.endsWith(".yaml"))
-      .map((file) => readYaml<Message>(`${paths(root).thread(id)}/${file}`)));
+      .map(async (file) => canonicalMessage(await readYaml<Message>(`${paths(root).thread(id)}/${file}`), resolve)));
     const pending = messages.flatMap((message) => {
       if (!message.expects_result) return [];
       const recipients = message.to === "all" ? record.participants.filter((address) => address !== message.from) : message.to;

@@ -100,7 +100,7 @@ async function fixture(): Promise<Fixture> {
   const remoteBaseline = await git(repository, "rev-parse", "HEAD");
 
   await run(root, "init", site);
-  await run(site, "project", "init", "demo");
+  await run(site, "project", "init", "demo", "--vcs", "git");
   const projectFile = join(site, "work", "demo", "project.yaml");
   const project = Bun.YAML.parse(await Bun.file(projectFile).text()) as Record<string, unknown>;
   project.repository = repository;

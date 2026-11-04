@@ -7,7 +7,7 @@
 import { createHash } from "node:crypto";
 import { readFile, readdir } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
-import { type Seat, paths, readYaml, yaml } from "./core";
+import { type Runtime, type Seat, paths, readYaml, yaml } from "./core";
 import type { HandoverReplacementRequest } from "./handover";
 import { readRuntimeState } from "./runtime-state";
 import { archivedReceiptMatches, backupIsTranscriptPrefix, recoveryEvidenceMatches } from "./stale-main-recovery";
@@ -29,6 +29,8 @@ type ReplacementLaunchReceipt = {
     backup?: string;
     backup_sha256?: string;
   };
+  /** Present on a launch that needed no Path-A request: how the seat was found eligible. */
+  launch_basis?: { kind?: string; task?: string; in_place?: boolean };
   created_at?: string;
 };
 
@@ -40,9 +42,11 @@ function digest(content: string | Uint8Array) {
   return createHash("sha256").update(content).digest("hex");
 }
 
-/** Match both the authorization content and its separately stored digest. */
-async function exactAuthorizationMatches(root: string, request: HandoverReplacementRequest) {
-  const id = request.authorization.id;
+/** The adoption tuple an immutable operator record must bind, field for field. */
+type AuthorizedTuple = { seat: string; session: string; sessionPath: string; sourceSession: string; sourcePane: string; targetSession: string; targetPane: string; targetCwd: string };
+
+/** Match both the authorization content and its separately stored digest against one expected tuple. */
+async function authorizationMatches(root: string, id: string, hash: string, expectedTuple: AuthorizedTuple) {
   const folder = join(root, ".atdd-flow", "exact-session-adoption-authorizations");
   try {
     const raw = await readFile(join(folder, `${id}.yaml`), "utf8");
@@ -56,14 +60,19 @@ async function exactAuthorizationMatches(root: string, request: HandoverReplacem
       targetSession: target?.herdr_session, targetPane: target?.pane, targetCwd: target?.cwd,
     };
     const expected = {
-      storedHash: request.authorization.hash, contentHash: request.authorization.hash,
-      schema: "atdd-flow/exact-session-adoption-authorization/v1", id, issuedBy: "operator@desk",
-      seat: request.seat, session: request.source.pi_session, sessionPath: request.source.pi_session_path,
-      sourceSession: request.source.herdr_session, sourcePane: request.source.pane,
-      targetSession: request.target.herdr_session, targetPane: request.target.pane, targetCwd: request.target.cwd,
+      storedHash: hash, contentHash: hash, schema: "atdd-flow/exact-session-adoption-authorization/v1", id, issuedBy: "operator@desk", ...expectedTuple,
     };
     return JSON.stringify(observed) === JSON.stringify(expected);
   } catch { return false; }
+}
+
+/** Match a Path-A request's authorization reference to the immutable record. */
+function exactAuthorizationMatches(root: string, request: HandoverReplacementRequest) {
+  return authorizationMatches(root, request.authorization.id, request.authorization.hash, {
+    seat: request.seat, session: request.source.pi_session, sessionPath: request.source.pi_session_path,
+    sourceSession: request.source.herdr_session, sourcePane: request.source.pane,
+    targetSession: request.target.herdr_session, targetPane: request.target.pane, targetCwd: request.target.cwd,
+  });
 }
 
 function object(value: unknown): Record<string, unknown> | undefined {
@@ -231,4 +240,79 @@ export async function exactFailedAdoptionProof(root: string, record: Seat, addre
     if (!evidence.every(Boolean)) return undefined;
     return { receipt, runtimeState, heartbeat: freshAdoptionHeartbeat(runtimeState, receipt, address, request.target.cwd) };
   } catch { return undefined; }
+}
+
+const present = (...values: unknown[]) => values.every(Boolean);
+
+/** The receipt names the exact-adoption basis and exactly one task, and fabricates no Path-A predecessor. */
+function requestlessBasis(receipt: ReplacementLaunchReceipt, address: string) {
+  return receipt.schema === "atdd-flow/pi-runtime-launch-receipt/v1" && receipt.seat === address
+    && receipt.launch_basis?.kind === "exact-adoption" && !receipt.handover_replacement
+    && receipt.tasks?.length === 1 && receipt.tasks[0] === receipt.launch_basis.task;
+}
+
+/** The receipt records the consumed authorization, its source placement and the immutable JSONL backup. */
+function relocationRecorded(receipt: ReplacementLaunchReceipt) {
+  const relocation = receipt.relocation;
+  return present(relocation?.authorization?.id, relocation?.authorization?.hash, relocation?.backup, relocation?.backup_sha256,
+    relocation?.source_herdr_session, relocation?.source_pane);
+}
+
+/** A request-less exact-adoption receipt: its basis, its relocation evidence and its own Pi/Herdr identity are all present. */
+function requestlessShape(receipt: ReplacementLaunchReceipt, address: string) {
+  return requestlessBasis(receipt, address) && relocationRecorded(receipt)
+    && present(receipt.created_at, receipt.pi_session, receipt.pi_session_path, receipt.herdr_session, receipt.pane);
+}
+
+/** The receipt's own tuple must be the one the immutable operator record authorized for this seat's worktree. */
+function receiptAuthorizationMatches(root: string, address: string, receipt: ReplacementLaunchReceipt, cwd: string) {
+  const { id, hash } = receipt.relocation!.authorization!;
+  return authorizationMatches(root, id!, hash!, {
+    seat: address, session: receipt.pi_session!, sessionPath: receipt.pi_session_path!,
+    sourceSession: receipt.relocation!.source_herdr_session!, sourcePane: receipt.relocation!.source_pane!,
+    targetSession: receipt.herdr_session!, targetPane: receipt.pane!, targetCwd: resolve(cwd),
+  });
+}
+
+async function readReceipt(path: string | undefined) {
+  if (!path) return undefined;
+  try { return yaml.parse<ReplacementLaunchReceipt>(await readFile(path, "utf8")); } catch { return undefined; }
+}
+
+/**
+ * Classify the evidence of an exact adoption that used no Path-A request, from its own receipt alone. Returns undefined
+ * unless the seat's receipt is such a receipt, so every Path-A and bootstrap receipt keeps its existing verifier.
+ */
+export async function requestlessAdoptionEvidence(root: string, record: Seat, address: string, taskEligible: TaskEligibility) {
+  const receiptPath = record.runtime?.launch_receipt, receipt = await readReceipt(receiptPath);
+  if (!receipt || !requestlessShape(receipt, address)) return undefined;
+  const relocation = receipt.relocation!;
+  const [task, runtimeState] = await Promise.all([readYaml<Task>(paths(root).taskFile(record.project, receipt.tasks![0]!)).catch(() => undefined), readRuntimeState(root, address)]);
+  const immutable = await receiptAuthorizationMatches(root, address, receipt, record.worktree)
+    && await uniqueAdoptionReceipt(root, relocation.authorization!.id!, receiptPath!)
+    && await backupIsTranscriptPrefix({ path: relocation.backup, sha256: relocation.backup_sha256 }, receipt.pi_session_path!);
+  const heartbeat = freshAdoptionHeartbeat(runtimeState, receipt, address, record.worktree)
+    && (runtimeState!.pi_session === undefined || runtimeState!.pi_session === receipt.pi_session);
+  return { receipt, taskReady: Boolean(task && await taskEligible(task)), immutable, heartbeat };
+}
+
+/** Both the receipt and the seat binding describe exactly the live Pi at its Herdr placement. */
+function bindingDescribesLivePi(receipt: ReplacementLaunchReceipt, runtime: Runtime, live: { piSession: string; piSessionPath: string }) {
+  const locator = runtime.addresses.herdr, path = resolve(live.piSessionPath);
+  if (!locator || typeof locator === "string") return false;
+  return [receipt.pi_session, runtime.pi_session].every((session) => session === live.piSession)
+    && [receipt.pi_session_path, runtime.pi_session_path].every((value) => value !== undefined && resolve(value) === path)
+    && receipt.herdr_session === locator.session && receipt.pane === locator.pane;
+}
+
+/**
+ * Host-attached proof for a Pi that was started outside Flow and reconciled in place: the seat's receipt must be an
+ * in-place exact-adoption receipt naming this live Pi and Herdr placement, backed by an immutable bound authorization.
+ */
+export async function inPlaceAdoptionReceiptMatches(root: string, record: Seat, live: { piSession?: string; piSessionPath?: string }) {
+  const runtime = record.runtime, receipt = await readReceipt(runtime?.launch_receipt);
+  if (!runtime || !receipt || !live.piSession || !live.piSessionPath) return false;
+  return requestlessShape(receipt, record.address) && receipt.launch_basis?.in_place === true
+    && bindingDescribesLivePi(receipt, runtime, { piSession: live.piSession, piSessionPath: live.piSessionPath })
+    && await receiptAuthorizationMatches(root, record.address, receipt, record.worktree);
 }
