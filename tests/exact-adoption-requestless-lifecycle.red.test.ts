@@ -1,5 +1,5 @@
 // URN: test:flow:exact-adoption-requestless-lifecycle
-// Acceptance: acc:flow:E036-UNIT-001
+// Acceptance: acc:flow:E037-UNIT-001
 // Phase: UNIT
 // Runtime: bun
 // Purpose: A request-less exact adoption stays RESUMED 6/6 as its task lifecycle advances.
