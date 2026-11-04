@@ -89,8 +89,8 @@ export function handoverThresholdInstruction(percent: number, threshold: number,
 }
 
 /** The primary 80-90% prompt: the seat records its handover and Flow compacts this same Pi session in place. */
-export function compactionThresholdInstruction(percent: number, threshold: number, bundle?: string) {
-  return withBundle(`SYSTEM: Context ${percent}% reached the Flow handover threshold (${threshold}%). Flow hands over by same-session compaction: finish or undo the atomic step, record a validated handover (atdd-flow handover <your-seat> --file <path>), then end your turn. Flow records the checkpoint, compacts this same Pi session in place, and you continue here; do not start a new session or pane.`, bundle);
+export function compactionThresholdInstruction(seat: string, percent: number, threshold: number, bundle?: string) {
+  return withBundle(`SYSTEM: Context ${percent}% reached the Flow handover threshold (${threshold}%). Flow hands over by same-session compaction: finish or undo the atomic step, record a validated handover (atdd-flow handover ${seat} --file PATH), then end your turn. Flow records the checkpoint, compacts this same Pi session in place, and you continue here; do not start a new session or pane.`, bundle);
 }
 
 /** The fail-closed prompt when same-session compaction is not possible; the verified Path-A successor takes over. */
