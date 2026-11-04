@@ -2,11 +2,11 @@
 // Tested-By:
 // - test:atdd-flow:same-pane-new-context-verifier
 // Runtime: bun
-// Purpose: Verify a source-authored handover -> same-pane Pi `/new` transition and refresh the seat's runtime binding without Path-A, launch, bind or compaction.
+// Purpose: Verify a handover then same-pane /new and refresh the seat Pi binding.
 
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { type Seat, atomicYaml, exists, paths, readYaml, yaml } from "./core";
+import { type HerdrLocator, type Runtime, type Seat, atomicYaml, exists, paths, readYaml, yaml } from "./core";
 import { type Handover, handoverProblems, handoverReplacementPath } from "./handover";
 
 export type SamePaneLive = { session?: string; sessionPath?: string; herdrSession?: string; pane?: string };
@@ -78,30 +78,81 @@ export async function attestQuiescent(root: string, seat: string, ctx: Quiescenc
   return undefined;
 }
 
+/** A seat record whose runtime is a native Herdr binding that already names a Pi session and its JSONL. */
+type BoundRuntime = Runtime & { pi_session: string; pi_session_path: string };
+type Bound = { runtime: BoundRuntime; locator: HerdrLocator };
+
+/** Everything a guard may consult; one guard decides one refusal. */
+type Evidence = Bound & { root: string; seat: string; live: SamePaneLive; previousSessionFile: string | undefined; handover: Handover };
+type Guard = (evidence: Evidence) => string | undefined | Promise<string | undefined>;
+
+/** The native Herdr binding that a same-pane `/new` refreshes, or undefined when the seat has none. */
+function nativeBinding(record: Seat): Bound | undefined {
+  const runtime = record.runtime, locator = runtime?.addresses.herdr;
+  if (runtime?.application !== "herdr" || runtime.wake !== "native" || typeof locator !== "object") return undefined;
+  if (!runtime.pi_session || !runtime.pi_session_path) return undefined;
+  return { runtime: runtime as BoundRuntime, locator };
+}
+
+const invalidHandover: Guard = ({ seat, handover }) => {
+  const [problem] = structuralProblems(handover, seat);
+  return problem ? `invalid handover for ${seat}: ${problem}` : undefined;
+};
+
+const pathARequest: Guard = async ({ root, seat }) =>
+  await exists(handoverReplacementPath(root, seat)) ? `an active Path-A replacement request exists for ${seat}; a same-pane /new does not replace it` : undefined;
+
+const samePane: Guard = ({ live, locator }) =>
+  live.herdrSession && live.pane && live.herdrSession === locator.session && live.pane === locator.pane ? undefined
+    : `the live Herdr session/pane ${live.herdrSession ?? "?"}:${live.pane ?? "?"} is not the bound pane ${locator.session}:${locator.pane}`;
+
+const liveSessionKnown: Guard = ({ live }) => live.session && live.sessionPath ? undefined : "the live Pi session id or file is unavailable";
+
+const isNewSession: Guard = ({ live, runtime }) =>
+  live.session === runtime.pi_session || resolve(live.sessionPath!) === resolve(runtime.pi_session_path) ? "the live Pi is not a new session (it is the bound session)" : undefined;
+
+const previousIsBound: Guard = ({ previousSessionFile, runtime }) =>
+  previousSessionFile && resolve(previousSessionFile) === resolve(runtime.pi_session_path) ? undefined : `the previous session file is not the bound session ${runtime.pi_session}`;
+
+const notYetConsumed: Guard = async ({ runtime, handover }) => {
+  const receipt = runtime.launch_receipt ? await readYaml<ReceiptRecord>(runtime.launch_receipt).catch(() => undefined) : undefined;
+  return receipt?.same_pane_new?.handover === handover.handover_id ? `handover ${handover.handover_id} was already consumed by a same-pane /new` : undefined;
+};
+
+/** A handover reconstructed by a third party names a Pi session this seat never bound. */
+const namesBoundSession: Guard = ({ runtime, handover }) => {
+  const named = /\|\s*pi session (\S+)\s*\|/.exec(handover.text.split("\n")[1] ?? "")?.[1];
+  return named === runtime.pi_session ? undefined : `handover ${handover.handover_id} names a different Pi session (${named ?? "none"}) than the bound ${runtime.pi_session}; third-party reconstruction is refused`;
+};
+
+const handoverQuiescent: Guard = ({ handover }) => {
+  const inFlight = handoverInFlight(handover.text);
+  return inFlight ? `handover ${handover.handover_id} is not quiescent (in-flight): ${inFlight}` : undefined;
+};
+
+/** The reloaded extension may refresh only a `/new` that passed the session_before_switch gate recently, from the bound source session. */
+const gateAttested: Guard = async ({ root, seat, runtime }) => {
+  const attested = await readYaml<Attestation>(attestationPath(root, seat)).catch(() => undefined);
+  const fresh = attested?.attested_at !== undefined && Date.now() - Date.parse(attested.attested_at) <= attestationTtlMs;
+  return fresh && attested?.source_pi_session === runtime.pi_session ? undefined : "quiescence was not attested: this /new did not pass the session_before_switch gate";
+};
+
+/** Order is the refusal precedence: the first guard that objects names the one reason reported. */
+const lineageGuards: Guard[] = [invalidHandover, pathARequest, samePane, liveSessionKnown, isNewSession, previousIsBound, notYetConsumed, namesBoundSession, handoverQuiescent, gateAttested];
+
 /** Verify every lineage guard for a `/new` landing in the bound pane. Never writes. */
 export async function verifySamePaneNew(root: string, seat: string, live: SamePaneLive, previousSessionFile: string | undefined): Promise<Refusal | VerifiedSamePaneNew> {
-  let record: Seat;
-  try { record = await readYaml<Seat>(paths(root).seatFile(seat)); } catch { return { refused: `seat ${seat} is not readable` }; }
-  const runtime = record.runtime, locator = runtime?.addresses.herdr;
-  if (runtime?.application !== "herdr" || runtime.wake !== "native" || typeof locator !== "object" || !runtime.pi_session || !runtime.pi_session_path) return { refused: `${seat} has no native binding (Herdr session and pane with a bound Pi session) to refresh` };
+  const record = await readYaml<Seat>(paths(root).seatFile(seat)).catch(() => undefined);
+  if (!record) return { refused: `seat ${seat} is not readable` };
+  const bound = nativeBinding(record);
+  if (!bound) return { refused: `${seat} has no native binding (Herdr session and pane with a bound Pi session) to refresh` };
   const handover = await readHandover(root, seat);
   if (!handover) return { refused: `no recorded handover for ${seat}` };
-  const problems = structuralProblems(handover, seat);
-  if (problems.length) return { refused: `invalid handover for ${seat}: ${problems[0]}` };
-  if (await exists(handoverReplacementPath(root, seat))) return { refused: `an active Path-A replacement request exists for ${seat}; a same-pane /new does not replace it` };
-  if (!live.herdrSession || !live.pane || locator.session !== live.herdrSession || locator.pane !== live.pane) return { refused: `the live Herdr session/pane ${live.herdrSession ?? "?"}:${live.pane ?? "?"} is not the bound pane ${locator.session}:${locator.pane}` };
-  if (!live.session || !live.sessionPath) return { refused: "the live Pi session id or file is unavailable" };
-  if (live.session === runtime.pi_session || resolve(live.sessionPath) === resolve(runtime.pi_session_path)) return { refused: "the live Pi is not a new session (it is the bound session)" };
-  if (!previousSessionFile || resolve(previousSessionFile) !== resolve(runtime.pi_session_path)) return { refused: `the previous session file is not the bound session ${runtime.pi_session}` };
-  const receipt = runtime.launch_receipt ? await readYaml<ReceiptRecord>(runtime.launch_receipt).catch(() => undefined) : undefined;
-  if (receipt?.same_pane_new?.handover === handover.handover_id) return { refused: `handover ${handover.handover_id} was already consumed by a same-pane /new` };
-  const named = /\|\s*pi session (\S+)\s*\|/.exec(handover.text.split("\n")[1] ?? "")?.[1];
-  if (named !== runtime.pi_session) return { refused: `handover ${handover.handover_id} names a different Pi session (${named ?? "none"}) than the bound ${runtime.pi_session}; third-party reconstruction is refused` };
-  const inFlight = handoverInFlight(handover.text);
-  if (inFlight) return { refused: `handover ${handover.handover_id} is not quiescent (in-flight): ${inFlight}` };
-  const attested = await readYaml<Attestation>(attestationPath(root, seat)).catch(() => undefined);
-  const fresh = attested?.attested_at && Date.now() - Date.parse(attested.attested_at) <= attestationTtlMs;
-  if (!attested || !fresh || attested.source_pi_session !== runtime.pi_session) return { refused: "quiescence was not attested: this /new did not pass the session_before_switch gate" };
+  const evidence: Evidence = { ...bound, root, seat, live, previousSessionFile, handover };
+  for (const guard of lineageGuards) {
+    const refused = await guard(evidence);
+    if (refused) return { refused };
+  }
   return { record, handover, attestation: attestationPath(root, seat) };
 }
 
