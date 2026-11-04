@@ -11,7 +11,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { type Runtime, type Seat, atomicYaml, canonicalAddress, desk, exists, has, now, paths, project, readYaml, required, runOutput, seat, words, yaml } from "./core";
 import { type Task, terminal } from "./tasks";
 import { resolveExactSessionAdoptionAuthorization } from "./adoption-authorizations";
-import { exactFailedAdoptionProof } from "./exact-adoption-recovery";
+import { exactFailedAdoptionProof, requestlessAdoptionEvidence } from "./exact-adoption-recovery";
 import { isExactOperatorSeat, operatorActivation, operatorRelaunchSection } from "./operator-launch";
 import { readRuntimeState } from "./runtime-state";
 import { type StaleMainRecovery, buildStaleMainRecovery, listedPiAgents, relocationFor, replaceActiveRequest, staleRecoveryMatches } from "./stale-main-recovery";
@@ -229,6 +229,12 @@ async function failedAdoptionTaskEligible(root: string, record: Seat, address: s
     && await isExactMainSeat(root, record, address);
 }
 
+/** The only failure an exact-adoption fallback may replace: a Path-A request that is absent, stale or no longer matches. */
+export class PathARefusal extends Error {}
+
+const noPathARequest = (address: string) => `${address} requires one validated Path-A replacement request; refusing runtime launch.`;
+const staleTuple = "Path-A replacement source tuple no longer matches the recorded runtime or ready main takeover task.";
+
 export type MainLaunchReplacement = { request?: HandoverReplacementRequest; taskId: string; task: Task; bootstrap?: { handover: string }; exactAdoption?: true };
 
 /**
@@ -255,10 +261,11 @@ export async function replacementForMainLaunch(root: string, record: Seat, addre
   const request = await readHandoverReplacement(root, address).catch(async () => {
     const bootstrap = await bootstrapForMainLaunch(root, record, address);
     if (bootstrap) return bootstrap;
-    throw new Error(`${address} requires one validated Path-A replacement request; refusing runtime launch.`);
+    throw new PathARefusal(noPathARequest(address));
   });
   if ("taskId" in request) return request;
-  const task = await readYaml<Task>(paths(root).taskFile(record.project, request.task));
+  // A request naming a task that no longer exists is stale evidence, not an unexpected failure.
+  const task = await readYaml<Task>(paths(root).taskFile(record.project, request.task)).catch(() => { throw new PathARefusal(staleTuple); });
   const failedAdoption = await exactFailedAdoptionProof(root, record, address, request,
     (task) => failedAdoptionTaskEligible(root, record, address, task));
   const canonicalLaunch = replacementMatchesRuntime(record.runtime, request)
@@ -267,7 +274,7 @@ export async function replacementForMainLaunch(root: string, record: Seat, addre
       : mainLaunchEligible(root, record, address, task));
   const failedAdoptionRecovery = Boolean(failedAdoption && !failedAdoption.runtimeState);
   if (!canonicalLaunch && !failedAdoptionRecovery) {
-    throw new Error("Path-A replacement source tuple no longer matches the recorded runtime or ready main takeover task.");
+    throw new PathARefusal(staleTuple);
   }
   return { request, taskId: request.task, task };
 }
@@ -281,7 +288,7 @@ export async function replacementForMainLaunch(root: string, record: Seat, addre
 export async function mainLaunchReplacement(root: string, record: Seat, address: string, authorized: boolean): Promise<MainLaunchReplacement | undefined> {
   try { return await replacementForMainLaunch(root, record, address); }
   catch (refusal) {
-    if (!authorized) throw refusal;
+    if (!authorized || !(refusal instanceof PathARefusal)) throw refusal;
     const ready = await readyMainTasks(root, record, address, (task) => task.status === "todo" || evidenceEmptyRecoveryTask(task));
     if (ready.length !== 1) throw refusal;
     return { taskId: ready[0]!, task: await readYaml<Task>(paths(root).taskFile(record.project, ready[0]!)), exactAdoption: true };
@@ -845,8 +852,30 @@ async function resumedBootstrapLaunch(root: string, address: string) {
   if (discrepancies.length) throw new Error("Bootstrap successor is not reconciled against the live Desk.");
 }
 
+/** Reconcile an exact adoption that used no Path-A request against its own immutable receipt. */
+async function resumedExactAdoption(record: Seat, address: string, evidence: NonNullable<Awaited<ReturnType<typeof requestlessAdoptionEvidence>>>) {
+  const { receipt } = evidence, runtime = record.runtime, locator = runtime?.addresses.herdr;
+  const verified = [
+    evidence.taskReady,
+    evidence.immutable,
+    runtime?.application === "herdr" && runtime.wake === "native",
+    runtime?.pi_session === receipt.pi_session && runtime?.pi_session_path === receipt.pi_session_path,
+    typeof locator !== "string" && locator?.session === receipt.herdr_session && locator?.pane === receipt.pane,
+    evidence.heartbeat,
+  ];
+  const discrepancies = ["exact-adoption receipt and task", "immutable authorization, backup and single use", "native delivery", "Pi session/JSONL path", "target tuple", "fresh heartbeat"]
+    .filter((_, index) => !verified[index]);
+  console.log(`RESUMED; verified ${verified.filter(Boolean).length}/${verified.length}; discrepancies: ${discrepancies.join(", ") || "none"}.`);
+  if (discrepancies.length) throw new Error("Exact-adoption successor is not reconciled against the live Desk.");
+}
+
 export async function resumedHandoverReplacement(root: string, address: string) {
   const resolved = await canonicalAddress(root, address);
+  const main = await seat(root, resolved);
+  if (await isExactMainSeat(root, main, resolved)) {
+    const adoption = await requestlessAdoptionEvidence(root, main, resolved, (task) => failedAdoptionTaskEligible(root, main, resolved, task));
+    if (adoption) return resumedExactAdoption(main, resolved, adoption);
+  }
   if (!await exists(handoverReplacementPath(root, resolved)) && await isExactMainSeat(root, await seat(root, resolved), resolved)) return resumedBootstrapLaunch(root, resolved);
   const [request, record] = await Promise.all([readHandoverReplacement(root, resolved), seat(root, resolved)]);
   const runtime = record.runtime;
