@@ -237,9 +237,14 @@ export async function launchBehavioralReview(
   const mode = vcsMode(await project(root, projectName));
   const head = await cleanDeliveryRevision(mode, owner.worktree, owner.branch);
 
+  // Only the worktree-pinned ATDD Bun may run the gate. A fresh worktree without it must not fall back to a PATH binary.
+  const pinnedBun = join(owner.worktree, "node_modules", ".bin", "atdd-bun");
+  if (!await exists(pinnedBun)) {
+    throw new Error(`Pinned ATDD Bun is missing in ${owner.worktree}; run \`bun install --frozen-lockfile\` in that worktree, then retry.`);
+  }
   let gateOutput: string;
   try {
-    gateOutput = await runOutput(["atdd-bun"], owner.worktree);
+    gateOutput = await runOutput([pinnedBun], owner.worktree);
   } catch (error) {
     throw new Error(`Deterministic ATDD Bun gates are red; do not invoke the semantic reviewer: ${(error as Error).message}`);
   }
