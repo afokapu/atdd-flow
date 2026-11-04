@@ -7,7 +7,7 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { type Checkpoint, atomicYaml, canonicalAddress, exists, now, paths, readYaml, seat as readSeat } from "./core";
-import { type Handover, contextHandoverThreshold, recordHandoverText } from "./handover";
+import { type Handover, contextHandoverThreshold, handoverProblems, recordHandoverText } from "./handover";
 
 /** Upper bound (inclusive) of the compaction window; above it only the fallback path remains. */
 const windowCeiling = 90;
@@ -15,7 +15,7 @@ const compactTimeoutMs = 120_000;
 
 export type FallbackReason =
   | "above-window" | "invalid-handover" | "foreign-seat" | "unknown-first-kept-entry" | "identity-drift"
-  | "postcondition" | "nothing-to-compact" | "already-compacted" | "compaction-failed";
+  | "postcondition" | "nothing-to-compact" | "already-compacted" | "compaction-failed" | "handover-not-recorded" | "identity-unavailable";
 /** Typed fail-closed result: the caller (T3) routes it to the verified successor path; this engine never relaunches. */
 export type Fallback = { ok: false; fallback: true; reason: FallbackReason; detail: string };
 const fallback = (reason: FallbackReason, detail: string): Fallback => ({ ok: false, fallback: true, reason, detail });
@@ -53,6 +53,33 @@ export async function prepareHandover(input: PrepareInput): Promise<PreparedHand
   return { ok: true, seat: resolved, handover_id: outcome.id, text: input.handoverText };
 }
 
+type AdoptInput = { root: string; seat: string; actor: string; since: string; percent: number };
+
+/**
+ * Adopts the handover the seat itself recorded after `since` (the prompt), re-validating it, and records the
+ * checkpoint unless the seat wrote a current one. A missing, older, foreign or invalid record is a typed fallback.
+ */
+export async function adoptRecordedHandover(input: AdoptInput): Promise<PreparedHandover | Fallback> {
+  const resolved = await canonicalAddress(input.root, input.seat);
+  if (await canonicalAddress(input.root, input.actor) !== resolved) return fallback("foreign-seat", `${input.actor} may not compact ${resolved}.`);
+  const file = paths(input.root).handoverFile(resolved);
+  const record = await exists(file) ? await readYaml<Handover>(file) : undefined;
+  if (!record || record.recorded_at < input.since) return fallback("handover-not-recorded", `no handover recorded after the compaction prompt (${record ? `latest ${record.handover_id}` : "none"}).`);
+  const problems = handoverProblems(record.text, resolved, record.supersedes === "none" ? undefined : record.supersedes);
+  if (record.seat !== resolved || problems.length) return fallback("invalid-handover", problems.join("; ") || `recorded handover is for ${record.seat}.`);
+  const checkpointFile = paths(input.root).checkpointFile(resolved);
+  const current = await exists(checkpointFile) ? await readYaml<Checkpoint>(checkpointFile) : undefined;
+  if (!current || current.updated_at < input.since) {
+    const checkpoint: Checkpoint = {
+      schema: "atdd-workflow/checkpoint/v1", seat: resolved, status: "active", updated_at: now(),
+      summary: `Same-session compaction at ${input.percent}% with handover ${record.handover_id}.`,
+      next_action: `Resume from section 4 of the recorded handover: atdd-flow handover show ${resolved}`,
+    };
+    await atomicYaml(checkpointFile, checkpoint);
+  }
+  return { ok: true, seat: resolved, handover_id: record.handover_id, text: record.text };
+}
+
 type DraftInput = { prepared: PreparedHandover; bundle?: string; branchEntries: { id: string }[]; firstKeptEntryId?: string | null };
 
 /** The typed draft for Pi's turn_end/agent_before_settle path; null keeps no tail, any explicit id must be a branch entry. */
@@ -60,7 +87,7 @@ export function buildCompactionDraft(input: DraftInput): { ok: true; draft: Comp
   const kept = input.firstKeptEntryId ?? null;
   if (kept !== null && !input.branchEntries.some((entry) => entry.id === kept)) return fallback("unknown-first-kept-entry", `firstKeptEntryId ${kept} is not a branch entry.`);
   const { prepared } = input;
-  const summary = [`Flow same-session handover ${prepared.handover_id} for ${prepared.seat}:`, prepared.text.trimEnd(), ...(input.bundle ? [input.bundle] : [])].join("\n");
+  const summary = [`Flow same-session handover ${prepared.handover_id} for ${prepared.seat}; continue in this session from section 4 after: atdd-flow open ${prepared.seat}`, prepared.text.trimEnd(), ...(input.bundle ? [input.bundle] : [])].join("\n");
   return { ok: true, draft: { type: "compaction", summary, firstKeptEntryId: kept, details: { seat: prepared.seat, handover_id: prepared.handover_id } } };
 }
 
