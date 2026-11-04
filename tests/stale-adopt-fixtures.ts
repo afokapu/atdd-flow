@@ -27,7 +27,9 @@ export const selectEconomy = async () => ({ available: true as const, model: "te
 export const readyTask = { title: "Main takeover", status: "todo", done_when: [{ text: "Successor resumes." }] };
 
 /** What the fake Herdr currently reports for the target pane. */
-export type Live = { path?: string; cwd: string; pi: number; others: Array<{ pane: string; path: string }>; startable?: boolean };
+export type Live = { path?: string; cwd: string; pi: number; others: Array<{ pane: string; path: string }>; startable?: boolean;
+  /** How a hand-started Pi answers `agent get`: a foreign record without cwd, or an error. Absent: the Flow-launch shape. */
+  agentGet?: "foreign" | "unknown" };
 
 const sessionOf = (value: string) => ({ kind: "path", source: "herdr:pi", value });
 
@@ -57,7 +59,11 @@ export function harness(name: Name, live: Live, repository: string) {
     "pane get": () => ({ pane: paneRecord(pane, live) }),
     "pane process-info": () => ({ process_info: { pane_id: pane, shell_pid: 42,
       foreground_processes: Array.from({ length: live.path ? live.pi : 0 }, (_, index) => ({ name: "node", argv0: "pi", pid: 100 + index, cwd: live.cwd })) } }),
-    "agent get": () => ({ agent: { name: agentName, agent: "pi", pane_id: pane, agent_status: "idle", agent_session: sessionOf(live.path!), cwd: live.cwd } }),
+    "agent get": () => {
+      if (live.agentGet === "unknown") throw new Error("agent not found");
+      if (live.agentGet === "foreign") return { agent: { name: "pi-hand-started", agent: "pi", pane_id: pane, agent_session: sessionOf(live.path!) } };
+      return { agent: { name: agentName, agent: "pi", pane_id: pane, agent_status: "idle", agent_session: sessionOf(live.path!), cwd: live.cwd } };
+    },
     "agent list": () => ({ agents: agentList(agentName, pane, live) }),
     // Only an explicitly startable pane (a vacated shell) may launch; the adopted JSONL then becomes the live occupant.
     "pane run": () => ({ pane_id: pane }),
