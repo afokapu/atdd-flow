@@ -13,6 +13,7 @@ import { type NoticeState, createNoticeState, deliveredDirectiveText, refreshDel
 import { handoverThresholdInstruction, runtimeStartupInstruction, successorInstruction } from "../../src/collaboration-policy";
 import { type RecoveryMode, recoveryFor } from "../../src/recovery-bundle";
 import { contextHandoverThreshold, readHandoverReplacement } from "../../src/handover";
+import { attestQuiescent, clearAttestation, refreshSamePaneNew, samePaneNewLineage, verifySamePaneNew } from "../../src/same-pane-new";
 
 type Thread = { id?: unknown; participants?: unknown; subject?: unknown };
 export type Mail = { id?: unknown; from?: unknown; to?: unknown; subject?: unknown; created_at?: unknown };
@@ -527,9 +528,48 @@ export default function (pi: ExtensionAPI, environment: NodeJS.ProcessEnv = proc
       }
     },
   });
-  pi.on("session_start", async (_event, ctx) => {
+  // Same-pane `/new` gate: refuse (cancel the switch) unless quiescence is proven; unknown signals refuse.
+  const refuseSamePaneNew = (reason: string) => pi.sendMessage({
+    customType: "atdd-flow-same-pane-new-refused",
+    content: `SYSTEM: Same-pane /new refused for ${seat}: ${reason}. No binding was changed.`,
+    display: true, details: { seat, reason, authority: "same-pane-new" },
+  }, { triggerTurn: false });
+  (pi as { on(event: string, handler: (event: { reason?: string }, ctx: unknown) => unknown): unknown }).on("session_before_switch", async (event, rawContext) => {
+    if (event.reason !== "new") return undefined;
+    const ctx = rawContext as WakeContext & { isIdle?: unknown; hasPendingMessages?: unknown };
+    let refusal: string | undefined;
+    try { refusal = await attestQuiescent(root, seat, ctx, ctx.sessionManager?.getSessionId?.()); }
+    catch (error) { refusal = `quiescence unknown: ${error instanceof Error ? error.message : String(error)}`; }
+    if (!refusal) return undefined;
+    refuseSamePaneNew(refusal);
+    return { cancel: true };
+  });
+  pi.on("session_start", async (event, ctx) => {
     const wakeContext = ctx as unknown as WakeContext;
-    const identity = wakeIdentity(seat, wakeContext);
+    const startEvent = event as { reason?: string; previousSessionFile?: string };
+    const manager = wakeContext.sessionManager;
+    // Only reason "new" may refresh the binding; the verifier writes nothing on any refusal.
+    let samePaneNew: { handover: string } | undefined;
+    if (startEvent.reason === "new") {
+      const live = { session: manager?.getSessionId?.(), sessionPath: manager?.getSessionFile?.(), herdrSession: environment.ATDD_FLOW_HERDR_SESSION ?? environment.HERDR_SESSION, pane: environment.ATDD_FLOW_HERDR_PANE ?? environment.HERDR_PANE_ID };
+      try {
+        const verified = await verifySamePaneNew(root, seat, live, startEvent.previousSessionFile);
+        if ("refused" in verified) { await clearAttestation(root, seat).catch(() => undefined); refuseSamePaneNew(verified.refused); }
+        else {
+          await refreshSamePaneNew(root, seat, live as Required<typeof live>, verified);
+          samePaneNew = { handover: verified.handover.handover_id };
+          pi.sendMessage({
+            customType: "atdd-flow-same-pane-new-resumed",
+            content: `SYSTEM: RESUMED handover ${samePaneNew.handover} after a same-pane /new for ${seat}. Fresh context: run \`atdd-flow handover show ${seat}\`, reconcile the Flow inbox, then continue the recorded next actions. The binding now names Pi session ${live.session}; do not bind, launch, change pane or compact.`,
+            display: true, details: { seat, handover: samePaneNew.handover, pi_session: live.session, authority: "same-pane-new" },
+          }, { triggerTurn: true, deliverAs: "followUp" });
+        }
+      } catch (error) { refuseSamePaneNew(`verification failed: ${error instanceof Error ? error.message : String(error)}`); }
+    }
+    // After a verified /new the launcher variables are stale; the live session is the bound one.
+    const sameLineage = samePaneNew !== undefined || (startEvent.reason !== "new" && await samePaneNewLineage(root, seat, manager?.getSessionId?.()));
+    const liveEnvSession = sameLineage ? manager?.getSessionId?.() : environment.ATDD_FLOW_PI_SESSION;
+    const identity = { ...wakeIdentity(seat, wakeContext), ...(sameLineage ? { pi_session: liveEnvSession } : {}) };
     const wake = unmatchedWakeRequest(branchOf(wakeContext), identity);
     // Capability is evidence of a verified activation under this extension version; it never lives in runtime state.
     const announceCapability = () => { try { pi.appendEntry(wakeCapabilityType, { seat, pi_session: identity.pi_session, pane: identity.pane }); } catch { /* The host re-checks capability; absence only forces a reload. */ } };
@@ -557,7 +597,7 @@ export default function (pi: ExtensionAPI, environment: NodeJS.ProcessEnv = proc
     };
     const failWake = (reason: string) => { if (wake && !wakeSettled) { wakeSettled = true; wakeResult(String(wake.request_id), "failed", { reason }); } };
     const sessionManager = (ctx as { sessionManager?: { getSessionId?: () => string; getSessionFile?: () => string | undefined } }).sessionManager;
-    const liveSession = environment.ATDD_FLOW_PI_SESSION ?? sessionManager?.getSessionId?.();
+    const liveSession = liveEnvSession ?? sessionManager?.getSessionId?.();
     // One display-only notice per session: a refused, timed-out or failed activation must never be silent, and never wakes the agent.
     let noticed = false;
     const noticeActivation = async (transport: "active" | "inactive", error?: string) => {
@@ -587,7 +627,7 @@ export default function (pi: ExtensionAPI, environment: NodeJS.ProcessEnv = proc
       });
     } });
     await runtime.start();
-    const piSession = environment.ATDD_FLOW_PI_SESSION;
+    const piSession = liveEnvSession;
     const herdrSession = environment.ATDD_FLOW_HERDR_SESSION;
     const pane = environment.ATDD_FLOW_HERDR_PANE;
     if (!piSession && !herdrSession && !pane) {
@@ -595,7 +635,7 @@ export default function (pi: ExtensionAPI, environment: NodeJS.ProcessEnv = proc
         hostActivatedAt = Date.now();
         if (await runtime.activate()) {
           announceCapability();
-          if (await completeWake()) return;
+          if (await completeWake() || samePaneNew) return;
           const bundle = await recovery(root, seat, "start", sessionManager?.getSessionId?.());
           const notice = "Notices created before this session were not replayed; run atdd-flow status seat " + seat + " for unanswered mail.";
           pi.sendMessage({ customType: "atdd-flow-start", content: `${runtimeStartupInstruction(seat, bundle)} ${notice}`, display: true, details: { seat, root } }, { triggerTurn: true, deliverAs: "followUp" });
@@ -615,6 +655,8 @@ export default function (pi: ExtensionAPI, environment: NodeJS.ProcessEnv = proc
           if (ctx.hasUI) ctx.ui.notify(`ATDD Flow native mail active for ${seat}`, "info");
           return;
         }
+        // The same-pane /new already posted its single resume turn; no second start turn.
+        if (samePaneNew) { if (ctx.hasUI) ctx.ui.notify(`ATDD Flow native mail active for ${seat}`, "info"); return; }
         const request = await readHandoverReplacement(root, seat).catch(() => undefined);
         const successor = request && request.source.pi_session !== piSession ? request : undefined;
         const bundle = await recovery(root, seat, successor ? "successor" : "start", piSession);
