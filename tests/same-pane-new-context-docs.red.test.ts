@@ -1,9 +1,10 @@
 // URN: test:atdd-flow:same-pane-new-context-docs
-// Acceptance: acc:flow:E036-UNIT-001
+// Acceptance: acc:flow:E041-UNIT-001
+// Acceptance: acc:flow:E036-UNIT-001 - historical record retained unchanged; superseded for current policy by E041.
 // Phase: UNIT
 // Docs/policy text only: pins the owner-directed source-authored handover -> same-pane /new procedure
 // (M-20261104T182609Z-owner-decision_ecd3938c; quiescence per M-20261104T194728Z-message_c62c68d2).
-// Runtime prompt/behavior and /new verification belong to other tasks.
+// Supersedes the historical acc:flow:E036-UNIT-001 compaction wording. Runtime prompt/behavior and /new verification belong to other tasks.
 import { expect, test } from "bun:test";
 import { join } from "node:path";
 
@@ -79,4 +80,12 @@ test("RED: the handover template, validation, RESUMED reporting and Path-A comma
   expect(readme).toContain("`handover replace`");
   expect(readme).toContain("--supersede-consumed");
   expect(readme).toContain("No fallback model, relaunch, compaction, seat reassignment, or session replacement exists");
+});
+
+test("RED: the historical E036 record is retained and E041 explicitly supersedes it", async () => {
+  const historical = await Bun.file(join(root, "plan", "flow", "E036.yaml")).text();
+  expect(historical).toContain("urn: acc:flow:E036-UNIT-001");
+  expect(historical).toContain("same-session compaction");
+  const current = await Bun.file(join(root, "plan", "flow", "E041.yaml")).text();
+  expect(current).toMatch(/supersedes the historical\s+acc:flow:E036-UNIT-001/);
 });

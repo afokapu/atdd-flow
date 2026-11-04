@@ -1,0 +1,13 @@
+urn: acc:flow:E041-UNIT-001
+phase: UNIT
+description: >-
+  The lifecycle convention and README state the owner-directed context transition (owner decision
+  M-20261104T182609Z-owner-decision_ecd3938c; quiescence per M-20261104T194728Z-message_c62c68d2): at ~80%
+  context the source reaches a quiescent point (no in-flight push, rebase, review submission or test run),
+  authors the canonical handover listing unexecuted message IDs, exact branch head, remote push state and
+  pending writes, and runs /new in the same bound pane and Pi process; the fresh context runs handover
+  show, re-verifies remote state before any push, and reconciles its inbox. A coordinator-authored handover
+  is only for a source past its window and is unverified. Compaction is not the transition mechanism and
+  /new is not claimed verified until its verifier releases. This acceptance supersedes the historical
+  acc:flow:E036-UNIT-001 (80-90% same-session compaction wording, PR #122), which is retained unchanged as
+  a record and no longer describes current policy. Text only; no runtime behavior change.
