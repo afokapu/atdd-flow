@@ -10,9 +10,10 @@ import { type TranscriptEntry, customEntries, wakeCapabilityType, wakeRequestIdP
 import { inPlaceAdoptionReceiptMatches } from "../../src/exact-adoption-recovery";
 import { activationNotice, diagnoseMailActivation, expectsNativeMail } from "../../src/mail-activation-notice";
 import { type NoticeState, createNoticeState, deliveredDirectiveText, refreshDelivered, sendSettledDirective, sendTaskDirective, shouldNotifyMail } from "../../src/next-action-notices";
-import { handoverThresholdInstruction, runtimeStartupInstruction, successorInstruction } from "../../src/collaboration-policy";
+import { runtimeStartupInstruction, successorInstruction } from "../../src/collaboration-policy";
+import { type Directive, createCompactionSession } from "../../src/compaction-session";
 import { type RecoveryMode, recoveryFor } from "../../src/recovery-bundle";
-import { contextHandoverThreshold, readHandoverReplacement } from "../../src/handover";
+import { readHandoverReplacement } from "../../src/handover";
 
 type Thread = { id?: unknown; participants?: unknown; subject?: unknown };
 export type Mail = { id?: unknown; from?: unknown; to?: unknown; subject?: unknown; created_at?: unknown };
@@ -441,7 +442,6 @@ export default function (pi: ExtensionAPI, environment: NodeJS.ProcessEnv = proc
   const seat = environment.ATDD_WORKFLOW_SEAT;
   if (!root || !seat) return;
   let runtime: ReturnType<typeof createPiRuntime> | undefined;
-  let handoverPrompted = false;
   // Host-attach only: mail older than this activation is consumed without a prompt, so a long backlog cannot trigger one turn per message.
   let hostActivatedAt: number | undefined;
   const notices: NoticeState = createNoticeState();
@@ -457,22 +457,19 @@ export default function (pi: ExtensionAPI, environment: NodeJS.ProcessEnv = proc
     // Run completion is not task completion; one bounded continuation per unchanged directive.
     await sendSettledDirective(host, root, seat, notices);
   });
-  pi.on("turn_end", async (_event, ctx) => {
-    if (handoverPrompted) return;
-    const percent = ctx.getContextUsage()?.percent;
-    if (percent === null || percent === undefined) return;
-    try {
-      const threshold = await contextHandoverThreshold(root);
-      if (percent < threshold) return;
-      handoverPrompted = true;
-      const bundle = await recovery(root, seat, "threshold", environment.ATDD_FLOW_PI_SESSION);
-      pi.sendMessage({
-        customType: "atdd-flow-context-handover-replacement",
-        content: handoverThresholdInstruction(percent, threshold, bundle),
-        display: true, details: { seat, threshold, percent, authority: "handover" },
-      }, { triggerTurn: true, deliverAs: "followUp" });
-    } catch { /* Desk policy is re-read on the next safe boundary. */ }
+  // Same-session compaction is the primary handover; every failure path is a typed fail-closed fallback to Path-A.
+  const compaction = createCompactionSession({ root, seat, environment, recovery: () => recovery(root, seat, "threshold", environment.ATDD_FLOW_PI_SESSION) });
+  const announce = (directive?: Directive) => {
+    if (directive) pi.sendMessage({ customType: "atdd-flow-context-handover-replacement", content: directive.content, display: true, details: directive.details }, { triggerTurn: true, deliverAs: "followUp" });
+  };
+  pi.on("turn_end", async (_event, ctx) => announce(await compaction.turnEnd(ctx.getContextUsage()?.percent)));
+  pi.on("agent_before_settle", async (_event, ctx) => {
+    const settled = await compaction.beforeSettle(branchOf(ctx) as { id: string }[]);
+    announce(settled.directive);
+    return settled.boundary;
   });
+  pi.on("session_compact", async (event) => announce(await compaction.compacted(event as Parameters<typeof compaction.compacted>[0])));
+  pi.on("session_compact_failed", async (event) => announce(await compaction.compactFailed(event)));
   pi.on("turn_end", async (_event, ctx) => {
     const sourceSession = environment.ATDD_FLOW_PI_SESSION;
     if (!sourceSession) return;

@@ -81,19 +81,28 @@ async function recorded(root: string, address: string) {
   return await exists(file) ? await readYaml<Handover>(file) : undefined;
 }
 
+/** Validate handover text for `resolved` and, unless `check`, record it as the seat's durable handover. Checkpoints are never touched. */
+export async function recordHandoverText(root: string, resolved: string, text: string, check = false) {
+  const prior = await recorded(root, resolved);
+  const problems = handoverProblems(text, resolved, prior?.handover_id);
+  if (problems.length) return { ok: false as const, problems };
+  const [, , , id, supersedes] = header.exec(text.split(/\r?\n/, 1)[0]!)! as unknown as [string, string, string, string, string];
+  if (!check) {
+    const record: Handover = { schema: "atdd-workflow/handover/v1", seat: resolved, handover_id: id, supersedes, recorded_at: now(), text };
+    await atomicYaml(paths(root).handoverFile(resolved), record);
+  }
+  return { ok: true as const, id };
+}
+
 /** Validate a handover file and, unless `--check`, record it as the seat's durable handover. Checkpoints are never touched. */
 export async function recordHandover(root: string, address: string, args: string[]) {
   const resolved = await canonicalAddress(root, address);
   await seat(root, resolved);
   const text = await readFile(required(words(args, "--file"), "--file"), "utf8");
-  const prior = await recorded(root, resolved);
-  const problems = handoverProblems(text, resolved, prior?.handover_id);
-  if (problems.length) throw new Error(`Handover rejected for ${resolved}; nothing was recorded:\n${problems.map((problem) => `- ${problem}`).join("\n")}`);
-  const [, , , id, supersedes] = header.exec(text.split(/\r?\n/, 1)[0]!)! as unknown as [string, string, string, string, string];
-  if (has(args, "--check")) return console.log(`Handover valid: ${id} for ${resolved} (checked only; not recorded).`);
-  const record: Handover = { schema: "atdd-workflow/handover/v1", seat: resolved, handover_id: id, supersedes, recorded_at: now(), text };
-  await atomicYaml(paths(root).handoverFile(resolved), record);
-  console.log(`Recorded handover ${id} for ${resolved}.`);
+  const check = has(args, "--check");
+  const outcome = await recordHandoverText(root, resolved, text, check);
+  if (!outcome.ok) throw new Error(`Handover rejected for ${resolved}; nothing was recorded:\n${outcome.problems.map((problem) => `- ${problem}`).join("\n")}`);
+  console.log(check ? `Handover valid: ${outcome.id} for ${resolved} (checked only; not recorded).` : `Recorded handover ${outcome.id} for ${resolved}.`);
 }
 
 export async function showHandover(root: string, address: string) {
