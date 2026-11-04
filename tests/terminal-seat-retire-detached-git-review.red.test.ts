@@ -89,7 +89,7 @@ async function finishTask(site: string, environment: Record<string, string | und
 
 
 /** A finished review driver `rv` whose worktree is a detached Git checkout while the project (and primary) are governed by JJ. */
-async function detachedReview(options: { reachable: boolean; dirty?: boolean; keepBranch?: boolean }) {
+async function detachedReview(options: { reachable: boolean; dirty?: boolean; keepBranch?: boolean; branchAhead?: boolean; describeNew?: boolean }) {
   const fixture = await desk(["rv"]);
   const worktree = join(fixture.worktrees, "rv");
   await finishTask(fixture.site, fixture.clean, "driver.rv@demo", "W-rv");
@@ -100,6 +100,10 @@ async function detachedReview(options: { reachable: boolean; dirty?: boolean; ke
   }
   const tip = await git(worktree, "rev-parse", "HEAD");
   await git(worktree, "checkout", "--detach");
+  if (options.branchAhead) {
+    // The seat branch ref survives with a commit the detached review never had: unmerged work the proof must not overlook.
+    await git(fixture.repository, "update-ref", "refs/heads/delivery/rv", await git(fixture.repository, "-c", "user.email=test@example.test", "-c", "user.name=Test", "commit-tree", `${tip}^{tree}`, "-p", tip, "-m", "unmerged branch-only commit"));
+  }
   if (!options.keepBranch) await git(fixture.repository, "branch", "-D", "delivery/rv");
   if (options.dirty) await writeFile(join(worktree, "scratch.txt"), "uncommitted\n");
   // The repository becomes a colocated JJ repository (Git HEAD detached) and the project policy becomes JJ.
@@ -107,6 +111,13 @@ async function detachedReview(options: { reachable: boolean; dirty?: boolean; ke
   expect(await jj.exited, await new Response(jj.stderr).text()).toBe(0);
   const projectFile = join(fixture.site, "work", "demo", "project.yaml");
   await writeFile(projectFile, `vcs: jj\n${await readFile(projectFile, "utf8")}`);
+  if (options.describeNew) {
+    // The JJ primary moves on: its working copy is described and a new empty change is started, leaving Git HEAD detached on a non-main commit.
+    for (const args of [["describe", "-m", "primary working copy"], ["new"]]) {
+      const step = Bun.spawn(["jj", ...args], { cwd: fixture.repository, stdout: "pipe", stderr: "pipe" });
+      expect(await step.exited, await new Response(step.stderr).text()).toBe(0);
+    }
+  }
   return { ...fixture, worktree, tip };
 }
 
@@ -147,4 +158,18 @@ test("guard: a detached Git review at a commit not reachable from main is refuse
 
 test("guard: retirement authorization is unchanged for detached Git reviews", async () => {
   await expectRefused(await detachedReview({ reachable: true }), /Only .* may retire/, "driver.other@demo");
+});
+
+test("RED: a detached primary after `jj describe` + `jj new` still proves the review merged against the configured primary branch", async () => {
+  const fixture = await detachedReview({ reachable: true, describeNew: true });
+  expect(await git(fixture.repository, "branch", "--show-current")).toBe("");
+  await expectRetired(fixture);
+});
+
+test("guard: a detached primary does not make an unmerged review provable", async () => {
+  await expectRefused(await detachedReview({ reachable: false, describeNew: true }), /./);
+});
+
+test("guard: a surviving seat branch ahead of the detached review is unmerged work and is refused", async () => {
+  await expectRefused(await detachedReview({ reachable: true, keepBranch: true, branchAhead: true }), /./);
 });

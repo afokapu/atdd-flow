@@ -279,7 +279,7 @@ async function finishOrProveMerged(root: string, projectName: string, owner: Sea
   try {
     return await runOutput([...await retirementBun(root, projectName), "worktree", "finish", "--delete-branch", "--vcs", mode], owner.worktree);
   } catch (error) {
-    const proof = config.repository && await exists(owner.worktree) ? await terminalMergeProof(config.repository, owner, mode) : undefined;
+    const proof = config.repository && await exists(owner.worktree) ? await terminalMergeProof(config.repository, owner, mode, config.roles.main?.branch) : undefined;
     if (!proof) throw error;
     return `Worktree finish refused (${(error as Error).message}); merge proof: ${proof}; worktree ${owner.worktree} and branch ${owner.branch} retained.`;
   }
