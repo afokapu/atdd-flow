@@ -68,6 +68,16 @@ async function jjTerminalMergeProof(repository: string, owner: Seat) {
 }
 
 /**
+ * The commit being proven merged. A detached review worktree has no checked-out branch, so its HEAD is the tip; otherwise the
+ * seat branch must exist and is the tip, as before.
+ */
+async function deliveryTip(repository: string, owner: Seat) {
+  const checkedOut = await runOutput(["git", "-C", owner.worktree, "branch", "--show-current"]);
+  if (!checkedOut) return runOutput(["git", "-C", owner.worktree, "rev-parse", "--verify", "HEAD^{commit}"]);
+  return runOutput(["git", "-C", repository, "rev-parse", "--verify", `refs/heads/${owner.branch}`]);
+}
+
+/**
  * Proves a retiring driver has no unmerged work without `worktree finish`: the worktree is clean and at the branch tip, and that tip
  * is reachable from the primary branch or is the head of a merged PR whose merge commit is on it. Returns the evidence, or undefined.
  * A JJ driver is proved through its delivered head (`@-`) and a clean empty working copy, with zero or one bookmark.
@@ -77,7 +87,7 @@ export async function terminalMergeProof(repository: string, owner: Seat, mode: 
   try {
     if (mode === "jj") return await jjTerminalMergeProof(repository, owner);
     const primary = await runOutput(["git", "-C", repository, "branch", "--show-current"]);
-    const tip = await runOutput(["git", "-C", repository, "rev-parse", "--verify", `refs/heads/${owner.branch}`]);
+    const tip = await deliveryTip(repository, owner);
     if (!primary || !await worktreeIsAtTip(owner.worktree, tip)) return undefined;
     if (await isAncestor(repository, tip, primary)) return `branch tip ${tip} is reachable from ${primary}`;
     const merge = await squashMergeProof(repository, owner.branch, tip, primary);

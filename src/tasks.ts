@@ -260,15 +260,26 @@ async function retirementBun(root: string, projectName: string) {
 }
 
 /**
+ * The VCS a worktree actually uses. Project policy decides new work, but a detached Git review checkout under a JJ project has no JJ
+ * workspace, so finishing it as JJ would demand a JJ repo and exported bookmark it cannot have. A JJ workspace keeps the policy.
+ */
+async function worktreeVcs(worktree: string, policy: "git" | "jj") {
+  if (policy === "git" || !await exists(worktree)) return policy;
+  try { return await realpath(await runOutput(["jj", "root"], worktree)) === await realpath(worktree) ? "jj" as const : "git" as const; }
+  catch { return "git" as const; }
+}
+
+/**
  * ATDD Bun removes a clean merged worktree and its branch. When it refuses (a squash-merged or post-JJ branch it cannot prove
  * merged), retirement proceeds only on independent merge proof; the worktree and branch are then retained and the refusal stands otherwise.
  */
 async function finishOrProveMerged(root: string, projectName: string, owner: Seat) {
   const config = await project(root, projectName);
+  const mode = await worktreeVcs(owner.worktree, vcsMode(config));
   try {
-    return await runOutput([...await retirementBun(root, projectName), "worktree", "finish", "--delete-branch", "--vcs", vcsMode(config)], owner.worktree);
+    return await runOutput([...await retirementBun(root, projectName), "worktree", "finish", "--delete-branch", "--vcs", mode], owner.worktree);
   } catch (error) {
-    const proof = config.repository && await exists(owner.worktree) ? await terminalMergeProof(config.repository, owner, vcsMode(config)) : undefined;
+    const proof = config.repository && await exists(owner.worktree) ? await terminalMergeProof(config.repository, owner, mode) : undefined;
     if (!proof) throw error;
     return `Worktree finish refused (${(error as Error).message}); merge proof: ${proof}; worktree ${owner.worktree} and branch ${owner.branch} retained.`;
   }
