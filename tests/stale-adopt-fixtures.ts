@@ -27,14 +27,14 @@ export const selectEconomy = async () => ({ available: true as const, model: "te
 export const readyTask = { title: "Main takeover", status: "todo", done_when: [{ text: "Successor resumes." }] };
 
 /** What the fake Herdr currently reports for the target pane. */
-export type Live = { path?: string; cwd: string; pi: number; others: Array<{ pane: string; path: string }> };
+export type Live = { path?: string; cwd: string; pi: number; others: Array<{ pane: string; path: string }>; startable?: boolean };
 
 const sessionOf = (value: string) => ({ kind: "path", source: "herdr:pi", value });
 
 /** The fake pane record; an empty pane reports no agent and no session. */
 function paneRecord(pane: string, live: Live) {
   if (!live.path) return { pane_id: pane, agent: null, agent_status: "unknown", agent_session: null, cwd: live.cwd };
-  return { pane_id: pane, agent: "pi", agent_status: "working", agent_session: sessionOf(live.path), cwd: live.cwd };
+  return { pane_id: pane, agent: "pi", agent_status: "idle", agent_session: sessionOf(live.path), cwd: live.cwd };
 }
 
 /** Every Pi agent Herdr would list: the target occupant plus any extra (duplicate or stale) writers. */
@@ -50,15 +50,22 @@ function agentList(name: string, pane: string, live: Live) {
 export function harness(name: Name, live: Live, repository: string) {
   const { pane } = targets[name], calls: string[][] = [];
   const agentName = `flow-main-${name}`.slice(0, 32);
-  const answers: Record<string, () => unknown> = {
+  const answers: Record<string, (command: string[]) => unknown> = {
     "workspace list": () => ({ workspaces: [{ workspace_id: "w1", label: name, worktree: { checkout_path: repository } }] }),
     "tab list": () => ({ tabs: [{ tab_id: "w1:t1", workspace_id: "w1", label: `main@${name}` }] }),
-    "pane list": () => ({ panes: [{ pane_id: pane, tab_id: "w1:t1", label: `main@${name}`, agent: live.path ? "pi" : null, agent_status: live.path ? "working" : "unknown" }] }),
+    "pane list": () => ({ panes: [{ pane_id: pane, tab_id: "w1:t1", label: `main@${name}`, agent: live.path ? "pi" : null, agent_status: live.path ? "idle" : "unknown" }] }),
     "pane get": () => ({ pane: paneRecord(pane, live) }),
     "pane process-info": () => ({ process_info: { pane_id: pane, shell_pid: 42,
-      foreground_processes: Array.from({ length: live.pi }, (_, index) => ({ name: "node", argv0: "pi", pid: 100 + index, cwd: live.cwd })) } }),
-    "agent get": () => ({ agent: { name: agentName, agent: "pi", pane_id: pane, agent_status: "working", agent_session: sessionOf(live.path!), cwd: live.cwd } }),
+      foreground_processes: Array.from({ length: live.path ? live.pi : 0 }, (_, index) => ({ name: "node", argv0: "pi", pid: 100 + index, cwd: live.cwd })) } }),
+    "agent get": () => ({ agent: { name: agentName, agent: "pi", pane_id: pane, agent_status: "idle", agent_session: sessionOf(live.path!), cwd: live.cwd } }),
     "agent list": () => ({ agents: agentList(agentName, pane, live) }),
+    // Only an explicitly startable pane (a vacated shell) may launch; the adopted JSONL then becomes the live occupant.
+    "pane run": () => ({ pane_id: pane }),
+    "agent start": (command) => {
+      if (!live.startable) throw new Error(`Unexpected Herdr command (a second launch must not occur): ${command.join(" ")}`);
+      live.path = command[command.lastIndexOf("--session") + 1];
+      return { name: agentName };
+    },
   };
   return {
     live, calls,
@@ -67,7 +74,7 @@ export function harness(name: Name, live: Live, repository: string) {
       calls.push(command);
       const answer = answers[command.slice(3, 5).join(" ")];
       if (!answer) throw new Error(`Unexpected Herdr command (a second launch must not occur): ${command.join(" ")}`);
-      return JSON.stringify({ result: answer() });
+      return JSON.stringify({ result: answer(command) });
     },
   };
 }
