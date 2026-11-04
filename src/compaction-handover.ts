@@ -2,7 +2,7 @@
 // Tested-By:
 // - test:flow:same-session-compaction-engine
 // Runtime: bun
-// Purpose: Decide, prepare, and verify same-session compaction handover without creating any session, pane, or binding.
+// Purpose: Plan and verify same-session compaction handover; never starts a session or pane
 
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
