@@ -62,13 +62,22 @@ content:
     Start from the current seat, checkpoint, assigned tasks, and relevant thread records. A replacement
     agent resumes from those records; it does not depend on a conversation with its predecessor.
 
-    Context handover: every seat (main, coordinator, driver, operator) stops at 80% context usage.
-    It finishes or cleanly undoes the current atomic step (commit, post, receipt) and starts nothing
-    new. It writes a handover using the template below, validates it with
+    Context handover: for every seat (main, coordinator, driver, operator), handover begins at 80% and no
+    later than 90% context usage, depending on context (not a single fixed threshold).
+    At 80–90% context, Flow’s primary handover is same-session compaction: validate and record the
+    handover/checkpoint, pass the recovery bundle as the compaction summary, and continue in the same
+    Pi session, JSONL, Herdr pane, and Flow binding. Every seat self-services this primary path. If
+    compaction is unavailable, fails an invariant, or the session is stuck, Flow uses the verified PR
+    #111 new-pane successor path as the fail-closed fallback; operator intervention is fallback-only.
+    The runtime prompt and behavior remain pending compaction T2/T3; until they land this text states
+    the target policy and the runtime prompt is unchanged.
+    The seat finishes or cleanly undoes the current atomic step (commit, post, receipt) and starts
+    nothing new. It writes a handover using the template below, validates it with
     `atdd-flow handover <address> --check --file <path>`, fixes every reported problem, and records
     it with `atdd-flow handover <address> --file <path>`. The seat's handover.yaml is the one durable
-    handover record; it sits beside the checkpoint and never replaces it. The old session then makes
-    no further tool calls, and a fresh session bound to the same seat continues. The new session reads
+    handover record; it sits beside the checkpoint and never replaces it. On the fallback path the
+    old session then makes no further tool calls and a fresh session bound to the same seat continues;
+    after compaction the same session continues. The resuming session reads
     the instruction file, then `atdd-flow handover show <address>`, runs the handover's verification,
     reconciles it with the live Desk (the Desk wins), reconciles its inbox, reports
     `RESUMED; verified N/M; discrepancies: ...` through its normal reporting route, and continues.
