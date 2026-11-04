@@ -44,7 +44,7 @@ Usage:
   atdd-flow pi extension-path
   atdd-flow pi wake <seat>|--scope project|desk [--model-profile <name>] --by <authorized-seat>
   atdd-flow pi runtime authorize-adoption <id> --by operator@desk --seat <seat> --pi-session <id> --pi-session-path <jsonl> --source-herdr-session <session> --source-pane <pane> --target-herdr-session <session> --target-pane <pane> --target-cwd <path>
-  atdd-flow pi runtime launch <address> [--pane <asserted-herdr-pane>] --herdr-session <session> [--resume] [--dry-run] [--adopt-session <exact-jsonl> --source-herdr-session <session> --source-pane <pane> --authorization <record-id>]
+  atdd-flow pi runtime launch <address> [--pane <asserted-herdr-pane>] --herdr-session <session> [--resume] [--dry-run] [--adopt-session <exact-jsonl> --source-herdr-session <session> --source-pane <pane> --authorization <record-id> [--in-place]]
   atdd-flow application use <address> <application>
   atdd-flow multiplexer status|apply herdr [--session <name>]
   atdd-flow describe <address> --purpose <one-line responsibility>
@@ -147,7 +147,7 @@ async function main() {
         else console.log(`Launched Pi runtime for ${required(rest[2], "address")} with ${plan.candidate}.`);
         return;
       }
-      throw new Error("Use `pi extension-path`, `pi wake <seat>|--scope project|desk [--model-profile <name>] --by <authorized-seat>`, `pi context-monitor <seat>|--scope project|desk --by <authorized-seat> [--dry-run]`, `pi runtime authorize-adoption <id> ...`, or `pi runtime launch <address> [--pane <asserted-pane>] --herdr-session <session> [--resume] [--dry-run] [--adopt-session <exact-jsonl> --source-herdr-session <session> --source-pane <pane> --authorization <record-id>]`.");
+      throw new Error("Use `pi extension-path`, `pi wake <seat>|--scope project|desk [--model-profile <name>] --by <authorized-seat>`, `pi context-monitor <seat>|--scope project|desk --by <authorized-seat> [--dry-run]`, `pi runtime authorize-adoption <id> ...`, or `pi runtime launch <address> [--pane <asserted-pane>] --herdr-session <session> [--resume] [--dry-run] [--adopt-session <exact-jsonl> --source-herdr-session <session> --source-pane <pane> --authorization <record-id> [--in-place]]`.");
     },
     application: async () => {
       if (rest[0] === "use") return useApplication(root, required(rest[1], "address"), required(rest[2], "application"));

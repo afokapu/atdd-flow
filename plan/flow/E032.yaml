@@ -1,0 +1,10 @@
+urn: acc:flow:E032-UNIT-001
+phase: UNIT
+description: >-
+  `handover resumed` for a main reconciled by an exact adoption that has no Path-A request verifies
+  the exact-adoption receipt itself: the receipt names a still-eligible self-assigned task, its
+  operator authorization record is immutable and bound to the receipt tuple, the receipt is the only
+  one that consumed it, its JSONL backup is a prefix of the adopted session, the seat is bound to the
+  receipt session, path and pane with native delivery, and a heartbeat started after the receipt
+  exists. Any missing or contradictory evidence reports a named discrepancy and fails; a stray or
+  invalid Path-A request neither blocks nor is rewritten.

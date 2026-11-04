@@ -1,0 +1,7 @@
+urn: acc:flow:E033-UNIT-001
+phase: UNIT
+description: >-
+  The exact-adoption fallback of an exact main launch replaces only a Path-A eligibility refusal
+  (no valid request, or a request whose source tuple or takeover task no longer matches, including a
+  request naming a missing task). Any other failure, such as an unreadable project record, propagates
+  and never becomes an adoption.

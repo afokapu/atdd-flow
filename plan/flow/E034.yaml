@@ -1,0 +1,8 @@
+urn: acc:flow:E034-UNIT-001
+phase: UNIT
+description: >-
+  A Pi started outside Flow and reconciled in place keeps native mail reachable: host-attached
+  activation, which refuses a seat with a launch receipt, accepts exactly the receipt of an in-place
+  exact adoption whose live session, session path, Herdr session and pane match the seat binding and
+  whose operator authorization record is immutable and bound to that tuple. Every other receipt, a
+  tampered record or a mismatched live identity still refuses.
