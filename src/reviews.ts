@@ -118,6 +118,15 @@ async function cleanDeliveryRevision(mode: VcsMode, worktree: string, branch: st
   }
 }
 
+/** Only the worktree-pinned ATDD Bun may run the gate. A fresh worktree without it must not fall back to a PATH binary. */
+async function pinnedAtddBun(worktree: string) {
+  const pinned = join(worktree, "node_modules", ".bin", "atdd-bun");
+  if (!await exists(pinned)) {
+    throw new Error(`Pinned ATDD Bun is missing in ${worktree}; run \`bun install --frozen-lockfile\` in that worktree, then retry.`);
+  }
+  return pinned;
+}
+
 async function convention(worktree: string) {
   const packageRoot = join(worktree, "node_modules", "@afokapu", "atdd-bun");
   const file = join(packageRoot, conventionRelativePath);
@@ -237,11 +246,7 @@ export async function launchBehavioralReview(
   const mode = vcsMode(await project(root, projectName));
   const head = await cleanDeliveryRevision(mode, owner.worktree, owner.branch);
 
-  // Only the worktree-pinned ATDD Bun may run the gate. A fresh worktree without it must not fall back to a PATH binary.
-  const pinnedBun = join(owner.worktree, "node_modules", ".bin", "atdd-bun");
-  if (!await exists(pinnedBun)) {
-    throw new Error(`Pinned ATDD Bun is missing in ${owner.worktree}; run \`bun install --frozen-lockfile\` in that worktree, then retry.`);
-  }
+  const pinnedBun = await pinnedAtddBun(owner.worktree);
   let gateOutput: string;
   try {
     gateOutput = await runOutput([pinnedBun], owner.worktree);
