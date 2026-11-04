@@ -185,7 +185,8 @@ test("RED: a pre-existing byte-identical archive (crash after publish) is reused
 
 test("RED: a pending (non-terminal) prior takeover task keeps the request guard", async () => {
   for (const priorTaskStatus of ["todo", "in_progress", "blocked"]) {
-    await withValue({ priorTaskStatus }, async (value) => refused(value, /prior takeover task to be terminal/));
+    // A todo prior task is also a second ready takeover task, so the existing exactly-one-ready guard may refuse first.
+    await withValue({ priorTaskStatus }, async (value) => refused(value, /prior takeover task to be terminal|exactly one ready/));
   }
 });
 
