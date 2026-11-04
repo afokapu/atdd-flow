@@ -27,4 +27,4 @@ jobs:
           sudo install /tmp/jj-bin/jj /usr/local/bin/jj
           jj version
       - name: Real colocated Jujutsu integration and legacy migration
-        run: bun test tests/jj-vcs.integration.test.ts tests/jj-vcs-migration.integration.test.ts tests/jj-merged-driver-seat-retire.red.test.ts
+        run: bun test tests/jj-vcs.integration.test.ts tests/jj-vcs-migration.integration.test.ts tests/jj-merged-driver-seat-retire.red.test.ts tests/terminal-seat-retire-detached-git-review.red.test.ts

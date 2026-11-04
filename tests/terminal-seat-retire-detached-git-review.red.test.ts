@@ -12,7 +12,7 @@ import { parse, stringify } from "yaml";
 
 const roots: string[] = [];
 const cli = join(import.meta.dir, "..", "src", "cli.ts");
-const test = (name: string, body: () => unknown | Promise<unknown>) => bunTest(name, body, 60_000);
+const test = (name: string, body: () => unknown | Promise<unknown>) => (Bun.which("jj") ? bunTest : bunTest.skip)(name, body, 60_000);
 
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
 
