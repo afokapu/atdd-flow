@@ -1,5 +1,5 @@
 // URN: test:atdd-flow:fresh-worktree-pinned-bun
-// Acceptance: acc:flow:E036-UNIT-001
+// Acceptance: acc:flow:E039-UNIT-001
 // Phase: UNIT
 import { expect, test } from "bun:test";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";

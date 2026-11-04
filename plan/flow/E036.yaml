@@ -1,7 +1,9 @@
 urn: acc:flow:E036-UNIT-001
 phase: UNIT
 description: >-
-  The deterministic ATDD Bun review gate runs only the worktree-pinned binary. In a fresh delivery
-  worktree with no node_modules/.bin/atdd-bun, `launchBehavioralReview` fails loudly with the exact
-  remediation `bun install --frozen-lockfile` and never executes a global atdd-bun from PATH. When the
-  worktree carries its own pinned node_modules/.bin/atdd-bun, that binary is the one invoked.
+  The lifecycle convention and README state the operator-approved context-reset policy: at 80-90%
+  context, same-session compaction is the primary handover, self-serviced by every seat, with a
+  validated handover/checkpoint and recovery bundle, continuing in the same Pi session, JSONL,
+  Herdr pane, and Flow binding. The verified PR #111 new-pane successor path is the fail-closed
+  fallback and operator intervention is fallback-only. The docs record that runtime prompt and
+  behavior remain pending T2/T3; this acceptance changes text only, no runtime behavior.
