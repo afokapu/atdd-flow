@@ -15,6 +15,9 @@ import { type RecoveryMode, recoveryFor } from "../../src/recovery-bundle";
 import { contextHandoverThreshold, readHandoverReplacement } from "../../src/handover";
 import { attestQuiescent, clearAttestation, refreshSamePaneNew, samePaneNewLineage, verifySamePaneNew } from "../../src/same-pane-new";
 
+/** The live Pi session and Herdr placement that a same-pane `/new` must prove. */
+type LivePlacement = { session?: string; sessionPath?: string; herdrSession?: string; pane?: string };
+
 type Thread = { id?: unknown; participants?: unknown; subject?: unknown };
 export type Mail = { id?: unknown; from?: unknown; to?: unknown; subject?: unknown; created_at?: unknown };
 type InboxMail = Mail & { id: string; created_at: string };
@@ -534,9 +537,8 @@ export default function (pi: ExtensionAPI, environment: NodeJS.ProcessEnv = proc
     content: `SYSTEM: Same-pane /new refused for ${seat}: ${reason}. No binding was changed.`,
     display: true, details: { seat, reason, authority: "same-pane-new" },
   }, { triggerTurn: false });
-  (pi as { on(event: string, handler: (event: { reason?: string }, ctx: unknown) => unknown): unknown }).on("session_before_switch", async (event, rawContext) => {
+  pi.on("session_before_switch", async (event, ctx) => {
     if (event.reason !== "new") return undefined;
-    const ctx = rawContext as WakeContext & { isIdle?: unknown; hasPendingMessages?: unknown };
     let refusal: string | undefined;
     try { refusal = await attestQuiescent(root, seat, ctx, ctx.sessionManager?.getSessionId?.()); }
     catch (error) { refusal = `quiescence unknown: ${error instanceof Error ? error.message : String(error)}`; }
@@ -544,28 +546,37 @@ export default function (pi: ExtensionAPI, environment: NodeJS.ProcessEnv = proc
     refuseSamePaneNew(refusal);
     return { cancel: true };
   });
+  /** Verify then refresh the binding for a `/new` landing in this seat's pane; returns the consumed handover, or undefined after one display-only refusal. */
+  const resumeSamePaneNew = async (previousSessionFile: string | undefined, live: LivePlacement) => {
+    try {
+      const verified = await verifySamePaneNew(root, seat, live, previousSessionFile);
+      if ("refused" in verified) {
+        await clearAttestation(root, seat).catch(() => undefined);
+        refuseSamePaneNew(verified.refused);
+        return undefined;
+      }
+      await refreshSamePaneNew(root, seat, live as Required<LivePlacement>, verified);
+      const handover = verified.handover.handover_id;
+      pi.sendMessage({
+        customType: "atdd-flow-same-pane-new-resumed",
+        content: `SYSTEM: RESUMED handover ${handover} after a same-pane /new for ${seat}. Fresh context: run \`atdd-flow handover show ${seat}\`, reconcile the Flow inbox, then continue the recorded next actions. The binding now names Pi session ${live.session}; do not bind, launch, change pane or compact.`,
+        display: true, details: { seat, handover, pi_session: live.session, authority: "same-pane-new" },
+      }, { triggerTurn: true, deliverAs: "followUp" });
+      return { handover };
+    } catch (error) {
+      refuseSamePaneNew(`verification failed: ${error instanceof Error ? error.message : String(error)}`);
+      return undefined;
+    }
+  };
   pi.on("session_start", async (event, ctx) => {
     const wakeContext = ctx as unknown as WakeContext;
     const startEvent = event as { reason?: string; previousSessionFile?: string };
     const manager = wakeContext.sessionManager;
     // Only reason "new" may refresh the binding; the verifier writes nothing on any refusal.
-    let samePaneNew: { handover: string } | undefined;
-    if (startEvent.reason === "new") {
-      const live = { session: manager?.getSessionId?.(), sessionPath: manager?.getSessionFile?.(), herdrSession: environment.ATDD_FLOW_HERDR_SESSION ?? environment.HERDR_SESSION, pane: environment.ATDD_FLOW_HERDR_PANE ?? environment.HERDR_PANE_ID };
-      try {
-        const verified = await verifySamePaneNew(root, seat, live, startEvent.previousSessionFile);
-        if ("refused" in verified) { await clearAttestation(root, seat).catch(() => undefined); refuseSamePaneNew(verified.refused); }
-        else {
-          await refreshSamePaneNew(root, seat, live as Required<typeof live>, verified);
-          samePaneNew = { handover: verified.handover.handover_id };
-          pi.sendMessage({
-            customType: "atdd-flow-same-pane-new-resumed",
-            content: `SYSTEM: RESUMED handover ${samePaneNew.handover} after a same-pane /new for ${seat}. Fresh context: run \`atdd-flow handover show ${seat}\`, reconcile the Flow inbox, then continue the recorded next actions. The binding now names Pi session ${live.session}; do not bind, launch, change pane or compact.`,
-            display: true, details: { seat, handover: samePaneNew.handover, pi_session: live.session, authority: "same-pane-new" },
-          }, { triggerTurn: true, deliverAs: "followUp" });
-        }
-      } catch (error) { refuseSamePaneNew(`verification failed: ${error instanceof Error ? error.message : String(error)}`); }
-    }
+    const samePaneNew = startEvent.reason === "new" ? await resumeSamePaneNew(startEvent.previousSessionFile, {
+      session: manager?.getSessionId?.(), sessionPath: manager?.getSessionFile?.(),
+      herdrSession: environment.ATDD_FLOW_HERDR_SESSION ?? environment.HERDR_SESSION, pane: environment.ATDD_FLOW_HERDR_PANE ?? environment.HERDR_PANE_ID,
+    }) : undefined;
     // After a verified /new the launcher variables are stale; the live session is the bound one.
     const sameLineage = samePaneNew !== undefined || (startEvent.reason !== "new" && await samePaneNewLineage(root, seat, manager?.getSessionId?.()));
     const liveEnvSession = sameLineage ? manager?.getSessionId?.() : environment.ATDD_FLOW_PI_SESSION;

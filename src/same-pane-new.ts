@@ -12,11 +12,16 @@ import { type Handover, handoverProblems, handoverReplacementPath } from "./hand
 export type SamePaneLive = { session?: string; sessionPath?: string; herdrSession?: string; pane?: string };
 export type Refusal = { refused: string };
 export type Quiescence = { isIdle?: unknown; hasPendingMessages?: unknown };
+export type VerifiedSamePaneNew = { record: Seat; handover: Handover; attestation: string };
+type Attestation = { schema?: string; seat?: string; source_pi_session?: string; attested_at?: string };
+type ReceiptRecord = { same_pane_new?: { handover?: string } };
 
 const attestationTtlMs = 120_000;
 const inFlightHeading = "2. OPEN WORK AND IN-FLIGHT OPERATIONS";
 const nextHeading = "3. DEPENDENCIES";
 
+const noInFlight = "no IN-FLIGHT declaration";
+const runtimeLaunchDirectory = (root: string) => join(root, ".atdd-flow", "runtime-launch");
 const attestationPath = (root: string, seat: string) => join(root, ".atdd-flow", "same-pane-new", `${encodeURIComponent(seat)}.yaml`);
 
 async function readHandover(root: string, seat: string): Promise<Handover | undefined> {
@@ -24,14 +29,23 @@ async function readHandover(root: string, seat: string): Promise<Handover | unde
   return await exists(file) ? readYaml<Handover>(file).catch(() => undefined) : undefined;
 }
 
+/**
+ * Structural problems of a recorded handover. Supersession and id-reuse are properties of recording, not of consuming a handover,
+ * so they are excluded; a handover written for another seat is always a problem.
+ */
+function structuralProblems(handover: Handover, seat: string) {
+  if (handover.seat !== seat) return [`handover seat ${handover.seat} is not ${seat}`];
+  return handoverProblems(handover.text, seat, undefined).filter((problem) => !/supersedes|already recorded/.test(problem));
+}
+
 /** `none` only when section 2 declares exactly one `- IN-FLIGHT: none` and no other IN-FLIGHT operation. */
 export function handoverInFlight(text: string) {
   const lines = text.replace(/\r\n/g, "\n").split("\n");
   const start = lines.findIndex((line) => line.trim().startsWith(inFlightHeading));
-  if (start < 0) return "no IN-FLIGHT declaration";
+  if (start < 0) return noInFlight;
   const end = lines.findIndex((line, index) => index > start && line.trim().startsWith(nextHeading));
   const declared = lines.slice(start + 1, end < 0 ? undefined : end).map((line) => line.trim()).filter((line) => /^-\s*IN-FLIGHT:/.test(line));
-  if (!declared.length) return "no IN-FLIGHT declaration";
+  if (!declared.length) return noInFlight;
   if (declared.length === 1 && /^-\s*IN-FLIGHT:\s*none\s*$/.test(declared[0]!)) return undefined;
   return "an IN-FLIGHT operation is declared";
 }
@@ -55,7 +69,8 @@ export async function attestQuiescent(root: string, seat: string, ctx: Quiescenc
   const reason = piQuiescence(ctx);
   if (reason) return reason;
   const handover = await readHandover(root, seat);
-  if (handover && !handoverProblems(handover.text, seat, undefined).some((problem) => !/supersedes|already recorded/.test(problem))) {
+  // An unreadable or invalid handover is refused later by the session_start verifier, which names the exact problem.
+  if (handover && !structuralProblems(handover, seat).length) {
     const inFlight = handoverInFlight(handover.text);
     if (inFlight) return `handover ${handover.handover_id} is not quiescent: ${inFlight}; section 2 must declare exactly "- IN-FLIGHT: none"`;
   }
@@ -63,17 +78,15 @@ export async function attestQuiescent(root: string, seat: string, ctx: Quiescenc
   return undefined;
 }
 
-type ReceiptRecord = { same_pane_new?: { handover?: string } };
-
 /** Verify every lineage guard for a `/new` landing in the bound pane. Never writes. */
-export async function verifySamePaneNew(root: string, seat: string, live: SamePaneLive, previousSessionFile: string | undefined): Promise<Refusal | { record: Seat; handover: Handover; attestation: string }> {
+export async function verifySamePaneNew(root: string, seat: string, live: SamePaneLive, previousSessionFile: string | undefined): Promise<Refusal | VerifiedSamePaneNew> {
   let record: Seat;
   try { record = await readYaml<Seat>(paths(root).seatFile(seat)); } catch { return { refused: `seat ${seat} is not readable` }; }
   const runtime = record.runtime, locator = runtime?.addresses.herdr;
   if (runtime?.application !== "herdr" || runtime.wake !== "native" || typeof locator !== "object" || !runtime.pi_session || !runtime.pi_session_path) return { refused: `${seat} has no native binding (Herdr session and pane with a bound Pi session) to refresh` };
   const handover = await readHandover(root, seat);
   if (!handover) return { refused: `no recorded handover for ${seat}` };
-  const problems = handover.seat === seat ? handoverProblems(handover.text, seat, undefined).filter((problem) => !/supersedes|already recorded/.test(problem)) : [`handover seat ${handover.seat} is not ${seat}`];
+  const problems = structuralProblems(handover, seat);
   if (problems.length) return { refused: `invalid handover for ${seat}: ${problems[0]}` };
   if (await exists(handoverReplacementPath(root, seat))) return { refused: `an active Path-A replacement request exists for ${seat}; a same-pane /new does not replace it` };
   if (!live.herdrSession || !live.pane || locator.session !== live.herdrSession || locator.pane !== live.pane) return { refused: `the live Herdr session/pane ${live.herdrSession ?? "?"}:${live.pane ?? "?"} is not the bound pane ${locator.session}:${locator.pane}` };
@@ -86,18 +99,17 @@ export async function verifySamePaneNew(root: string, seat: string, live: SamePa
   if (named !== runtime.pi_session) return { refused: `handover ${handover.handover_id} names a different Pi session (${named ?? "none"}) than the bound ${runtime.pi_session}; third-party reconstruction is refused` };
   const inFlight = handoverInFlight(handover.text);
   if (inFlight) return { refused: `handover ${handover.handover_id} is not quiescent (in-flight): ${inFlight}` };
-  let attested: { source_pi_session?: string; attested_at?: string } | undefined;
-  try { attested = await readYaml<{ source_pi_session?: string; attested_at?: string }>(attestationPath(root, seat)); } catch { /* absent */ }
+  const attested = await readYaml<Attestation>(attestationPath(root, seat)).catch(() => undefined);
   const fresh = attested?.attested_at && Date.now() - Date.parse(attested.attested_at) <= attestationTtlMs;
   if (!attested || !fresh || attested.source_pi_session !== runtime.pi_session) return { refused: "quiescence was not attested: this /new did not pass the session_before_switch gate" };
   return { record, handover, attestation: attestationPath(root, seat) };
 }
 
 /** Refresh the durable binding to the live Pi (same seat, pane, application and wake mode) and record an immutable receipt. */
-export async function refreshSamePaneNew(root: string, seat: string, live: Required<Pick<SamePaneLive, "session" | "sessionPath" | "herdrSession" | "pane">>, verified: { record: Seat; handover: Handover; attestation: string }) {
+export async function refreshSamePaneNew(root: string, seat: string, live: Required<SamePaneLive>, verified: VerifiedSamePaneNew) {
   const { record, handover } = verified, runtime = record.runtime!;
-  const receipt = join(root, ".atdd-flow", "runtime-launch", `${encodeURIComponent(live.session)}-${crypto.randomUUID().slice(0, 8)}.yaml`);
-  await mkdir(join(root, ".atdd-flow", "runtime-launch"), { recursive: true });
+  const receipt = join(runtimeLaunchDirectory(root), `${encodeURIComponent(live.session)}-${crypto.randomUUID().slice(0, 8)}.yaml`);
+  await mkdir(runtimeLaunchDirectory(root), { recursive: true });
   await writeFile(receipt, yaml.print({
     schema: "atdd-flow/pi-runtime-launch-receipt/v1", seat, pi_session: live.session, pi_session_path: live.sessionPath, herdr_session: live.herdrSession, pane: live.pane,
     created_at: new Date().toISOString(), same_pane_new: { handover: handover.handover_id, previous_pi_session: runtime.pi_session, previous_receipt: runtime.launch_receipt ?? null },
@@ -118,6 +130,6 @@ export async function samePaneNewLineage(root: string, seat: string, session: st
   try {
     const runtime = (await readYaml<Seat>(paths(root).seatFile(seat))).runtime;
     if (!runtime?.launch_receipt || runtime.pi_session !== session) return false;
-    return Boolean((await readYaml<ReceiptRecord & { pi_session?: string }>(runtime.launch_receipt)).same_pane_new);
+    return Boolean((await readYaml<ReceiptRecord>(runtime.launch_receipt)).same_pane_new);
   } catch { return false; }
 }
