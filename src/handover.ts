@@ -229,7 +229,7 @@ async function failedAdoptionTaskEligible(root: string, record: Seat, address: s
     && await isExactMainSeat(root, record, address);
 }
 
-export type MainLaunchReplacement = { request?: HandoverReplacementRequest; taskId: string; task: Task; bootstrap?: { handover: string } };
+export type MainLaunchReplacement = { request?: HandoverReplacementRequest; taskId: string; task: Task; bootstrap?: { handover: string }; exactAdoption?: true };
 
 /**
  * A brand-new exact main seat has no predecessor to name. It may launch once when it records no Pi identity, has no
@@ -272,21 +272,37 @@ export async function replacementForMainLaunch(root: string, record: Seat, addre
   return { request, taskId: request.task, task };
 }
 
+/**
+ * Launch eligibility for an exact main. A validated Path-A request or a brand-new bootstrap keeps precedence unchanged.
+ * Only when both refuse, and `authorized` (the launch already resolved an immutable operator exact-adoption record
+ * for its full seat/session/path/source/target tuple), exactly one ready or evidence-empty in-progress self-assigned
+ * task makes the main eligible; no predecessor is fabricated. Any other outcome keeps the original refusal.
+ */
+export async function mainLaunchReplacement(root: string, record: Seat, address: string, authorized: boolean): Promise<MainLaunchReplacement | undefined> {
+  try { return await replacementForMainLaunch(root, record, address); }
+  catch (refusal) {
+    if (!authorized) throw refusal;
+    const ready = await readyMainTasks(root, record, address, (task) => task.status === "todo" || evidenceEmptyRecoveryTask(task));
+    if (ready.length !== 1) throw refusal;
+    return { taskId: ready[0]!, task: await readYaml<Task>(paths(root).taskFile(record.project, ready[0]!)), exactAdoption: true };
+  }
+}
+
 export function assertReplacementTarget(request: HandoverReplacementRequest, herdrSession: string, pane: string, worktree: string) {
   if (request.target.herdr_session !== herdrSession || request.target.pane !== pane || request.target.cwd !== resolve(worktree)) {
     throw new Error("Path-A replacement request does not match the exact released target tuple.");
   }
 }
 
-/** Ids of the todo tasks that main@project owns and could start now: unblocked, self-assigned, dependencies terminal. */
-async function readyMainTasks(root: string, record: Seat, address: string) {
+/** Ids of the tasks `accept` admits (default: todo) that main@project owns and could start now: unblocked, self-assigned, dependencies terminal. */
+async function readyMainTasks(root: string, record: Seat, address: string, accept: (task: Task) => boolean = (task) => task.status === "todo") {
   let files: string[];
   try { files = await readdir(paths(root).tasks(record.project)); }
   catch { return []; }
   return (await Promise.all(files.filter((file) => file.endsWith(".yaml") && !file.endsWith(".reviews.yaml")).map(async (file) => {
     const taskId = file.slice(0, -5);
     const task = await readYaml<Task>(paths(root).taskFile(record.project, taskId));
-    if (task.schema !== "atdd-workflow/task/v1" || task.status !== "todo" || task.blocker || task.coordinator !== address || task.assignee !== address) return undefined;
+    if (task.schema !== "atdd-workflow/task/v1" || !accept(task) || task.blocker || task.coordinator !== address || task.assignee !== address) return undefined;
     const dependencies = await Promise.all((task.depends_on ?? []).map(async (dependency) => {
       try { return terminal(await readYaml<Pick<Task, "status">>(paths(root).taskFile(record.project, dependency))); }
       catch { return false; }
