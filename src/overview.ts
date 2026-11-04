@@ -323,6 +323,11 @@ async function taskDashboard(root: string, projectName: string, taskId: string) 
   else if (entry.task.status === "review" && latestReview?.result?.decision === "RETURN") next = `Coordinator: return the task with \`atdd-flow task return ${projectName} ${taskId} --by ${entry.task.coordinator}.\``;
   else if (entry.task.status === "review" && latestReview?.result?.decision === "ESCALATE") next = "Coordinator: resolve authoritative intent; keep the task in review or block it explicitly.";
   else if (entry.task.status === "review") next = `Coordinator: complete with \`atdd-flow task done ${projectName} ${taskId} --by ${entry.task.coordinator}.\``;
+  else if (entry.task.status === "in_progress" && entry.task.assignee) {
+    const { assigneeContinuation } = await import("./tasks");
+    const directive = await assigneeContinuation(root, projectName, taskId, entry.task);
+    next = `Driver: ${directive?.action ?? "continue the assigned work."}${directive?.command ? ` Run \`${directive.command}\`.` : ""}`;
+  }
   else if (entry.task.assignee) next = `Driver: start with \`atdd-flow task start ${projectName} ${taskId} --by ${entry.task.assignee}.\``;
   else next = "Coordinator: assign a driver before this task can start.";
   console.log(`  ${next}`);
