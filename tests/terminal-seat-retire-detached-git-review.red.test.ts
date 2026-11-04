@@ -1,5 +1,5 @@
 // URN: test:atdd-flow:terminal-seat-retire-detached-git-review
-// Acceptance: acc:flow:E021-UNIT-002
+// Acceptance: acc:flow:E040-UNIT-001
 // Phase: UNIT
 // Purpose: A detached Git review seat governed by a JJ-policy project retires on its actual VCS: the clean worktree at a commit reachable from
 // main is accepted without a JJ repository or exported-bookmark requirement; dirty or unmerged reviews, real JJ worktrees, and authorization stay strict.

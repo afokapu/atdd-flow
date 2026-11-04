@@ -1,0 +1,9 @@
+urn: acc:flow:E040-UNIT-001
+phase: UNIT
+description: >-
+  Retiring a terminal driver whose worktree is a detached Git review checkout under a JJ-policy project
+  uses the worktree's actual VCS for ATDD Bun's `worktree finish` and for the independent merge proof,
+  so the refusal `There is no jj repo in "."` no longer blocks it. The proof takes the worktree HEAD as
+  the delivered commit when no branch is checked out and accepts it only when the worktree is clean and
+  that commit is reachable from main. Dirty and unmerged reviews and an unauthorized actor stay refused,
+  real JJ workspaces keep the JJ policy, and the worktree and any branch are always retained.
