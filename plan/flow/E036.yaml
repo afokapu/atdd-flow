@@ -1,0 +1,7 @@
+urn: acc:flow:E036-UNIT-001
+phase: UNIT
+description: >-
+  The deterministic ATDD Bun review gate runs only the worktree-pinned binary. In a fresh delivery
+  worktree with no node_modules/.bin/atdd-bun, `launchBehavioralReview` fails loudly with the exact
+  remediation `bun install --frozen-lockfile` and never executes a global atdd-bun from PATH. When the
+  worktree carries its own pinned node_modules/.bin/atdd-bun, that binary is the one invoked.
