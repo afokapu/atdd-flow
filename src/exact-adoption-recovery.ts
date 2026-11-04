@@ -11,7 +11,7 @@ import { type Runtime, type Seat, paths, readYaml, yaml } from "./core";
 import type { HandoverReplacementRequest } from "./handover";
 import { readRuntimeState } from "./runtime-state";
 import { archivedReceiptMatches, backupIsTranscriptPrefix, recoveryEvidenceMatches } from "./stale-main-recovery";
-import type { Task } from "./tasks";
+import { type Task, terminal } from "./tasks";
 
 type ReplacementLaunchReceipt = {
   schema?: string;
@@ -280,10 +280,19 @@ async function readReceipt(path: string | undefined) {
 }
 
 /**
+ * After launch the receipt alone proves eligibility, so the task need only remain the seat's own, live work: a valid
+ * task file assigned to and coordinated by the seat that is not terminal. Blocker, progress, handoff, proof and
+ * review state may advance freely without invalidating the receipt.
+ */
+function taskContinues(task: Task | undefined, address: string) {
+  return Boolean(task) && task!.schema === "atdd-workflow/task/v1" && task!.assignee === address && task!.coordinator === address && !terminal(task!);
+}
+
+/**
  * Classify the evidence of an exact adoption that used no Path-A request, from its own receipt alone. Returns undefined
  * unless the seat's receipt is such a receipt, so every Path-A and bootstrap receipt keeps its existing verifier.
  */
-export async function requestlessAdoptionEvidence(root: string, record: Seat, address: string, taskEligible: TaskEligibility) {
+export async function requestlessAdoptionEvidence(root: string, record: Seat, address: string) {
   const receiptPath = record.runtime?.launch_receipt, receipt = await readReceipt(receiptPath);
   if (!receipt || !requestlessShape(receipt, address)) return undefined;
   const relocation = receipt.relocation!;
@@ -293,7 +302,7 @@ export async function requestlessAdoptionEvidence(root: string, record: Seat, ad
     && await backupIsTranscriptPrefix({ path: relocation.backup, sha256: relocation.backup_sha256 }, receipt.pi_session_path!);
   const heartbeat = freshAdoptionHeartbeat(runtimeState, receipt, address, record.worktree)
     && (runtimeState!.pi_session === undefined || runtimeState!.pi_session === receipt.pi_session);
-  return { receipt, taskReady: Boolean(task && await taskEligible(task)), immutable, heartbeat };
+  return { receipt, taskReady: taskContinues(task, address), immutable, heartbeat };
 }
 
 /** Both the receipt and the seat binding describe exactly the live Pi at its Herdr placement. */

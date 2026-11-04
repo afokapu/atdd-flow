@@ -1,0 +1,8 @@
+urn: acc:flow:E037-UNIT-001
+phase: UNIT
+description: >-
+  `handover resumed` for a request-less exact adoption trusts the launch-time eligibility proven by
+  its immutable receipt: afterwards the receipt's task must still exist, be assigned to and coordinated
+  by the seat, and not be terminal, while a later blocker, handoff, proof, progress or review state
+  never invalidates a valid receipt. Missing, foreign-assigned, foreign-coordinated and terminal tasks,
+  and every receipt, authorization, backup, binding and heartbeat guard, stay fail-closed.

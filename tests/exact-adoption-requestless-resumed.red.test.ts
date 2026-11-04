@@ -75,7 +75,7 @@ test("a tampered authorization record or backup is a named discrepancy", async (
   expect(plan.receipt).not.toBe(second.plan.receipt);
 });
 
-test("a seat rebound to another session or an ineligible task is a named discrepancy", async () => {
+test("a seat rebound to another session or a terminal task is a named discrepancy", async () => {
   const rebound = await adopted();
   await heartbeat(rebound.value);
   const file = paths(rebound.value.root).seatFile(rebound.value.address);
@@ -85,6 +85,6 @@ test("a seat rebound to another session or an ineligible task is a named discrep
   const evidence = await adopted();
   await heartbeat(evidence.value);
   const task = paths(evidence.value.root).taskFile("atdd-flow", "takeover-1");
-  await atomicYaml(task, { ...(await readYaml<Record<string, any>>(task)), status: "in_progress", handoff: { state: "awaiting_coordinator", evidence: "M-1", submitted_phase: "red" } });
+  await atomicYaml(task, { ...(await readYaml<Record<string, any>>(task)), status: "done" });
   expect(await resumed(evidence.value)).toMatchObject({ exitCode: 1, output: expect.stringContaining("exact-adoption receipt and task") });
 });
