@@ -107,8 +107,12 @@ console.log(JSON.stringify({ sent, activation: state?.mail_activation }));
 process.exit(0);`;
 
 /** Runs a launcher Pi for `session` in `pane`; `afterStart` fires once the pre-bind inactive notice exists. */
-async function runPi(root: string, session: string, pane: string, afterStart: () => Promise<unknown>): Promise<Run> {
-  const env = { ...process.env, ATDD_WORKFLOW_ROOT: root, ATDD_WORKFLOW_SEAT: seat, ATDD_FLOW_PI_SESSION: session, ATDD_FLOW_HERDR_SESSION: "forge", ATDD_FLOW_HERDR_PANE: pane, REFRESH_TEST_WAIT_MS: "3500" };
+async function runPi(root: string, session: string, pane: string, afterStart: () => Promise<unknown>, hostAttached = false): Promise<Run> {
+  // A host-attached Pi has no launcher variables; only Herdr's injected pane identity names it.
+  const identity = hostAttached
+    ? { ATDD_FLOW_PI_SESSION: undefined, ATDD_FLOW_HERDR_SESSION: undefined, ATDD_FLOW_HERDR_PANE: undefined, HERDR_SESSION: "forge", HERDR_PANE_ID: pane }
+    : { ATDD_FLOW_PI_SESSION: session, ATDD_FLOW_HERDR_SESSION: "forge", ATDD_FLOW_HERDR_PANE: pane };
+  const env = { ...process.env, ...identity, ATDD_WORKFLOW_ROOT: root, ATDD_WORKFLOW_SEAT: seat, REFRESH_TEST_WAIT_MS: "3500" };
   const child = Bun.spawn([process.execPath, "-e", hostScript], { cwd: root, env, stdout: "pipe", stderr: "pipe" });
   // The launcher window polls only briefly for the first verdict, then the Pi is inactive and waiting for a binding that matches it.
   await new Promise((resolve) => setTimeout(resolve, 1200));
@@ -140,4 +144,22 @@ test("RED 4 REFUSE: a bind to another pane, or a Pi with a different session, ne
   const sessionRun = await runPi(wrongSession, other, "w1:p9", async () => { await rebind(wrongSession, "w1:p9"); });
   expect(kinds(sessionRun, "atdd-flow-start")).toHaveLength(0);
   expect(sessionRun.activation?.transport).not.toBe("active");
+}, 30_000);
+
+test("RED 5 HOST: a host-attached Pi with no launch receipt activates after bind to its own pane, and not after a bind to another pane", async () => {
+  const unreceipted = async () => {
+    const root = await desk();
+    const record = await readYaml<{ runtime: Record<string, unknown> }>(paths(root).seatFile(seat));
+    const { launch_receipt: _receipt, pi_session: _session, pi_session_path: _path, ...runtime } = record.runtime;
+    await atomicYaml(paths(root).seatFile(seat), { ...record, runtime });
+    return root;
+  };
+  const own = await unreceipted();
+  const ownRun = await runPi(own, bound, "w1:p9", async () => { await rebind(own, "w1:p9"); }, true);
+  expect(kinds(ownRun, "atdd-flow-start")).toHaveLength(1);
+  expect(ownRun.activation).toMatchObject({ transport: "active", differs: [] });
+  const elsewhere = await unreceipted();
+  const elsewhereRun = await runPi(elsewhere, bound, "w1:p9", async () => { await rebind(elsewhere, "w1:p7"); }, true);
+  expect(kinds(elsewhereRun, "atdd-flow-start")).toHaveLength(0);
+  expect(elsewhereRun.activation?.transport).not.toBe("active");
 }, 30_000);
