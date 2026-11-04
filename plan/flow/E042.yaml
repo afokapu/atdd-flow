@@ -1,0 +1,8 @@
+urn: acc:flow:E042-UNIT-001
+phase: UNIT
+description: >-
+  The approved owner-inspection CLI is wired through `atdd-flow owner-inspection publish|read|ack|status`.
+  Publish reads a packet file and fails non-zero on an incomplete or changed republish; read returns the
+  immutable reference-only record; ack succeeds only as operator@desk with a note and appends immutable
+  history; status is advisory per project and per task; `atdd-flow status task` shows an OWNER INSPECTION
+  section; and `task done` is held by an unacknowledged record until the operator acknowledges.
