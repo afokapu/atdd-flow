@@ -1,5 +1,5 @@
 // URN: test:atdd-flow:compaction-policy-docs
-// Acceptance: acc:flow:E024-UNIT-001
+// Acceptance: acc:flow:E036-UNIT-001
 // Phase: UNIT
 // Docs/policy text only: pins the operator-approved compaction wording
 // (M-20261104T061532Z-t4-wording-approved_999f7ac0). Runtime prompt/behavior is T2/T3.
