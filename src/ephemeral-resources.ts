@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readdir } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { atomicYaml, exists, now, readYaml, taskId } from "./core";
+import { pendingOwnerInspections } from "./owner-inspection";
 
 export type InventoryKind = "fixture-directory" | "git-worktree" | "git-branch" | "process" | "port" | "herdr-workspace" | "github-preview";
 export type InventoryEntry = { kind: InventoryKind; locator: string };
@@ -213,6 +214,8 @@ async function matching(root: string, parent: Parent) {
 async function assertSettled(root: string, parent: Parent) {
   const pending = (await matching(root, parent)).filter((value) => !(["received", "retained"] as Status[]).includes(value.status));
   if (pending.length) throw new Error(`Parent ${parent.project}/${parent.task} is held by cleanup receipt or retained decision: ${pending.map((value) => value.id).join(", ")}.`);
+  const inspections = await pendingOwnerInspections(root, parent);
+  if (inspections.length) throw new Error(`Parent ${parent.project}/${parent.task} is held by owner inspection awaiting operator@desk acknowledgement: ${inspections.join(", ")}.`);
 }
 
 export const assertParentMayComplete = assertSettled;
