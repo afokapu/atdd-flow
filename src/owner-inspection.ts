@@ -5,9 +5,10 @@
 // Runtime: bun
 // Purpose: Flow-owned immutable owner-inspection records and their hold query
 
-import { readdir } from "node:fs/promises";
-import { join } from "node:path";
-import { atomicYaml, exists, now as workflowNow, paths, readYaml, required, seat, taskId } from "./core";
+import { randomUUID } from "node:crypto";
+import { link, mkdir, readdir, rm, writeFile } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
+import { exists, now as workflowNow, paths, readYaml, required, seat, taskId, yaml } from "./core";
 
 /**
  * Flow-owned owner-inspection records (docs/owner-inspection-shared-contract.adoc).
@@ -166,6 +167,23 @@ const packetOf = (record: OwnerInspectionRecord): OwnerInspectionPacket => {
   return packet;
 };
 
+// Creates the file only if absent: the full content goes to a temp file, then is hard-linked into place.
+// link() fails with EEXIST atomically, so concurrent writers cannot overwrite each other and readers never see partial YAML.
+async function createExclusive(file: string, value: unknown) {
+  await mkdir(dirname(file), { recursive: true });
+  const temp = join(dirname(file), `.${basename(file)}.${randomUUID()}.tmp`);
+  await writeFile(temp, yaml.print(value), "utf8");
+  try {
+    await link(temp, file);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+    throw error;
+  } finally {
+    await rm(temp, { force: true });
+  }
+}
+
 /** Publishes one write-once record; an identical republish is idempotent and a changed one is rejected. */
 export async function publishOwnerInspection(root: string, raw: unknown, input: { by: string; now?: string }) {
   await assertPublisher(root, input.by);
@@ -173,11 +191,10 @@ export async function publishOwnerInspection(root: string, raw: unknown, input: 
   await assertParentTask(root, packet);
   await assertCandidate(root, packet);
   const file = ownerInspectionFile(root, packet.id);
-  if (await exists(file)) {
-    if (JSON.stringify(packetOf(await readStored(root, packet.id))) !== JSON.stringify(packet)) throw new Error(`Owner inspection ${packet.id} is immutable and already published with a different payload.`);
-    return { id: packet.id };
+  const created = await createExclusive(file, { schema: "atdd-workflow/owner-inspection/v1", ...packet, published_by: input.by, published_at: input.now ?? workflowNow() });
+  if (!created && JSON.stringify(packetOf(await readStored(root, packet.id))) !== JSON.stringify(packet)) {
+    throw new Error(`Owner inspection ${packet.id} is immutable and already published with a different payload.`);
   }
-  await atomicYaml(file, { schema: "atdd-workflow/owner-inspection/v1", ...packet, published_by: input.by, published_at: input.now ?? workflowNow() });
   return { id: packet.id };
 }
 
@@ -206,10 +223,10 @@ export async function acknowledgeOwnerInspection(root: string, id: string, input
   await assertOperator(root, input.by);
   const note = required(input.note, "owner acknowledgement note");
   if (!await exists(ownerInspectionFile(root, id))) throw new Error(`Owner inspection does not exist: ${id}.`);
-  const sequence = (await acknowledgements(root, id)).length + 1;
-  const file = join(ackRoot(root, id), `${String(sequence).padStart(4, "0")}.yaml`);
-  if (await exists(file)) throw new Error(`Owner inspection ${id} acknowledgement ${sequence} already exists.`);
-  await atomicYaml(file, { schema: "atdd-workflow/owner-inspection-ack/v1", immutable: true, inspection: id, sequence, by: operatorAddress, note, at: input.now ?? workflowNow() });
+  // Claim the next free sequence; a lost race (EEXIST) moves to the following number, so no acknowledgement is dropped.
+  let sequence = (await acknowledgements(root, id)).length + 1;
+  const at = input.now ?? workflowNow();
+  while (!await createExclusive(join(ackRoot(root, id), `${String(sequence).padStart(4, "0")}.yaml`), { schema: "atdd-workflow/owner-inspection-ack/v1", immutable: true, inspection: id, sequence, by: operatorAddress, note, at })) sequence += 1;
   return { id, sequence };
 }
 
