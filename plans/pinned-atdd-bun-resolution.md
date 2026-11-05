@@ -61,4 +61,9 @@ Launches run in a child process whose PATH carries the sentinel global shim, bec
 
 - Failing: the source checkout, 10 fail-closed cases, the explicit-root and PATH-free resolver contracts (`src/pinned-toolkit.ts` does not exist yet), and the no-PATH-launch source guard.
 - Passing guards (existing behavior that must not regress): consumer launch, global disagreement with a local pin, and a satisfied range. `core.execute` already prefers a local `node_modules/.bin`, so a consumer with a local bin is already pinned. The gap is the absence of a local pin (source checkout, missing or invalid install), which falls through to PATH.
-- Not yet covered: the `retirementBun()` call site. It is covered in GREEN by the source guard test; a launch-level test can be added if main wants one.
+- Retirement (tests/pinned-atdd-bun-retirement.red.test.ts, added after main returned RED in M-20261105T000131Z-red-return-retirement-path_6cbbd363): `task done --retire-assignee` runs end to end through the CLI, with a real linked driver worktree and a git repository. The sentinel global shim is on PATH and a decoy pin sits in the primary checkout.
+  - Valid consumer and source pins in the target worktree must be the ones that run. The primary decoy and the global shim must not.
+  - A rejecting global cannot judge retirement.
+  - 10 invalid-pin layouts (same matrix as the launch tests) must fail closed. The seat stays unretired, and the worktree, branch and HEAD stay unchanged. No toolkit runs, and the failure is not downgraded to the merge-proof "refused ... retained" success.
+  - Contract for GREEN: every `PinnedToolkitError` message contains the phrase `pinned ATDD Bun`.
+  - Existing `seat.test.ts` retirement test: its fixture symlinks a pin into the primary checkout. Under the target-worktree rule it needs a pinned layout in the seat worktree, to be updated in GREEN.
