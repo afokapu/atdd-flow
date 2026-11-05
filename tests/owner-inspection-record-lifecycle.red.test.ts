@@ -285,5 +285,6 @@ test("RED: Flow keeps one inspection state tree and writes nothing outside Flow-
 
   const added = (await names()).filter((entry) => !before.includes(entry));
   expect(added.length).toBeGreaterThan(0);
-  expect(added.every((entry) => entry.startsWith(".atdd-flow/owner-inspections"))).toBe(true);
+  // The recursive listing also names the bare `.atdd-flow` parent directory; every other new path must sit inside the one tree.
+  expect(added.every((entry) => entry === ".atdd-flow" || entry.startsWith(".atdd-flow/owner-inspections"))).toBe(true);
 });
