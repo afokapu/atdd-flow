@@ -1,3 +1,7 @@
+// URN: test:flow:pinned-atdd-bun-resolution:E024-UNIT-001
+// Acceptance: acc:flow:E024-UNIT-001
+// Phase: UNIT
+// Layer: integration
 // RED: Flow-invoked ATDD Bun checks must use the toolkit pinned by the explicit target worktree,
 // never the global PATH binary, and must fail closed without mutation when the pin cannot be established.
 // Plan: plans/pinned-atdd-bun-resolution.md (task flow-invoked-pinned-atdd-bun-resolution-20261104).

@@ -1,0 +1,10 @@
+urn: acc:flow:E024-UNIT-001
+phase: UNIT
+description: >-
+  Every Flow-invoked ATDD Bun check (behavioral-review gate and convention, and seat retirement) uses
+  the toolkit pinned by the explicit target worktree and never PATH or the primary checkout
+  (src/pinned-toolkit.ts): a consumer uses its node_modules/.bin/atdd-bun and installed conventions,
+  an atdd-bun source checkout uses its own bun src/cli.ts and conventions/. A global version that
+  disagrees cannot judge a project, and a missing or mismatched pin (no install, no bin, bin outside
+  the package, no conventions, version outside the declared exact pin or range, unreadable manifest)
+  fails closed with PinnedToolkitError, without mutation and without degrading to merge proof.

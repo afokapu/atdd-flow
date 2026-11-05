@@ -1,3 +1,7 @@
+// URN: test:flow:pinned-atdd-bun-retirement:E024-UNIT-001
+// Acceptance: acc:flow:E024-UNIT-001
+// Phase: UNIT
+// Layer: integration
 // RED: seat retirement (`task done --retire-assignee`, tasks.ts retirementBun) is a Flow-invoked ATDD Bun call site.
 // It must resolve the pinned toolkit from the explicit target worktree being retired -- never the primary checkout,
 // never PATH -- and a missing/invalid pin must fail closed instead of degrading to merge proof.

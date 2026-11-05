@@ -1,3 +1,9 @@
+// URN: component:flow:e024:seat-toolkit:backend:integration
+// Tested-By:
+// - test:flow:pinned-atdd-bun-retirement:E024-UNIT-001
+// Runtime: bun
+// Purpose: Test fixture helper that pins ATDD Bun inside an isolated seat worktree.
+
 // Test helper: gives a linked seat worktree the project-pinned ATDD Bun that Flow's retirement/review paths now require.
 // The pin lives in the (gitignored) node_modules of the exact worktree being checked, never the primary checkout.
 import { chmod, mkdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";

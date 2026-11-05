@@ -1,3 +1,10 @@
+// URN: component:flow:e024:pinned-toolkit:backend:integration
+// Tested-By:
+// - test:flow:pinned-atdd-bun-resolution:E024-UNIT-001
+// - test:flow:pinned-atdd-bun-retirement:E024-UNIT-001
+// Runtime: bun
+// Purpose: Resolve the project-pinned ATDD Bun for an explicit worktree, failing closed.
+
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
