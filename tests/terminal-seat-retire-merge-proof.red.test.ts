@@ -9,6 +9,7 @@ import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse, stringify } from "yaml";
+import { declarePin, pinSeatWorktree, pinWithScript, refusingScript } from "./helpers/seat-toolkit";
 
 const roots: string[] = [];
 const cli = join(import.meta.dir, "..", "src", "cli.ts");
@@ -48,11 +49,8 @@ async function desk(drivers: string[]) {
   await git(repository, "config", "user.name", "Test");
   await writeFile(join(repository, ".gitignore"), "node_modules/\n");
   await writeFile(join(repository, "atdd-bun.yaml"), "worktrees:\n  enabled: true\n  root: ../worktrees\n  primary_directory: repository\n  primary_branch: main\n  require_linked_worktree: true\n");
-  await git(repository, "add", ".gitignore", "atdd-bun.yaml");
+  await git(repository, "add", ".gitignore", "atdd-bun.yaml", await declarePin(repository));
   await git(repository, "commit", "-m", "configure worktrees");
-  // Retirement resolves ATDD Bun from the primary checkout, never the seat worktree.
-  await mkdir(join(repository, "node_modules", ".bin"), { recursive: true });
-  await symlink(join(import.meta.dir, "..", "node_modules", ".bin", "atdd-bun"), join(repository, "node_modules", ".bin", "atdd-bun"));
   await run(root, clean, "init", site);
   await run(site, clean, "project", "init", "demo");
   await writeFile(join(site, "work", "demo", "project.yaml"), `schema: atdd-workflow/project/v1
@@ -75,7 +73,10 @@ roles:
   const deskFile = join(site, "desk.yaml");
   await writeFile(deskFile, stringify({ ...parse(await readFile(deskFile, "utf8")), multiplexer: { close_inactive: true } }));
   await run(site, clean, "spawn", "demo", "coordinator", "main");
-  for (const name of drivers) await run(site, clean, "spawn", "demo", "driver", name);
+  for (const name of drivers) {
+    await run(site, clean, "spawn", "demo", "driver", name);
+    await pinSeatWorktree(join(worktrees, name));
+  }
   return { root, site, repository, worktrees, clean, coordinator: "coordinator@demo" };
 }
 
@@ -88,12 +89,9 @@ async function finishTask(site: string, environment: Record<string, string | und
 }
 
 
-/** ATDD Bun in the primary checkout that refuses `worktree finish` the way the observed post-JJ and squash-merged failures do. */
-async function refusingFinish(repository: string) {
-  const bin = join(repository, "node_modules", ".bin", "atdd-bun");
-  await rm(bin, { force: true });
-  await writeFile(bin, "#!/bin/sh\necho 'atdd-bun: unknown profile delivery; no exported bookmark found 0' >&2\nexit 1\n");
-  await chmod(bin, 0o755);
+/** The seat worktree's pinned ATDD Bun refuses `worktree finish` the way the observed post-JJ and squash-merged failures do. */
+async function refusingFinish(worktree: string) {
+  await pinWithScript(worktree, refusingScript);
 }
 
 /** A fake `gh` that answers `pr list` with the configured JSON; an empty list means no PR evidence. */
@@ -123,7 +121,7 @@ async function terminalDriver(delivery: Delivery) {
     await git(fixture.repository, "commit", "-m", "squash: deliver (#1)");
   }
   const main = await git(fixture.repository, "rev-parse", "main");
-  await refusingFinish(fixture.repository);
+  await refusingFinish(worktree);
   return { ...fixture, worktree, tip, main };
 }
 

@@ -1,5 +1,5 @@
 import { afterEach, expect, test as bunTest } from "bun:test";
-import { chmod, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { discoverAddress, launchCommand, launchedAddress, notificationCommand } from "../src/adapters";
@@ -772,7 +772,10 @@ test("task completion retires an idle driver through ATDD Bun housekeeping", asy
   await git(repository, "config", "user.name", "Test");
   await writeFile(join(repository, ".gitignore"), "node_modules/\n");
   await writeFile(join(repository, "atdd-bun.yaml"), `worktrees:\n  enabled: true\n  root: ../worktrees\n  primary_directory: repository\n  primary_branch: main\n  require_linked_worktree: true\n`);
-  await git(repository, "add", ".gitignore", "atdd-bun.yaml");
+  const toolkit = join(import.meta.dir, "..", "node_modules", "@afokapu", "atdd-bun");
+  const pinned = JSON.parse(await readFile(join(toolkit, "package.json"), "utf8")).version as string;
+  await writeFile(join(repository, "package.json"), JSON.stringify({ name: "consumer", devDependencies: { "@afokapu/atdd-bun": pinned } }));
+  await git(repository, "add", ".gitignore", "atdd-bun.yaml", "package.json");
   await git(repository, "commit", "-m", "configure worktrees");
   await run(root, "init", site);
   await run(site, "project", "init", "demo");
@@ -795,9 +798,12 @@ roles:
 `);
   await run(site, "spawn", "demo", "coordinator", "main");
   await run(site, "spawn", "demo", "driver", "runtime");
-  // Retirement resolves ATDD Bun from the primary checkout, never the seat worktree.
-  await mkdir(join(repository, "node_modules", ".bin"), { recursive: true });
-  await symlink(join(import.meta.dir, "..", "node_modules", ".bin", "atdd-bun"), join(repository, "node_modules", ".bin", "atdd-bun"));
+  // Retirement resolves the ATDD Bun pinned by the seat worktree being retired, never the primary checkout or PATH.
+  const seatModules = join(worktrees, "runtime", "node_modules");
+  await mkdir(join(seatModules, ".bin"), { recursive: true });
+  await mkdir(join(seatModules, "@afokapu"), { recursive: true });
+  await symlink(toolkit, join(seatModules, "@afokapu", "atdd-bun"));
+  await symlink(await realpath(join(import.meta.dir, "..", "node_modules", ".bin", "atdd-bun")), join(seatModules, ".bin", "atdd-bun"));
   const coordinator = "coordinator@demo";
   const driver = "driver.runtime@demo";
   await run(site, "task", "add", "demo", "W-runtime", "--title", "Retire runtime", "--coordinator", coordinator, "--assignee", driver, "--done-when", "Delivery branch is merged.");

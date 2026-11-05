@@ -9,6 +9,7 @@ import {
   type JudgmentOptions, type ReviewRoutingResponse, routeBehavioralReview, selectModel,
 } from "./judgment";
 import { availableModelCandidates, bind, resolveExecutable, resolveModelCommand } from "./seats";
+import { type PinnedToolkit, resolvePinnedToolkit } from "./pinned-toolkit";
 import { type Task } from "./tasks";
 import { assertBranchReady, changedFiles, currentCommit, diffCommand, planArtifacts, vcsMode, type VcsMode } from "./vcs";
 
@@ -118,15 +119,12 @@ async function cleanDeliveryRevision(mode: VcsMode, worktree: string, branch: st
   }
 }
 
-async function convention(worktree: string) {
-  const packageRoot = join(worktree, "node_modules", "@afokapu", "atdd-bun");
-  const file = join(packageRoot, conventionRelativePath);
+async function convention(toolkit: PinnedToolkit) {
+  const file = join(toolkit.conventionsRoot, conventionRelativePath);
   if (!await exists(file)) {
-    throw new Error(`Installed ATDD Bun does not provide ${conventionRule}; upgrade @afokapu/atdd-bun before final behavioral review.`);
+    throw new Error(`Pinned ATDD Bun ${toolkit.version} at ${toolkit.conventionsRoot} does not provide ${conventionRule}; upgrade the project's pinned @afokapu/atdd-bun before final behavioral review.`);
   }
-  const packageJson = await readFile(join(packageRoot, "package.json"), "utf8");
-  const packageVersion = String(JSON.parse(packageJson).version ?? "unknown");
-  return { path: conventionRelativePath, absolutePath: file, packageVersion, text: await readFile(file, "utf8") };
+  return { path: conventionRelativePath, absolutePath: file, packageVersion: toolkit.version, text: await readFile(file, "utf8") };
 }
 
 function conservativeRouting(): Extract<ReviewRoutingResponse, { available: true }> {
@@ -237,14 +235,16 @@ export async function launchBehavioralReview(
   const mode = vcsMode(await project(root, projectName));
   const head = await cleanDeliveryRevision(mode, owner.worktree, owner.branch);
 
+  // The target worktree's own pin judges it: never PATH, and a missing or invalid pin fails closed here, unwrapped.
+  const toolkit = await resolvePinnedToolkit(owner.worktree);
   let gateOutput: string;
   try {
-    gateOutput = await runOutput(["atdd-bun"], owner.worktree);
+    gateOutput = await runOutput(toolkit.command, owner.worktree);
   } catch (error) {
     throw new Error(`Deterministic ATDD Bun gates are red; do not invoke the semantic reviewer: ${(error as Error).message}`);
   }
 
-  const conventionSource = await convention(owner.worktree);
+  const conventionSource = await convention(toolkit);
   const routed = await route(root, projectName, taskId, task, owner, options);
   const config = await desk(root);
   const portfolio = await modelPortfolio(root);

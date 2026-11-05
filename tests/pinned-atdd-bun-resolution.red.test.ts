@@ -13,7 +13,6 @@ const scratch: string[] = [];
 
 beforeEach(() => { scratch.length = 0; });
 afterEach(async () => {
-  process.env.PATH = originalPath;
   await Promise.all(scratch.map((dir) => rm(dir, { recursive: true, force: true })));
 });
 

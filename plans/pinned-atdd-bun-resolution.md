@@ -67,3 +67,13 @@ Launches run in a child process whose PATH carries the sentinel global shim, bec
   - 10 invalid-pin layouts (same matrix as the launch tests) must fail closed. The seat stays unretired, and the worktree, branch and HEAD stay unchanged. No toolkit runs, and the failure is not downgraded to the merge-proof "refused ... retained" success.
   - Contract for GREEN: every `PinnedToolkitError` message contains the phrase `pinned ATDD Bun`.
   - Existing `seat.test.ts` retirement test: its fixture symlinks a pin into the primary checkout. Under the target-worktree rule it needs a pinned layout in the seat worktree, to be updated in GREEN.
+
+## GREEN (implemented)
+
+- `src/pinned-toolkit.ts` adds `resolvePinnedToolkit(root)` and `PinnedToolkitError` (messages start `Pinned ATDD Bun unavailable for <root>:`). The `source` kind is a package named `@afokapu/atdd-bun` with `src/cli.ts` and `conventions/`. The `consumer` kind requires a declared dependency, an installed package whose version satisfies the declaration (`Bun.semver.satisfies`, which covers exact pins and ranges), a `.bin/atdd-bun` whose realpath lies inside that package, and the package's `conventions/`. PATH, the primary checkout and parent directories are never consulted.
+- `src/reviews.ts`: `launchBehavioralReview` resolves the toolkit for the delivery worktree before the gate, outside the "gates are red" wrapper, so a bad pin surfaces as `PinnedToolkitError`. The gate runs `toolkit.command`, and `convention()` reads from `toolkit.conventionsRoot` with the resolved version as `package_version`.
+- `src/tasks.ts`: `retirementBun()` is removed. `finishOrProveMerged` resolves from the seat worktree being retired, outside its try, so a bad pin never degrades into the merge-proof "refused ... retained" success.
+- Existing retirement fixtures moved from "pin in the primary checkout" to "pin in the seat worktree" through `tests/helpers/seat-toolkit.ts`. Three tests in `inactive-driver-workspace-cleanup.red.test.ts` encoded the superseded policy (primary first, PATH fallback) and were rewritten to the accepted one:
+  - the seat worktree pin wins over a primary decoy;
+  - a source worktree runs its own `src/cli.ts`;
+  - no pin means a closed failure with no PATH or primary use.

@@ -3,6 +3,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import {
   type Checkpoint, type Seat, atomicYaml, canonicalAddress, exists, now, paths, project, readYaml, required, runOutput, seat, taskId, values, words,
 } from "./core";
+import { resolvePinnedToolkit } from "./pinned-toolkit";
 import { terminalMergeProof } from "./retire-merge-proof";
 import { operatorAuthorizationPayload } from "./task-supersede-authorization";
 import { branchCommit, currentCommit, isAncestor, vcsMode, type VcsMode } from "./vcs";
@@ -243,30 +244,16 @@ async function absentUnregisteredWorktree(root: string, projectName: string, own
 }
 
 /**
- * Resolves the ATDD Bun that retires a seat: the primary checkout's local copy, then the primary
- * checkout's package source when it is ATDD Bun itself, then PATH. A seat worktree copy is never used:
- * a finished branch may pin an older toolkit that refuses the seat being retired.
- */
-async function retirementBun(root: string, projectName: string) {
-  const primary = resolve(required((await project(root, projectName)).repository, `a repository for project ${projectName}`));
-  const local = join(primary, "node_modules", ".bin", "atdd-bun");
-  if (await exists(local)) return [local];
-  const source = join(primary, "src", "cli.ts");
-  try {
-    if ((await Bun.file(join(primary, "package.json")).json()).name === "@afokapu/atdd-bun" && await exists(source)) return [process.execPath, source];
-  } catch { /* no readable package manifest; fall through to PATH */ }
-  // Absolute so command execution never substitutes the seat worktree's local copy.
-  return [required(Bun.which("atdd-bun") ?? undefined, "atdd-bun in the primary checkout node_modules/.bin or on PATH")];
-}
-
-/**
  * ATDD Bun removes a clean merged worktree and its branch. When it refuses (a squash-merged or post-JJ branch it cannot prove
  * merged), retirement proceeds only on independent merge proof; the worktree and branch are then retained and the refusal stands otherwise.
  */
 async function finishOrProveMerged(root: string, projectName: string, owner: Seat) {
   const config = await project(root, projectName);
+  // Resolved from the worktree being retired, outside the try: a missing or invalid pin must fail closed,
+  // never degrade to the merge-proof success below.
+  const toolkit = await resolvePinnedToolkit(owner.worktree);
   try {
-    return await runOutput([...await retirementBun(root, projectName), "worktree", "finish", "--delete-branch", "--vcs", vcsMode(config)], owner.worktree);
+    return await runOutput([...toolkit.command, "worktree", "finish", "--delete-branch", "--vcs", vcsMode(config)], owner.worktree);
   } catch (error) {
     const proof = config.repository && await exists(owner.worktree) ? await terminalMergeProof(config.repository, owner) : undefined;
     if (!proof) throw error;

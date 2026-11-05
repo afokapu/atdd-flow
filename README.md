@@ -296,7 +296,10 @@ implementation → deterministic gates → task review → JEV routing
 
 ATDD Bun owns the substantive method through
 `atdd-bun.review.behavioral-reconciliation`. Workflow first runs deterministic ATDD Bun gates; a red
-gate prevents reviewer launch. JEV then classifies only the required review surface
+gate prevents reviewer launch. Every Flow-invoked ATDD Bun call (this gate, the review convention, and
+seat retirement) uses the toolkit pinned by the explicit target worktree: a consumer's `node_modules/.bin/atdd-bun`
+and installed conventions, or an ATDD Bun source checkout's own `bun src/cli.ts` and `conventions/`. Flow never
+uses PATH or the primary checkout, and a missing or mismatched pin fails closed without mutation. JEV then classifies only the required review surface
 (`LOCAL | ASSEMBLED | JOURNEY | SYSTEM`) plus bounded routing signals such as proof boundary,
 cross-path scope, consequence, and runtime observability. JEV does not decide correctness.
 
