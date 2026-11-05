@@ -4,6 +4,7 @@ import { type Task, type TaskHandoff, type TaskStatus, terminal } from "./tasks"
 import { isRuntimeStateStale, readRuntimeState } from "./runtime-state";
 import { describeActivation, nativeMailInactive } from "./mail-activation-notice";
 import { type Message, type Thread, canonicalMessage, canonicalThread } from "./threads";
+import { ownerInspectionStatus } from "./owner-inspection";
 
 type ListedTask = { project: string; id: string; task: Task; waiting: string[] };
 type ListedSeat = { project: string; record: Seat; checkpoint?: Checkpoint };
@@ -262,6 +263,16 @@ async function dashboard(root: string, requestedProject?: string) {
   printNext(attention, allTasks);
 }
 
+/** Advisory only: lists owner-inspection records for the task; nothing is mutated. */
+async function printOwnerInspection(root: string, projectName: string, taskId: string) {
+  const inspection = await ownerInspectionStatus(root, projectName, taskId);
+  const total = inspection.pending.length + inspection.acknowledged.length;
+  if (!total) return;
+  rule("OWNER INSPECTION", inspection.pending.length ? "HELD" : "ACKNOWLEDGED");
+  for (const id of inspection.pending) console.log(`  ${tone("○", "WAITING")} ${id}  pending operator@desk acknowledgement; parent completion held`);
+  for (const id of inspection.acknowledged) console.log(`  ${tone("✓", "DONE")} ${id}  acknowledged`);
+}
+
 async function taskDashboard(root: string, projectName: string, taskId: string) {
   await selectedProjects(root, projectName);
   const entry = (await tasks(root, projectName)).find((item) => item.id === taskId);
@@ -295,6 +306,7 @@ async function taskDashboard(root: string, projectName: string, taskId: string) 
     const mark = item.proof ? tone("✓", "DONE") : muted("○");
     console.log(`  ${mark} ${index + 1}. ${item.text}${item.proof ? `\n      ${muted(item.proof)}` : ""}`);
   }
+  await printOwnerInspection(root, projectName, taskId);
   rule("CONTEXT");
   console.log(`  source  ${entry.task.source ?? muted("none")}`);
   console.log(`  brief   ${entry.task.body ? truncate(entry.task.body.replace(/\s+/g, " "), terminalWidth() - 10) : muted("none")}`);

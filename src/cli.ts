@@ -20,6 +20,7 @@ import { status } from "./overview";
 import { multiplexer } from "./multiplexer";
 import * as cleanup from "./ephemeral-resources";
 import { linearCommand } from "./linear-cli";
+import { ownerInspectionCommand } from "./owner-inspection-cli";
 import * as ownerAlerts from "./owner-escalations";
 import { recoveryFor } from "./recovery-bundle";
 import { reconcileOnce } from "./reconcile";
@@ -81,6 +82,10 @@ Usage:
   atdd-flow linear mirror message <project> <task-id> <thread-id> <message-id> --config <file> [--apply --authorization <LMA-id>]
   atdd-flow owner-alert scan --by <coordinator-or-main> [--re-notify-after-ms <milliseconds>]
   atdd-flow owner-alert deliver|acknowledge|execute|resolve <alert-id> --by <address> [--note <text>|--option <id>|--reason <text>]
+  atdd-flow owner-inspection publish --file <packet.yaml> --by <address>
+  atdd-flow owner-inspection read <inspection-id>
+  atdd-flow owner-inspection ack <inspection-id> --by operator@desk --note <text>
+  atdd-flow owner-inspection status [<project> [<task-id>]]
   atdd-flow thread start --with <address,...> --subject <text> [--task <project/task-id>]
   atdd-flow thread add <thread-id> <address>
   atdd-flow thread open <thread-id>
@@ -202,6 +207,7 @@ async function main() {
       return;
     },
     linear: () => linearCommand(root, rest),
+    "owner-inspection": () => ownerInspectionCommand(root, rest),
     "owner-alert": async () => {
       const [subcommand, alertId, ...tail] = rest;
       if (subcommand === "scan") {
