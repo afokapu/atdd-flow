@@ -2,7 +2,7 @@ import { readdir } from "node:fs/promises";
 import { addressAliasResolver, canonicalAddress, desk, exists, paths, readYaml, type Checkpoint, type Seat } from "./core";
 import { type Task, type TaskHandoff, type TaskStatus, terminal } from "./tasks";
 import { isRuntimeStateStale, readRuntimeState } from "./runtime-state";
-import { describeActivation, nativeMailInactive } from "./mail-activation-notice";
+import { describeSnapshot, nativeMailInactive } from "./mail-activation-notice";
 import { type Message, type Thread, canonicalMessage, canonicalThread } from "./threads";
 import { ownerInspectionStatus } from "./owner-inspection";
 
@@ -371,7 +371,7 @@ async function seatDashboard(root: string, address: string) {
   const inactive = advisory && !isRuntimeStateStale(advisory, 60_000) ? nativeMailInactive(runtime?.pi_session, advisory.pi_session) : undefined;
   if (inactive) console.log(`  ${tone("native mail inactive", "WAITING")} (bound ${inactive.bound}, live ${inactive.live})`);
   const activation = advisory && !isRuntimeStateStale(advisory, 60_000) ? advisory.mail_activation : undefined;
-  if (activation) console.log(`  native mail ${activation.transport}: ${describeActivation(activation)}${activation.differs.length ? `; differs ${activation.differs.join(", ")}` : ""}${activation.error ? `; error: ${activation.error}` : ""}`);
+  if (activation) console.log(`  ${await describeSnapshot(root, resolved, activation)}`);
   rule("RESPONSIBILITIES", String(owned.length));
   if (!owned.length) console.log(`  ${muted("No task currently names this seat.")}`);
   for (const task of owned.slice(0, 6)) console.log(`  ${tone("●", taskPhase(task))} ${task.id}  ${taskPhase(task)}${task.task.assignee === resolved ? "  owner" : "  coordinator"}`);

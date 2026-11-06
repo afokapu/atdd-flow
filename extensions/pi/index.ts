@@ -8,7 +8,7 @@ import { clearStaleRuntimeState, clearRuntimeState, heartbeatRuntimeState, ownsR
 import { modelPortfolio, paths, piModel, readYaml, type Seat } from "../../src/core";
 import { type TranscriptEntry, customEntries, wakeCapabilityType, wakeRequestIdPattern, wakeRequestType, wakeResultType, wakeStartType } from "../../src/pi-wake-protocol";
 import { inPlaceAdoptionReceiptMatches } from "../../src/exact-adoption-recovery";
-import { activationNotice, diagnoseMailActivation, expectsNativeMail } from "../../src/mail-activation-notice";
+import { activationNotice, bindingMatchesLive, diagnoseMailActivation, expectsNativeMail } from "../../src/mail-activation-notice";
 import { type NoticeState, createNoticeState, deliveredDirectiveText, refreshDelivered, sendSettledDirective, sendTaskDirective, shouldNotifyMail } from "../../src/next-action-notices";
 import { handoverThresholdInstruction, runtimeStartupInstruction, successorInstruction } from "../../src/collaboration-policy";
 import { type RecoveryMode, recoveryFor } from "../../src/recovery-bundle";
@@ -76,6 +76,7 @@ const defaultHeartbeatMs = 15_000;
 const defaultStaleAfterMs = 60_000;
 const defaultActivationIntervalMs = 25;
 const defaultActivationTimeoutMs = 60_000;
+const defaultRefreshMs = 5_000;
 
 function participants(thread: Thread) {
   return Array.isArray(thread.participants) && thread.participants.every((entry) => typeof entry === "string") ? thread.participants as string[] : [];
@@ -440,11 +441,12 @@ async function launchedByRequest(root: string, seat: string, request: unknown) {
 }
 
 /** Desk mail is authoritative; the queue is a bounded delivery index and fs.watch only shortens latency. */
-export default function (pi: ExtensionAPI, environment: NodeJS.ProcessEnv = process.env) {
+export default function (pi: ExtensionAPI, environment: NodeJS.ProcessEnv = process.env, options: { refreshMs?: number } = {}) {
   const root = environment.ATDD_WORKFLOW_ROOT;
   const seat = environment.ATDD_WORKFLOW_SEAT;
   if (!root || !seat) return;
   let runtime: ReturnType<typeof createPiRuntime> | undefined;
+  let refreshTimer: ReturnType<typeof setInterval> | undefined;
   let handoverPrompted = false;
   // Host-attach only: mail older than this activation is consumed without a prompt, so a long backlog cannot trigger one turn per message.
   let hostActivatedAt: number | undefined;
@@ -611,10 +613,11 @@ export default function (pi: ExtensionAPI, environment: NodeJS.ProcessEnv = proc
     const liveSession = liveEnvSession ?? sessionManager?.getSessionId?.();
     // One display-only notice per session: a refused, timed-out or failed activation must never be silent, and never wakes the agent.
     let noticed = false;
+    const liveIdentity = () => ({ pi_session: liveSession, herdr_session: environment.ATDD_FLOW_HERDR_SESSION ?? environment.HERDR_SESSION, pane: environment.ATDD_FLOW_HERDR_PANE ?? environment.HERDR_PANE_ID });
     const noticeActivation = async (transport: "active" | "inactive", error?: string) => {
       if (noticed) return;
       noticed = true;
-      const live = { pi_session: liveSession, herdr_session: environment.ATDD_FLOW_HERDR_SESSION ?? environment.HERDR_SESSION, pane: environment.ATDD_FLOW_HERDR_PANE ?? environment.HERDR_PANE_ID };
+      const live = liveIdentity();
       const activation = await diagnoseMailActivation(root, seat, live, transport, error).catch(() => undefined);
       if (!activation) return;
       if (runtime) await recordMailActivation(root, seat, runtime.ownerToken, activation).catch(() => undefined);
@@ -638,53 +641,84 @@ export default function (pi: ExtensionAPI, environment: NodeJS.ProcessEnv = proc
       });
     } });
     await runtime.start();
+    const current = runtime;
     const piSession = liveEnvSession;
     const herdrSession = environment.ATDD_FLOW_HERDR_SESSION;
     const pane = environment.ATDD_FLOW_HERDR_PANE;
+    // Startup announcements happen once whether the first verdict or a later refresh activates the transport.
+    let announced = false;
+    const firstAnnouncement = () => !announced && (announced = true);
+    const startHost = async (replay: boolean) => {
+      if (!replay) hostActivatedAt = Date.now();
+      if (!await current.activate()) return failWake("native mail activation was refused");
+      if (!firstAnnouncement()) return;
+      announceCapability();
+      if (await completeWake() || samePaneNew) return;
+      const bundle = await recovery(root, seat, "start", sessionManager?.getSessionId?.());
+      const notice = replay ? "Mail that arrived while native mail was inactive is delivered now." : "Notices created before this session were not replayed; run atdd-flow status seat " + seat + " for unanswered mail.";
+      pi.sendMessage({ customType: "atdd-flow-start", content: `${runtimeStartupInstruction(seat, bundle)} ${notice}`, display: true, details: { seat, root } }, { triggerTurn: true, deliverAs: "followUp" });
+    };
+    const startLaunched = async () => {
+      if (!await activateWithRetry(() => current.activate())) return failWake("native mail activation was refused");
+      if (!firstAnnouncement()) return;
+      announceCapability();
+      if (await completeWake()) {
+        if (ctx.hasUI) ctx.ui.notify(`ATDD Flow native mail active for ${seat}`, "info");
+        return;
+      }
+      // The same-pane /new already posted its single resume turn; no second start turn.
+      if (samePaneNew) { if (ctx.hasUI) ctx.ui.notify(`ATDD Flow native mail active for ${seat}`, "info"); return; }
+      const request = await readHandoverReplacement(root, seat).catch(() => undefined);
+      const successor = request && piSession && request.source.pi_session !== piSession ? request : undefined;
+      const bundle = await recovery(root, seat, successor ? "successor" : "start", piSession);
+      pi.sendMessage({ customType: "atdd-flow-start", content: runtimeStartupInstruction(seat, successor ? undefined : bundle), display: true, details: { seat, root } }, { triggerTurn: true, deliverAs: "followUp" });
+      if (successor) {
+        pi.sendMessage({
+          customType: "atdd-flow-context-handover-replacement",
+          content: successorInstruction(seat, successor.handover.id, bundle),
+          display: true, details: { seat, handover: successor.handover.id, authority: "handover-replacement" },
+        }, { triggerTurn: true, deliverAs: "followUp" });
+      }
+      await sendTaskDirective(host, root, seat, notices);
+      if (ctx.hasUI) ctx.ui.notify(`ATDD Flow native mail active for ${seat}`, "info");
+    };
+    // A supported bind can make the durable record match this running Pi after the first verdict. Re-verify with the same
+    // read-only proof; activation still needs the exact live session, Herdr session and pane, so a mismatch is never activated.
+    const refreshWhenBound = (verified: () => Promise<boolean>, start: () => Promise<unknown>) => {
+      let busy = false;
+      const stopRefresh = () => { if (refreshTimer) clearInterval(refreshTimer); refreshTimer = undefined; };
+      stopRefresh();
+      refreshTimer = setInterval(() => {
+        if (busy) return;
+        busy = true;
+        void (async () => {
+          if (current.active) return stopRefresh();
+          if (!await verified()) return;
+          await start();
+          if (!current.active) return;
+          stopRefresh();
+          noticed = true;
+          const activation = await diagnoseMailActivation(root, seat, liveIdentity(), "active");
+          await recordMailActivation(root, seat, current.ownerToken, activation);
+        })().catch((error) => { if (current.active) { stopRefresh(); void noticeActivation("active", error instanceof Error ? error.message : String(error)); } }).finally(() => { busy = false; });
+      }, options.refreshMs ?? defaultRefreshMs);
+      refreshTimer.unref?.();
+    };
     if (!piSession && !herdrSession && !pane) {
-      if (await hostAttachedActivation({ root, seat, herdrSession: environment.HERDR_SESSION, pane: environment.HERDR_PANE_ID, piSession: sessionManager?.getSessionId?.(), piSessionPath: sessionManager?.getSessionFile?.() })) {
-        hostActivatedAt = Date.now();
-        if (await runtime.activate()) {
-          announceCapability();
-          if (await completeWake() || samePaneNew) return;
-          const bundle = await recovery(root, seat, "start", sessionManager?.getSessionId?.());
-          const notice = "Notices created before this session were not replayed; run atdd-flow status seat " + seat + " for unanswered mail.";
-          pi.sendMessage({ customType: "atdd-flow-start", content: `${runtimeStartupInstruction(seat, bundle)} ${notice}`, display: true, details: { seat, root } }, { triggerTurn: true, deliverAs: "followUp" });
-        }
-        else failWake("native mail activation was refused");
-      } else if (await expectsNativeMail(root, seat)) await noticeActivation("inactive");
+      const hostProof = () => hostAttachedActivation({ root, seat, herdrSession: environment.HERDR_SESSION, pane: environment.HERDR_PANE_ID, piSession: sessionManager?.getSessionId?.(), piSessionPath: sessionManager?.getSessionFile?.() });
+      if (await hostProof()) await startHost(false);
+      else if (await expectsNativeMail(root, seat)) {
+        await noticeActivation("inactive");
+        refreshWhenBound(hostProof, () => startHost(true));
+      }
       return;
     }
     if (!piSession || !herdrSession || !pane) return;
-    const current = runtime;
-    void awaitLaunchActivation({
-      root, seat, piSession, herdrSession, pane,
-      activate: async () => {
-        if (!await activateWithRetry(() => current.activate())) return failWake("native mail activation was refused");
-        announceCapability();
-        if (await completeWake()) {
-          if (ctx.hasUI) ctx.ui.notify(`ATDD Flow native mail active for ${seat}`, "info");
-          return;
-        }
-        // The same-pane /new already posted its single resume turn; no second start turn.
-        if (samePaneNew) { if (ctx.hasUI) ctx.ui.notify(`ATDD Flow native mail active for ${seat}`, "info"); return; }
-        const request = await readHandoverReplacement(root, seat).catch(() => undefined);
-        const successor = request && request.source.pi_session !== piSession ? request : undefined;
-        const bundle = await recovery(root, seat, successor ? "successor" : "start", piSession);
-        pi.sendMessage({ customType: "atdd-flow-start", content: runtimeStartupInstruction(seat, successor ? undefined : bundle), display: true, details: { seat, root } }, { triggerTurn: true, deliverAs: "followUp" });
-        if (successor) {
-          pi.sendMessage({
-            customType: "atdd-flow-context-handover-replacement",
-            content: successorInstruction(seat, successor.handover.id, bundle),
-            display: true, details: { seat, handover: successor.handover.id, authority: "handover-replacement" },
-          }, { triggerTurn: true, deliverAs: "followUp" });
-        }
-        await sendTaskDirective(host, root, seat, notices);
-        if (ctx.hasUI) ctx.ui.notify(`ATDD Flow native mail active for ${seat}`, "info");
-      },
-    }).catch((error) => (failWake(error instanceof Error ? error.message : String(error)), error instanceof ActivationTimeout)
-      ? noticeActivation("inactive")
-      : noticeActivation(current.active ? "active" : "inactive", error instanceof Error ? error.message : String(error)));
+    void awaitLaunchActivation({ root, seat, piSession, herdrSession, pane, activate: startLaunched })
+      .catch((error) => (failWake(error instanceof Error ? error.message : String(error)), error instanceof ActivationTimeout)
+        ? noticeActivation("inactive")
+        : noticeActivation(current.active ? "active" : "inactive", error instanceof Error ? error.message : String(error)));
+    refreshWhenBound(() => bindingMatchesLive(root, seat, { pi_session: piSession, pi_session_path: sessionManager?.getSessionFile?.(), herdr_session: herdrSession, pane }), startLaunched);
   });
-  pi.on("session_shutdown", async () => { await runtime?.stop(); });
+  pi.on("session_shutdown", async () => { if (refreshTimer) clearInterval(refreshTimer); refreshTimer = undefined; await runtime?.stop(); });
 }
