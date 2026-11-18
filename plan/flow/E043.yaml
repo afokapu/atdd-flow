@@ -1,0 +1,9 @@
+urn: acc:flow:E043-RED-001
+phase: RED
+description: >-
+  A supported same-session bind refreshes native mail without restart: status
+  seat compares the recorded activation snapshot with the durable seat record at
+  read time and reports a snapshot that no longer differs as stale rather than
+  as a live mismatch, a genuine session or pane mismatch is still reported, and
+  a running Pi whose live session, Herdr session and pane now match the durable
+  binding activates native mail, while a different pane or session never does.
