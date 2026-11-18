@@ -14,6 +14,7 @@ import { resolveExactSessionAdoptionAuthorization } from "./adoption-authorizati
 import { exactFailedAdoptionProof, requestlessAdoptionEvidence } from "./exact-adoption-recovery";
 import { isExactOperatorSeat, operatorActivation, operatorRelaunchSection } from "./operator-launch";
 import { readRuntimeState } from "./runtime-state";
+import { type StaleArchiveTransaction, discardStaleArchiveStages, publishStaleArchive, rollbackStaleArchive, staleArchiveManifest, staleArchivePath, stageStaleArchive } from "./stale-request-archive";
 import { type StaleMainRecovery, buildStaleMainRecovery, listedPiAgents, relocationFor, replaceActiveRequest, staleRecoveryMatches } from "./stale-main-recovery";
 
 export type Handover = {
@@ -121,6 +122,8 @@ export type HandoverReplacementRequest = {
     live_source: LiveSourceProof;
   };
   stale_main_recovery?: StaleMainRecovery;
+  /** The inert prior request this fresh request replaced, preserved by content hash. */
+  archived_request?: { path: string; sha256: string; task: string; archive: string };
   created_at: string;
 };
 
@@ -441,11 +444,15 @@ async function publishCreateOnly(file: string, content: string) {
   } finally { await rm(temporary, { force: true }); }
 }
 
-const replacementFlags = ["--supersede-consumed", "--recover-stale-main", "--legacy-source-bootstrap", "--handover", "--authorization", "--takeover-task", "--source-pi-session", "--source-pi-session-path", "--source-herdr-session", "--source-pane", "--herdr-session", "--target-pane", "--target-cwd"];
+const replacementFlags = ["--supersede-consumed", "--recover-stale-main", "--archive-stale-request", "--legacy-source-bootstrap", "--handover", "--authorization", "--takeover-task", "--source-pi-session", "--source-pi-session-path", "--source-herdr-session", "--source-pane", "--herdr-session", "--target-pane", "--target-cwd"];
+const exclusiveModes: [string, string[], string][] = [
+  ["--supersede-consumed", ["--legacy-source-bootstrap"], "Consumed replacement supersession cannot use legacy source bootstrap."],
+  ["--recover-stale-main", ["--supersede-consumed", "--legacy-source-bootstrap"], "Stale main recovery cannot be combined with consumed supersession or legacy source bootstrap."],
+  ["--archive-stale-request", ["--supersede-consumed", "--recover-stale-main", "--legacy-source-bootstrap"], "Stale request archive cannot be combined with consumed supersession, stale main recovery, or legacy source bootstrap."],
+];
 function validateReplacementArgs(args: string[]) {
-  if (args.some((arg) => arg.startsWith("--") && !replacementFlags.includes(arg))) throw new Error("Use `handover replace <main-seat> [--supersede-consumed] [--recover-stale-main] [--legacy-source-bootstrap] --handover <id> --authorization <operator-record> --takeover-task <id> --source-pi-session <id> --source-pi-session-path <jsonl> --source-herdr-session <session> --source-pane <pane> --herdr-session <session> --target-pane <pane> --target-cwd <canonical-main-worktree>`.");
-  if (has(args, "--supersede-consumed") && has(args, "--legacy-source-bootstrap")) throw new Error("Consumed replacement supersession cannot use legacy source bootstrap.");
-  if (has(args, "--recover-stale-main") && (has(args, "--supersede-consumed") || has(args, "--legacy-source-bootstrap"))) throw new Error("Stale main recovery cannot be combined with consumed supersession or legacy source bootstrap.");
+  if (args.some((arg) => arg.startsWith("--") && !replacementFlags.includes(arg))) throw new Error("Use `handover replace <main-seat> [--supersede-consumed] [--recover-stale-main] [--archive-stale-request] [--legacy-source-bootstrap] --handover <id> --authorization <operator-record> --takeover-task <id> --source-pi-session <id> --source-pi-session-path <jsonl> --source-herdr-session <session> --source-pane <pane> --herdr-session <session> --target-pane <pane> --target-cwd <canonical-main-worktree>`.");
+  for (const [mode, others, message] of exclusiveModes) if (has(args, mode) && others.some((other) => has(args, other))) throw new Error(message);
 }
 
 async function currentReplacementHandover(root: string, resolved: string, args: string[]) {
@@ -485,7 +492,7 @@ async function prepareReplacement(root: string, resolved: string, args: string[]
   const relocation = recover ? await relocationFor(record, source, target, file) : undefined;
   if (!relocation && target.pane !== source.pane) throw new Error("Path-A replacement target must be the exact released source pane.");
   if (!supersede && !recover) assertReplacementSource(record, source, legacy);
-  return { legacy, supersede, recover, handover, task, record, source, target, relocation };
+  return { legacy, supersede, recover, archiveStale: has(args, "--archive-stale-request"), handover, task, record, source, target, relocation };
 }
 
 function replacementRequest(resolved: string, intent: Awaited<ReturnType<typeof prepareReplacement>>, authorization: { id: string; hash: string }, legacySource: HandoverReplacementRequest["legacy_source"], dependencies: HandoverReplacementDependencies): HandoverReplacementRequest {
@@ -812,6 +819,56 @@ async function supersedeConsumedReplacement(root: string, resolved: string, file
   }
 }
 
+/** The active request must be a valid prior request of this seat whose takeover task is terminal (so it can never launch) and whose authorization is not the fresh one. */
+async function inertActiveRequest(root: string, resolved: string, file: string, intent: Awaited<ReturnType<typeof prepareReplacement>>, authorization: { id: string; hash: string }) {
+  const { bytes, request } = await readConsumedRequest(file, resolved);
+  await assertTerminalPriorTask(root, intent.record.project, request.task);
+  if (request.authorization?.hash === authorization.hash || request.authorization?.id === authorization.id) {
+    throw new Error("Stale Path-A request archive requires a fresh authorization that differs from the archived request's.");
+  }
+  return { request, bytes, hash: createHash("sha256").update(bytes).digest("hex") };
+}
+
+/**
+ * Replaces an inert (terminal-task) active request with one fresh authorized request: the exact prior bytes are archived by
+ * hash create-only, the fresh request is staged, and only then swapped in under the supersession lock. Every earlier guard
+ * of the ordinary path (task, handover, source, target, authorization) has already run; any failure restores the prior bytes.
+ */
+async function archiveStaleAndReplace(root: string, resolved: string, file: string, intent: Awaited<ReturnType<typeof prepareReplacement>>, args: string[], dependencies: HandoverReplacementDependencies) {
+  if (!await exists(file)) throw new Error(`Consumed Path-A replacement request does not exist for ${resolved}.`);
+  const ownedLock = await acquireSupersessionLock(file, resolved);
+  let transaction: StaleArchiveTransaction | undefined, archived = { archive: "", bytes: "" };
+  try {
+    const authorization = await resolveExactSessionAdoptionAuthorization(root, nonEmpty(words(args, "--authorization"), "--authorization"), {
+      seat: resolved, pi_session: intent.source.pi_session, pi_session_path: intent.source.pi_session_path,
+      source: { herdr_session: intent.source.herdr_session, pane: intent.source.pane }, target: intent.target,
+    });
+    const stale = await inertActiveRequest(root, resolved, file, intent, authorization), archive = staleArchivePath(root, resolved, stale.hash);
+    archived = { archive, bytes: stale.bytes };
+    const manifest = staleArchiveManifest(resolved, file, stale);
+    const request = { ...replacementRequest(resolved, intent, authorization, undefined, dependencies), archived_request: { path: file, sha256: stale.hash, task: stale.request.task, archive } };
+    transaction = await stageStaleArchive(file, archive, stale.bytes, manifest, yaml.print(request), dependencies);
+    await publishStaleArchive(transaction, archive, stale.bytes, manifest, dependencies);
+    if (await readFile(file, "utf8") !== stale.bytes) throw new Error(`Path-A replacement active request changed during stale request archive for ${resolved}.`);
+    transaction.swapAttempted = true;
+    await (dependencies.replaceActive ?? rename)(transaction.successorStage, file);
+    console.log(`Archived stale Path-A replacement request and recorded a fresh request for ${resolved}.`);
+  } catch (error) {
+    await rollbackStaleArchive(file, archived.archive, archived.bytes, transaction, restoreActive);
+    throw error;
+  } finally {
+    if (transaction) await discardStaleArchiveStages(transaction);
+    await releaseSupersessionLock(ownedLock.lock, ownedLock.content);
+  }
+}
+
+/** The explicit supersession and stale-archive modes own their whole transaction; the ordinary and recovery paths do not. */
+function dedicatedReplacement(root: string, resolved: string, file: string, intent: Awaited<ReturnType<typeof prepareReplacement>>, args: string[], dependencies: HandoverReplacementDependencies) {
+  if (intent.supersede) return supersedeConsumedReplacement(root, resolved, file, intent, args, dependencies);
+  if (intent.archiveStale) return archiveStaleAndReplace(root, resolved, file, intent, args, dependencies);
+  return undefined;
+}
+
 /**
  * Creates the single immutable intent that an old Pi may observe before it voluntarily exits.
  * It deliberately does not stop, bind, attach, project, or launch any process.
@@ -819,7 +876,8 @@ async function supersedeConsumedReplacement(root: string, resolved: string, file
 export async function requestHandoverReplacement(root: string, address: string, args: string[], dependencies: HandoverReplacementDependencies = {}) {
   const resolved = await canonicalAddress(root, address), intent = await prepareReplacement(root, resolved, args);
   const file = handoverReplacementPath(root, resolved);
-  if (intent.supersede) return supersedeConsumedReplacement(root, resolved, file, intent, args, dependencies);
+  const dedicated = dedicatedReplacement(root, resolved, file, intent, args, dependencies);
+  if (dedicated) return dedicated;
   if (!intent.recover && await exists(file)) throw new Error(`Path-A replacement request already exists for ${resolved}.`);
   const authorization = await resolveExactSessionAdoptionAuthorization(root, nonEmpty(words(args, "--authorization"), "--authorization"), {
     seat: resolved, pi_session: intent.source.pi_session, pi_session_path: intent.source.pi_session_path,
