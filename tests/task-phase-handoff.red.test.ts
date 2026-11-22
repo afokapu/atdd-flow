@@ -78,7 +78,7 @@ test("GREEN: the two direct CLI operations persist a submitted handoff and coord
       "--by", "driver.delivery@demo", "--phase", "plan", "--evidence", "M-cli-plan");
     expect(submitted.exitCode, submitted.output).toBe(0);
     const answered = await invoke(root, "task", "respond", "demo", "delivery",
-      "--by", "coordinator@demo", "--outcome", "accept", "--phase", "red");
+      "--by", "coordinator@demo", "--outcome", "accept", "--phase", "red", "--plan-review", "M-coach-reviewed-plan");
     expect(answered.exitCode, answered.output).toBe(0);
     expect(await task(root)).toMatchObject({
       status: "in_progress",
@@ -106,11 +106,11 @@ test("RED: coordinator acceptance or return names the next phase and retains imm
       "--by", "driver.delivery@demo", "--phase", "green", "--evidence", "PR-42",
     ]);
     await respondToHandoff(root, "demo", "delivery", [
-      "--by", "coordinator@demo", "--outcome", "return", "--phase", "refactor",
+      "--by", "coordinator@demo", "--outcome", "return", "--phase", "green",
     ]);
     expect(await task(root)).toMatchObject({
       status: "in_progress",
-      phase: "refactor",
+      phase: "green",
       handoff: { state: "executing", evidence: "PR-42", updated_at: expect.any(String) },
     });
   } finally { await rm(root, { recursive: true, force: true }); }
@@ -155,5 +155,49 @@ test("RED: legacy tasks remain readable and task status reports optional handoff
     expect(status.output).toContain("AWAITING-COORDINATOR");
     expect(status.output).toContain("M-status-proof");
     expect(status.output).toContain("OFFLINE");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+
+test("PLT-128: PLAN cannot advance without Coach review evidence and only one phase at a time", async () => {
+  const root = await fixture();
+  try {
+    await submitHandoff(root, "demo", "delivery", [
+      "--by", "driver.delivery@demo", "--phase", "plan", "--evidence", "M-driver-plan",
+    ]);
+    await expect(respondToHandoff(root, "demo", "delivery", [
+      "--by", "coordinator@demo", "--outcome", "accept", "--phase", "red",
+    ])).rejects.toThrow(/PLAN review/i);
+    await expect(respondToHandoff(root, "demo", "delivery", [
+      "--by", "coordinator@demo", "--outcome", "accept", "--phase", "green",
+      "--plan-review", "M-reviewed",
+    ])).rejects.toThrow(/must advance to RED/i);
+    await respondToHandoff(root, "demo", "delivery", [
+      "--by", "coordinator@demo", "--outcome", "accept", "--phase", "red",
+      "--plan-review", "M-coach-plan-review",
+    ]);
+    expect(await task(root)).toMatchObject({
+      phase: "red",
+      handoff: { plan_review: { by: "coordinator@demo", evidence: "M-coach-plan-review" } },
+    });
+    await expect(submitHandoff(root, "demo", "delivery", [
+      "--by", "driver.delivery@demo", "--phase", "green", "--evidence", "M-skipped-red",
+    ])).rejects.toThrow(/current phase first/i);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("PLT-128: returned PLAN remains PLAN and does not mint Coach approval", async () => {
+  const root = await fixture();
+  try {
+    await submitHandoff(root, "demo", "delivery", [
+      "--by", "driver.delivery@demo", "--phase", "plan", "--evidence", "M-draft-plan",
+    ]);
+    await respondToHandoff(root, "demo", "delivery", [
+      "--by", "coordinator@demo", "--outcome", "return", "--phase", "plan",
+    ]);
+    expect(await task(root)).toMatchObject({
+      phase: "plan", handoff: { state: "executing", evidence: "M-draft-plan" },
+    });
+    expect((await task(root)).handoff.plan_review).toBeUndefined();
   } finally { await rm(root, { recursive: true, force: true }); }
 });
