@@ -168,6 +168,13 @@ test("RED: legacy tasks remain readable and task status reports optional handoff
  * PLAN handoff. Legacy fixture tasks deliberately remain v1 without this gate. */
 async function plannedFixture() {
   const root = await fixture();
+  // Operator messages reach the real project main seat; do not fake routing.
+  const mainDir=join(root,"work","demo","seats","main");
+  await mkdir(mainDir,{recursive:true});
+  await writeFile(join(mainDir,"seat.yaml"),Bun.YAML.stringify({
+    schema:"atdd-workflow/seat/v2",address:"main@demo",role:"main",
+    project:"demo",worktree:join(root,"primary"),branch:"main",
+  }));
   const worktree = join(root,"worktrees","driver");
   await mkdir(join(worktree,"plan","acceptances"),{recursive:true});
   const git=(...args:string[])=>execFileSync("git",args,{cwd:worktree,encoding:"utf8"}).trim();
