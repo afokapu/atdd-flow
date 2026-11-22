@@ -1,8 +1,10 @@
+// Acceptance: acc:flow:E043-UNIT-001
 import { expect, test } from "bun:test";
+import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { respondToHandoff, submitHandoff } from "../src/tasks";
+import { respondToHandoff, submitHandoff, prove, review } from "../src/tasks";
 
 const cli = join(import.meta.dir, "..", "src", "cli.ts");
 
@@ -156,4 +158,130 @@ test("RED: legacy tasks remain readable and task status reports optional handoff
     expect(status.output).toContain("M-status-proof");
     expect(status.output).toContain("OFFLINE");
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+
+/** Only temporary committed artifacts and typed owner messages may authorize a
+ * PLAN handoff. Legacy fixture tasks deliberately remain v1 without this gate. */
+async function plannedFixture() {
+  const root = await fixture();
+  const worktree = join(root,"worktrees","driver");
+  await mkdir(join(worktree,"plan","acceptances"),{recursive:true});
+  const git=(...args:string[])=>execFileSync("git",args,{cwd:worktree,encoding:"utf8"}).trim();
+  git("init","-q");git("config","user.name","ATDD test");git("config","user.email","atdd@example.invalid");
+  const source="plan/acceptances/delivery.yaml",acceptance="acc:flow:E043-UNIT-001";
+  await writeFile(join(worktree,source),"urn: "+acceptance+"\nrequirement: Delivery works\n");
+  git("add",".");git("commit","-qm","ratified PLAN");
+  const revision=git("rev-parse","HEAD");
+  const seatFile=join(root,"work","demo","seats","driver.delivery","seat.yaml");
+  const driver=Bun.YAML.parse(await readFile(seatFile,"utf8"));
+  driver.worktree=worktree;
+  await writeFile(seatFile,Bun.YAML.stringify(driver));
+  const taskFile=join(root,"work","demo","tasks","delivery.yaml");
+  const record=await task(root);
+  record.phase="plan";record.plan_required=true;
+  await writeFile(taskFile,Bun.YAML.stringify(record));
+  const ratification="M-owner-ratification",reviewRef="M-coach-plan-review";
+  const thread="T-plan-review",dir=join(root,"threads",thread);
+  await mkdir(dir,{recursive:true});
+  await writeFile(join(dir,"thread.yaml"),Bun.YAML.stringify({
+    schema:"atdd-workflow/thread/v1",id:thread,task:"demo/delivery",
+    participants:["operator@desk","main@demo","coordinator@demo","driver.delivery@demo"],
+    subject:"Scoped plan decision",state:"open",
+  }));
+  const authorization={
+    schema:"atdd-workflow/plan-ratification/v1",project:"demo",task:"delivery",
+    coordinator:"coordinator@demo",assignee:"driver.delivery@demo",
+    action:"ratify",source,revision,acceptances:[acceptance],
+  };
+  const owner=(next=authorization,from="operator@desk")=>writeFile(join(dir,ratification+".yaml"),
+    Bun.YAML.stringify({schema:"atdd-workflow/message/v1",id:ratification,from,to:["main@demo"],
+      kind:"message",body:"Ratified exact plan.",created_at:"2026-11-22T12:00:00Z",authorization:next}));
+  const coach=(body="Reviewed plan at "+revision,from="coordinator@demo")=>writeFile(join(dir,reviewRef+".yaml"),
+    Bun.YAML.stringify({schema:"atdd-workflow/message/v1",id:reviewRef,from,
+      to:["driver.delivery@demo"],kind:"message",body,created_at:"2026-11-22T12:01:00Z"}));
+  await owner();await coach();
+  const submit=["--by","driver.delivery@demo","--phase","plan","--evidence","M-driver-plan",
+    "--plan-source",source,"--plan-revision",revision,"--acceptance",acceptance,
+    "--operator-ratification",ratification];
+  const accept=["--by","coordinator@demo","--outcome","accept","--phase","red","--plan-review",reviewRef];
+  return {root,worktree,git,source,revision,acceptance,ratification,reviewRef,owner,coach,submit,accept,taskFile};
+}
+
+test("ATD-42: a ratified PLAN and Coach review advance the same driver through RED GREEN REFACTOR", async () => {
+  const f=await plannedFixture();
+  try {
+    await submitHandoff(f.root,"demo","delivery",f.submit);
+    await respondToHandoff(f.root,"demo","delivery",f.accept);
+    expect(await task(f.root)).toMatchObject({status:"in_progress",phase:"red",
+      handoff:{plan:{source:f.source,revision:f.revision,acceptances:[f.acceptance],ratification:f.ratification},
+        plan_review:{by:"coordinator@demo",evidence:f.reviewRef}}});
+    for(const [stage,next] of [["red","green"],["green","refactor"],["refactor","refactor"]] as const){
+      await submitHandoff(f.root,"demo","delivery",[
+        "--by","driver.delivery@demo","--phase",stage,"--evidence","M-"+stage+"-proof",
+      ]);
+      await respondToHandoff(f.root,"demo","delivery",[
+        "--by","coordinator@demo","--outcome","accept","--phase",next,
+      ]);
+    }
+    await prove(f.root,"demo","delivery",["--by","driver.delivery@demo","--item","1","--proof","M-acceptance-proof"]);
+    await review(f.root,"demo","delivery",["--by","driver.delivery@demo"]);
+    expect(await task(f.root)).toMatchObject({status:"review",phase:"refactor",
+      handoff:{plan_review:{by:"coordinator@demo",ratification:f.ratification}}});
+  }finally{await rm(f.root,{recursive:true,force:true});}
+});
+
+test("ATD-42: missing plan evidence, wrong scope and skipped phases fail before write", async () => {
+  const f=await plannedFixture();
+  try {
+    const before=await readFile(f.taskFile,"utf8");
+    await expect(submitHandoff(f.root,"demo","delivery",[
+      "--by","driver.delivery@demo","--phase","red","--evidence","M-skipped",
+    ])).rejects.toThrow(/phase skipping/i);
+    await expect(submitHandoff(f.root,"demo","delivery",[
+      "--by","driver.delivery@demo","--phase","plan","--evidence","M-unplanned",
+    ])).rejects.toThrow(/plan-source/i);
+    await expect(submitHandoff(f.root,"demo","delivery",[
+      ...f.submit.slice(0,-2),"--acceptance","acc:flow:E999-NOT-DECLARED",
+      "--operator-ratification",f.ratification,
+    ])).rejects.toThrow(/not declared/i);
+    expect(await readFile(f.taskFile,"utf8")).toBe(before);
+    await expect(review(f.root,"demo","delivery",["--by","driver.delivery@demo"])).rejects.toThrow(/requires accepted PLAN/i);
+  }finally{await rm(f.root,{recursive:true,force:true});}
+});
+
+test("ATD-42: stale PLAN, forged ratification or unreviewed Coach verdict cannot reach RED", async () => {
+  const f=await plannedFixture();
+  try {
+    await submitHandoff(f.root,"demo","delivery",f.submit);
+    const before=await readFile(f.taskFile,"utf8");
+    await f.owner(undefined,"driver.delivery@demo");
+    await expect(respondToHandoff(f.root,"demo","delivery",f.accept)).rejects.toThrow(/operator-authorized|owner-authorized/i);
+    expect(await readFile(f.taskFile,"utf8")).toBe(before);
+    await f.owner();
+    await f.coach("Approved but no revision reference.");
+    await expect(respondToHandoff(f.root,"demo","delivery",f.accept)).rejects.toThrow(/exact plan revision/i);
+    await f.coach();
+    await writeFile(join(f.worktree,"README.md"),"Changed after PLAN submission\n");
+    f.git("add",".");f.git("commit","-qm","plan changed");
+    await expect(respondToHandoff(f.root,"demo","delivery",f.accept)).rejects.toThrow(/changed after submission/i);
+    expect(await readFile(f.taskFile,"utf8")).toBe(before);
+  }finally{await rm(f.root,{recursive:true,force:true});}
+});
+
+test("ATD-42: only operator may post exact ratification authorization in Flow threads", async () => {
+  const f=await plannedFixture();
+  try {
+    const tuple={schema:"atdd-workflow/plan-ratification/v1",project:"demo",task:"delivery",
+      coordinator:"coordinator@demo",assignee:"driver.delivery@demo",action:"ratify",
+      source:f.source,revision:f.revision,acceptances:[f.acceptance]};
+    const fake=await invoke(f.root,"post","T-plan-review","--from","coordinator@demo",
+      "--to","driver.delivery@demo","--body","Approve.","--plan-ratification-authorization",JSON.stringify(tuple));
+    expect(fake.exitCode).not.toBe(0);
+    expect(fake.output).toContain("Only operator@desk");
+    const valid=await invoke(f.root,"post","T-plan-review","--from","operator@desk",
+      "--to","main@demo","--body","Ratify PLAN.","--plan-ratification-authorization",JSON.stringify(tuple));
+    expect(valid.exitCode,valid.output).toBe(0);
+    expect(valid.output).toContain("M-");
+  }finally{await rm(f.root,{recursive:true,force:true});}
 });
