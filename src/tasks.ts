@@ -1,5 +1,5 @@
 import { readdir, realpath } from "node:fs/promises";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import {
   type Checkpoint, type Seat, atomicYaml, canonicalAddress, exists, now, paths, project, readYaml, required, runOutput, seat, taskId, values, words,
 } from "./core";
@@ -17,6 +17,8 @@ export type TaskHandoff = {
   state: HandoffState; evidence: string; updated_at: string; submitted_phase?: TaskPhase;
   /** PLAN review is a coordinator-owned attestation, not a worker's claim of operator authority. */
   plan_review?: { by: string; evidence: string; reviewed_at: string };
+  /** The ratified scoped plan submitted for Coach assessment, pinned to a revision. */
+  plan?: { source: string; revision: string; acceptances: string[] };
 };
 export type DoneWhen = { text: string; proof?: string };
 export type GovernedBase = { coordinator: string; branch: string; commit: string };
@@ -679,8 +681,29 @@ export async function submitHandoff(root: string, projectName: string, id: strin
   const submitted = phase(words(args, "--phase"));
   if (task.phase && task.phase !== submitted)
     throw new Error(`Task ${id} is in ${task.phase.toUpperCase()}, not ${submitted.toUpperCase()}; complete the current phase first.`);
+  let plan: TaskHandoff["plan"];
+  if (submitted === "plan" && task.phase === "plan") {
+    // New PLAN tasks require reviewable, commit-bound planning evidence. Legacy
+    // in-progress tasks that predate phase tracking remain readable/operable.
+    const source = required(words(args, "--plan-source"), "PLAN source (--plan-source)");
+    const revision = required(words(args, "--plan-revision"), "PLAN revision (--plan-revision)");
+    const acceptances = values(args, "--acceptance");
+    if (!/^[a-f0-9]{40,64}$/i.test(revision) || !acceptances.length ||
+        acceptances.some(x => !x.trim() || /^(?:TBD|TODO|N\/A)$/i.test(x.trim())))
+      throw new Error("PLAN requires a concrete source revision and one or more acceptance references.");
+    const owner = await seat(root, task.assignee);
+    const config = await project(root, projectName);
+    const head = await currentCommit(vcsMode(config), owner.worktree);
+    if (head !== revision) throw new Error("PLAN source revision does not match the assignee's current commit.");
+    const home = await realpath(owner.worktree), planPath = await realpath(resolve(home, source));
+    const rel = relative(home, planPath);
+    if (!rel || rel === ".." || rel.startsWith(".." + sep) || rel.startsWith("../") || rel.startsWith("..\\") || resolve(home, rel) !== planPath)
+      throw new Error("PLAN source must be a tracked in-worktree artifact.");
+    plan = { source: rel.replaceAll("\\", "/"), revision, acceptances };
+  }
   task.phase = submitted;
-  task.handoff = { state: "awaiting_coordinator", evidence, updated_at: now(), submitted_phase: submitted };
+  task.handoff = { state: "awaiting_coordinator", evidence, updated_at: now(), submitted_phase: submitted,
+    ...(plan ? { plan } : {}) };
   await writeTask(root, projectName, taskId(id), task);
   console.log(`${id}  handoff awaiting_coordinator`);
 }
@@ -705,6 +728,13 @@ export async function respondToHandoff(root: string, projectName: string, id: st
     throw new Error(`Returning ${submitted.toUpperCase()} must keep that phase for correction.`);
   let planReview: TaskHandoff["plan_review"];
   if (outcome === "accept" && submitted === "plan") {
+    if (task.handoff.plan) {
+      const owner = await seat(root, required(task.assignee, "a PLAN assignee"));
+      const config = await project(root, projectName);
+      const head = await currentCommit(vcsMode(config), owner.worktree);
+      if (head !== task.handoff.plan.revision)
+        throw new Error("PLAN changed after submission; the Coach must review the new revision.");
+    }
     const evidence = required(words(args, "--plan-review"), "Coach PLAN review evidence (--plan-review)");
     if (!/^\\S{4,}$/.test(evidence) || /^(?:TBD|TODO|N\/A)$/i.test(evidence))
       throw new Error("Coach PLAN review needs a concrete durable evidence reference.");
@@ -838,7 +868,8 @@ const phaseActions: Record<TaskPhase, string> = {
 const phaseOrder: TaskPhase[] = ["plan", "red", "green", "refactor"];
 
 const phaseCommand = (projectName: string, id: string, address: string, current: TaskPhase) =>
-  `atdd-flow task handoff ${projectName} ${id} --by ${address} --phase ${current} --evidence <message-or-reference>`;
+  `atdd-flow task handoff ${projectName} ${id} --by ${address} --phase ${current} --evidence <message-or-reference>` +
+  (current === "plan" ? " --plan-source <repo-relative-plan-artifact> --plan-revision <current-commit> --acceptance <acceptance-ref>" : "");
 
 /** An assignee whose submitted phase was accepted without naming a later phase is directed forward, never to resubmit. */
 function acceptedDirective(base: Pick<TaskDirective, "project" | "task" | "role">, id: string, address: string, current: TaskPhase): TaskDirective {
