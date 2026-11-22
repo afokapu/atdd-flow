@@ -422,3 +422,21 @@ test("ATD-42: only operator may create a typed bounded PLAN delegation", async (
     expect(valid.exitCode,valid.output).toBe(0);
   }finally{await rm(f.root,{recursive:true,force:true});}
 });
+
+test("ATD-42: external To Do intake maps automatically to governed PLAN; display status cannot advance phases", async () => {
+  const root=await fixture();
+  try {
+    const tracked=await invoke(root,"task","add","demo","tracked-new",
+      "--title","External delivery","--coordinator","coordinator@demo",
+      "--done-when","Visible acceptance","--source","linear:ATD-42",
+      "--tracking-status","To Do");
+    expect(tracked.exitCode,tracked.output).toBe(0);
+    const first=Bun.YAML.parse(await readFile(join(root,"work","demo","tasks","tracked-new.yaml"),"utf8"));
+    expect(first).toMatchObject({status:"todo",phase:"plan",plan_required:true,source:"linear:ATD-42"});
+    const bypass=await invoke(root,"task","add","demo","tracked-done",
+      "--title","Unapproved external Done","--coordinator","coordinator@demo",
+      "--done-when","Evidence exists","--tracking-status","Done");
+    expect(bypass.exitCode).not.toBe(0);
+    expect(bypass.output).toContain("cannot bypass Flow PLAN");
+  }finally{await rm(root,{recursive:true,force:true});}
+});
