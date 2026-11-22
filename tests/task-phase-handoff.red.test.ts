@@ -269,6 +269,9 @@ test("ATD-42: stale PLAN, forged ratification or unreviewed Coach verdict cannot
     await expect(respondToHandoff(f.root,"demo","delivery",f.accept)).rejects.toThrow(/operator-authorized|owner-authorized/i);
     expect(await readFile(f.taskFile,"utf8")).toBe(before);
     await f.owner();
+    await expect(respondToHandoff(f.root,"demo","delivery",[
+      ...f.accept.slice(0,-1),"../escape",
+    ])).rejects.toThrow(/canonical M- message reference/);
     await f.coach("Approved but no revision reference.");
     await expect(respondToHandoff(f.root,"demo","delivery",f.accept)).rejects.toThrow(/exact plan revision/i);
     await f.coach("PLAN RETURN "+f.revision+"\nCriteria are incomplete; revise before coding.");
