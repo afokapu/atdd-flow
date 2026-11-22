@@ -16,7 +16,7 @@ export type HandoffState = "executing" | "awaiting_coordinator" | "awaiting_assi
 /** `submitted_phase` is absent on legacy records; it lets a same-phase accept be told apart from a never-submitted phase. */
 export type TaskHandoff = {
   state: HandoffState; evidence: string; updated_at: string; submitted_phase?: TaskPhase;
-  plan?: { source: string; revision: string; acceptances: string[]; ratification: string };
+  plan?: { source: string; revision: string; acceptances: string[]; ratification?: string; delegation?: string };
   plan_review?: { by: string; evidence: string; at: string; ratification: string };
   /** A PLAN return is a durable, actionable review disposition. */
   return_reason?: string;
@@ -680,7 +680,10 @@ async function verifiedPlan(root: string, projectName: string, id: string, task:
   const source = required(words(args, "--plan-source"), "--plan-source");
   const revision = required(words(args, "--plan-revision"), "--plan-revision");
   const acceptances = values(args, "--acceptance");
-  const ratification = required(words(args, "--operator-ratification"), "--operator-ratification");
+  const ratification = words(args, "--operator-ratification");
+  const delegation = words(args, "--coach-delegation");
+  if (Boolean(ratification) === Boolean(delegation))
+    throw new Error("PLAN requires exactly one --operator-ratification or --coach-delegation owner authorization.");
   if (!/^plan\/[A-Za-z0-9._/-]+\.(?:yaml|yml|md)$/.test(source) ||
       source.split("/").includes("..") || source.split("/").includes("."))
     throw new Error("PLAN source must be a canonical repository-relative plan artifact.");
@@ -689,8 +692,8 @@ async function verifiedPlan(root: string, projectName: string, id: string, task:
   if (!acceptances.length || new Set(acceptances).size !== acceptances.length ||
       acceptances.some(x => !/^acc:[A-Za-z0-9:_-]+$/.test(x)))
     throw new Error("PLAN requires distinct declared acc: acceptance URNs.");
-  if (!/^M-[A-Za-z0-9._-]+$/.test(ratification))
-    throw new Error("PLAN requires an exact operator@desk ratification message ID.");
+  if (!/^M-[A-Za-z0-9._-]+$/.test((ratification ?? delegation)!))
+    throw new Error("PLAN requires an exact operator@desk authorization message ID.");
   const assignee = await seat(root, required(task.assignee, "a PLAN assignee"));
   const config = await project(root, projectName);
   const actual = await currentCommit(vcsMode(config), assignee.worktree);
@@ -704,7 +707,8 @@ async function verifiedPlan(root: string, projectName: string, id: string, task:
       revision, "--", source]); }
     catch { throw new Error(`Acceptance ${urn} is not declared in submitted plan source ${source}.`); }
   }
-  const plan = { source, revision, acceptances, ratification };
+  const plan = { source, revision, acceptances,
+    ...(ratification ? { ratification } : { delegation: delegation! }) };
   // Refuse forged or stale approvals at submission, not only once the Coach
   // tries to advance the task. No unratified PLAN reaches a review inbox.
   await verifyPlanRatification(root, projectName, id, task, plan);
@@ -716,8 +720,15 @@ async function verifiedPlan(root: string, projectName: string, id: string, task:
 async function verifyPlanRatification(root: string, projectName: string, id: string,
   task: Task, plan: NonNullable<TaskHandoff["plan"]>) {
   const { operatorAuthorizationPayload } = await import("./task-supersede-authorization");
-  const actual = await operatorAuthorizationPayload(root, plan.ratification, `main@${projectName}`);
-  const expected = {
+  const reference = plan.delegation ?? plan.ratification;
+  if (!reference || Boolean(plan.delegation) === Boolean(plan.ratification))
+    throw new Error("PLAN requires precisely one owner authorization mode.");
+  const actual = await operatorAuthorizationPayload(root, reference, `main@${projectName}`);
+  const expected = plan.delegation ? {
+    schema: "atdd-workflow/plan-coach-delegation/v1", project: projectName, task: id,
+    coordinator: task.coordinator, assignee: task.assignee, action: "delegate-plan-review",
+    title: task.title, criteria: task.done_when.map(item => item.text),
+  } : {
     schema: "atdd-workflow/plan-ratification/v1", project: projectName, task: id,
     coordinator: task.coordinator, assignee: task.assignee, action: "ratify",
     source: plan.source, revision: plan.revision, acceptances: plan.acceptances,
@@ -826,7 +837,7 @@ export async function respondToHandoff(root: string, projectName: string, id: st
       await verifyPlanCurrent(root, projectName, task, plan);
       await verifyPlanRatification(root, projectName, id, task, plan);
       await verifyCoachPlanReview(root, projectName, id, task, proof, plan.revision, plan.acceptances);
-      planReview = { by: actor, evidence: proof, at: now(), ratification: plan.ratification };
+      planReview = { by: actor, evidence: proof, at: now(), ratification: (plan.delegation ?? plan.ratification)! };
     }
   }
   task.phase = requested;
@@ -959,7 +970,7 @@ const phaseOrder: TaskPhase[] = ["plan", "red", "green", "refactor"];
 
 const phaseCommand = (projectName: string, id: string, address: string, current: TaskPhase) =>
   `atdd-flow task handoff ${projectName} ${id} --by ${address} --phase ${current} --evidence <message-or-reference>` +
-    (current === "plan" ? " --plan-source <plan/path.yaml> --plan-revision <commit> --acceptance <acc:urn> --operator-ratification <M-owner>" : "");
+    (current === "plan" ? " --plan-source <plan/path.yaml> --plan-revision <commit> --acceptance <acc:urn> (--operator-ratification <M-owner> | --coach-delegation <M-owner-scope>)" : "");
 
 /** An assignee whose submitted phase was accepted without naming a later phase is directed forward, never to resubmit. */
 function acceptedDirective(base: Pick<TaskDirective, "project" | "task" | "role">, id: string, address: string, current: TaskPhase): TaskDirective {
