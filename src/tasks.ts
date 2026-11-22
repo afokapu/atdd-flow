@@ -1018,6 +1018,9 @@ async function assigneeDirective(root: string, projectName: string, id: string, 
   const lifecycle = current.toUpperCase() as TaskDirective["lifecycle"];
   if (task.handoff?.state === "awaiting_coordinator") return { ...as, lifecycle, action: `Await coordinator response to the ${lifecycle} handoff; do not continue to the next phase.` };
   if (task.handoff?.state === "awaiting_assignee" && task.handoff.submitted_phase === current) return acceptedDirective(as, id, address, current);
+  if (task.plan_required && task.handoff?.state === "executing" && task.handoff.return_reason)
+    return { ...as, lifecycle, action: `PLAN returned: ${task.handoff.return_reason} Revise and resubmit the same scoped plan.`,
+      command: phaseCommand(projectName, id, address, current) };
   return { ...as, lifecycle, action: `${phaseActions[current]}.`, command: phaseCommand(projectName, id, address, current) };
 }
 
@@ -1035,7 +1038,7 @@ function coordinatorDirective(projectName: string, id: string, task: Task, addre
     return { ...as, lifecycle: current.toUpperCase() as TaskDirective["lifecycle"],
       action: `Accept or return the ${current.toUpperCase()} handoff.${suffix}`,
       command: `atdd-flow task respond ${projectName} ${id} --by ${address} --outcome <accept|return> --phase <plan|red|green|refactor>` +
-        (current === "plan" && task.plan_required ? " --plan-review <M-coach>" : "") };
+        (current === "plan" && task.plan_required ? " (--plan-review <M-coach> | --reason <return-or-escalation-action>)" : "") };
   }
   return undefined;
 }
