@@ -100,6 +100,9 @@ async function explicitWorkflowProfile(worktree: string) {
 
 export async function behavioralReviewRequired(root: string, task: Task) {
   if (!task.assignee) return false;
+  // Entering the governed PLAN lifecycle opts this task into an independent
+  // terminal behavioral review even when a legacy project profile omits it.
+  if (task.plan_required) return true;
   const owner = await ownerForTask(root, task);
   const config = await project(root, owner.project);
   const policyRoot = config.repository ?? (await seat(root, task.coordinator)).worktree;
