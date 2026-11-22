@@ -215,10 +215,10 @@ async function plannedFixture() {
   const delegate=(next=delegation,from="operator@desk")=>writeFile(join(dir,delegationRef+".yaml"),
     Bun.YAML.stringify({schema:"atdd-workflow/message/v1",id:delegationRef,from,to:["main@demo"],
       kind:"message",body:"Delegate bounded task review to the Coach.",created_at:"2026-11-22T11:00:00Z",authorization:next}));
-  const coach=(body="PLAN APPROVE "+revision+"\nChecked scoped acceptance "+acceptance+" against expected delivery behavior.",from="coordinator@demo")=>writeFile(join(dir,reviewRef+".yaml"),
+  const coach=(body="PLAN APPROVE "+revision+"\nChecked scoped acceptance "+acceptance+" against expected delivery behavior.",from="coordinator@demo",createdAt=new Date().toISOString())=>writeFile(join(dir,reviewRef+".yaml"),
     Bun.YAML.stringify({schema:"atdd-workflow/message/v1",id:reviewRef,from,
-      to:["driver.delivery@demo"],kind:"message",body,created_at:"2026-11-22T12:01:00Z"}));
-  await owner();await coach();
+      to:["driver.delivery@demo"],kind:"message",body,created_at:createdAt}));
+  await owner();
   const submit=["--by","driver.delivery@demo","--phase","plan","--evidence","M-driver-plan",
     "--plan-source",source,"--plan-revision",revision,"--acceptance",acceptance,
     "--operator-ratification",ratification];
@@ -230,6 +230,7 @@ test("ATD-42: a ratified PLAN and Coach review advance the same driver through R
   const f=await plannedFixture();
   try {
     await submitHandoff(f.root,"demo","delivery",f.submit);
+    await f.coach();
     await respondToHandoff(f.root,"demo","delivery",f.accept);
     expect(await task(f.root)).toMatchObject({status:"in_progress",phase:"red",
       handoff:{plan:{source:f.source,revision:f.revision,acceptances:[f.acceptance],ratification:f.ratification},
@@ -385,6 +386,7 @@ test("ATD-42: pre-authorized task scope lets accountable Coach accept without a 
     await f.delegate(); // Owner delegates only this task/title/criteria once, before PLAN.
     const args=[...f.submit.slice(0,-2),"--coach-delegation",f.delegationRef];
     await submitHandoff(f.root,"demo","delivery",args);
+    await f.coach();
     await respondToHandoff(f.root,"demo","delivery",f.accept);
     expect(await task(f.root)).toMatchObject({
       phase:"red",handoff:{
@@ -439,4 +441,19 @@ test("ATD-42: external To Do intake maps automatically to governed PLAN; display
     expect(bypass.exitCode).not.toBe(0);
     expect(bypass.output).toContain("cannot bypass Flow PLAN");
   }finally{await rm(root,{recursive:true,force:true});}
+});
+
+test("ATD-42: a review issued before the actual PLAN submission cannot advance RED", async () => {
+  const f=await plannedFixture();
+  try {
+    await f.coach(undefined,"coordinator@demo","2025-01-01T00:00:00Z");
+    await submitHandoff(f.root,"demo","delivery",f.submit);
+    const before=await readFile(f.taskFile,"utf8");
+    await expect(respondToHandoff(f.root,"demo","delivery",f.accept))
+      .rejects.toThrow(/task-linked message/);
+    expect(await readFile(f.taskFile,"utf8")).toBe(before);
+    await f.coach();
+    await respondToHandoff(f.root,"demo","delivery",f.accept);
+    expect((await task(f.root)).phase).toBe("red");
+  }finally{await rm(f.root,{recursive:true,force:true});}
 });
