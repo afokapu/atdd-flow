@@ -734,6 +734,8 @@ async function verifyPlanCurrent(root: string, projectName: string, task: Task,
  * in the task's own thread, not just an arbitrary string supplied at the CLI. */
 async function verifyCoachPlanReview(root: string, projectName: string, id: string,
   task: Task, reference: string, revision: string) {
+  if (!/^M-[A-Za-z0-9._-]+$/.test(reference))
+    throw new Error("Coach PLAN review requires one canonical M- message reference.");
   const { readdir } = await import("node:fs/promises");
   const dirs = await readdir(paths(root).threads, { withFileTypes: true });
   const candidates = await Promise.all(dirs.filter(x => x.isDirectory() && x.name.startsWith("T-"))
