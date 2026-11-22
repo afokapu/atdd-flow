@@ -155,7 +155,7 @@ For topology normalization, transfer an active task through the narrow durable c
 
 Task tracking remains tool-agnostic. An external tracking adapter can enter the
 governed engineering lifecycle at **To Do** by creating the assigned task with
-`--plan-required`. Existing pre-migration task records and unmarked tasks retain
+`--plan-required`. An external tracking adapter can instead pass `--tracking-status 'To Do' --source <external-reference>` at task creation: Flow automatically enters governed PLAN and rejects other imported statuses rather than inferring approval from display labels. No subsequent tracker status overwrites Flow phase. Existing pre-migration task records and unmarked tasks retain
 their established status behavior; the stricter phase gate is **opt-in**, not an
 implicit reinterpretation of old evidence.
 
