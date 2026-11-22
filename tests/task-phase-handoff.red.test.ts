@@ -7,7 +7,7 @@ import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { respondToHandoff, submitHandoff, prove, review } from "../src/tasks";
+import { respondToHandoff, submitHandoff, prove, review, done } from "../src/tasks";
 
 const cli = join(import.meta.dir, "..", "src", "cli.ts");
 
@@ -238,6 +238,10 @@ test("ATD-42: a ratified PLAN and Coach review advance the same driver through R
     await review(f.root,"demo","delivery",["--by","driver.delivery@demo"]);
     expect(await task(f.root)).toMatchObject({status:"review",phase:"refactor",
       handoff:{plan_review:{by:"coordinator@demo",ratification:f.ratification}}});
+    await expect(done(f.root,"demo","delivery",[
+      "--by","coordinator@demo",
+    ])).rejects.toThrow(/final behavioral review/i);
+    expect((await task(f.root)).status).toBe("review");
   }finally{await rm(f.root,{recursive:true,force:true});}
 });
 
