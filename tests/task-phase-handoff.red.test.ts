@@ -490,3 +490,36 @@ test("ATD-42: acceptance prefix matches are not valid declared identities", asyn
     expect(await readFile(f.taskFile,"utf8")).toBe(before);
   }finally{await rm(f.root,{recursive:true,force:true});}
 });
+
+test("ATD-42: a moved driver worktree cannot accept a prior PLAN handoff", async () => {
+  const f=await plannedFixture();
+  try {
+    await submitHandoff(f.root,"demo","delivery",f.submit);
+    await f.coach();
+    const before=await readFile(f.taskFile,"utf8");
+    const seatFile=join(f.root,"work","demo","seats","driver.delivery","seat.yaml");
+    const driver=Bun.YAML.parse(await readFile(seatFile,"utf8"));
+    const different=join(f.root,"worktrees","substitute");
+    await mkdir(different,{recursive:true});
+    driver.worktree=different;
+    await writeFile(seatFile,Bun.YAML.stringify(driver));
+    await expect(respondToHandoff(f.root,"demo","delivery",f.accept))
+      .rejects.toThrow(/worktree changed after handoff/);
+    expect(await readFile(f.taskFile,"utf8")).toBe(before);
+  }finally{await rm(f.root,{recursive:true,force:true});}
+});
+
+test("ATD-42: corrupted task phase cannot turn a submitted PLAN into an accepted later phase", async () => {
+  const f=await plannedFixture();
+  try {
+    await submitHandoff(f.root,"demo","delivery",f.submit);
+    await f.coach();
+    const tampered=await task(f.root);
+    tampered.phase="green";
+    await writeFile(f.taskFile,Bun.YAML.stringify(tampered));
+    const before=await readFile(f.taskFile,"utf8");
+    await expect(respondToHandoff(f.root,"demo","delivery",f.accept))
+      .rejects.toThrow(/handoff phase does not match/);
+    expect(await readFile(f.taskFile,"utf8")).toBe(before);
+  }finally{await rm(f.root,{recursive:true,force:true});}
+});
