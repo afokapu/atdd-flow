@@ -767,7 +767,7 @@ async function verifyCoachPlanReview(root: string, projectName: string, id: stri
       try {
         const [thread, message] = await Promise.all([
           readYaml<{task?:string;participants?:string[]}>(paths(root).threadFile(x.name)),
-          readYaml<{schema?:string;id?:string;from?:string;body?:string}>(paths(root).message(x.name, reference)),
+          readYaml<{schema?:string;id?:string;from?:string;body?:string;created_at?:string}>(paths(root).message(x.name, reference)),
         ]);
         return { thread, message };
       } catch { return undefined; }
@@ -775,6 +775,9 @@ async function verifyCoachPlanReview(root: string, projectName: string, id: stri
   const matches = candidates.filter(x => x?.thread.task === `${projectName}/${id}` &&
     x.message.schema === "atdd-workflow/message/v1" && x.message.id === reference &&
     x.message.from === task.coordinator && x.thread.participants?.includes(task.assignee ?? "") &&
+    typeof x.message.created_at === "string" &&
+    !Number.isNaN(Date.parse(x.message.created_at)) &&
+    Date.parse(x.message.created_at) >= Date.parse(task.handoff?.updated_at ?? "") &&
     x.message.body?.startsWith("PLAN APPROVE " + revision + "\n") &&
     x.message.body.slice(("PLAN APPROVE " + revision + "\n").length).trim().length >= 10 &&
     acceptances.every(urn => x.message.body?.includes(urn)));
