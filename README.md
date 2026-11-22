@@ -292,6 +292,29 @@ profiles: [planner, coder, tester, traceability, security, workflow]
 
 The lifecycle convention makes agents read CLI help and durable records, prefer the smallest sufficient change, avoid speculative scope, work until review-ready or explicitly blocked, prove criteria, and coordinate boundaries through coordinators. ATDD Bun remains repository and merge authority.
 
+### Coach-gated planning handoff (PLT-128)
+
+An assigned driver enters the **PLAN** phase on task start. The same driver
+performs bounded JTBD/ODI decomposition and cites the committed plan artifact
+and its acceptance references. The accountable coordinator/Coach—not a new
+planner seat—accepts or returns the submitted phase. A newly started PLAN
+requires the exact committed plan revision; changing that revision invalidates
+the pending PLAN approval.
+
+```sh
+atdd-flow task handoff <project> <task> --by <driver> --phase plan \
+  --evidence <message-ref> --plan-source <repo-relative-artifact> \
+  --plan-revision <commit-sha> --acceptance <acceptance-ref>
+atdd-flow task respond <project> <task> --by <coordinator> \
+  --outcome accept --phase red --plan-review <coach-decision-ref>
+```
+
+The Coach records its decision under its own identity and escalates changes
+of owner-approved intent or scope. A return keeps the phase at PLAN. Existing
+in-progress legacy tasks without a phase remain readable, and the existing
+independent final review is unchanged. The planning policy requires a properly
+delegated ratification; a PLAN handoff reference alone is not evidence of it.
+
 ### Final behavioral reconciliation
 
 Phase work does not add a writer/reviewer pair after every artifact. The next phase consumes and
