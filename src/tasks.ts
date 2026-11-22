@@ -726,7 +726,9 @@ export async function respondToHandoff(root: string, projectName: string, id: st
   const submitted = task.handoff.submitted_phase ?? task.phase ?? "plan";
   const requested = phase(words(args, "--phase"));
   const next = phases[phases.indexOf(submitted) + 1] ?? submitted;
-  if (outcome === "accept" && requested !== next)
+  // Legacy handoffs may name the submitted phase on accept. Normalize both
+  // forms into the next phase so the task record and Pi's trusted phase agree.
+  if (outcome === "accept" && requested !== next && requested !== submitted)
     throw new Error(`Accepting ${submitted.toUpperCase()} must advance to ${next.toUpperCase()}.`);
   if (outcome === "return" && requested !== submitted)
     throw new Error(`Returning ${submitted.toUpperCase()} must keep that phase for correction.`);
@@ -740,11 +742,11 @@ export async function respondToHandoff(root: string, projectName: string, id: st
         throw new Error("PLAN changed after submission; the Coach must review the new revision.");
     }
     const evidence = required(words(args, "--plan-review"), "Coach PLAN review evidence (--plan-review)");
-    if (!/^\\S{4,}$/.test(evidence) || /^(?:TBD|TODO|N\/A)$/i.test(evidence))
+    if (evidence.trim().length < 4 || /\s/.test(evidence) || /^(?:TBD|TODO|N\/A)$/i.test(evidence))
       throw new Error("Coach PLAN review needs a concrete durable evidence reference.");
     planReview = { by: actor, evidence, reviewed_at: now() };
   }
-  task.phase = requested;
+  task.phase = outcome === "accept" ? next : requested;
   task.handoff = {
     ...task.handoff,
     ...(planReview ? { plan_review: planReview } : {}),
