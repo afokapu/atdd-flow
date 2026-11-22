@@ -1,7 +1,7 @@
 urn: acc:flow:E043-UNIT-001
 phase: UNIT
 description: >-
-  For a newly created ATDD task entering PLAN, the driver may submit only its
+  For a task explicitly entering the governed PLAN lifecycle at To Do, the driver may submit only its
   current phase with a committed scoped plan artifact, exact source revision,
   declared acceptance URNs, and an existing operator@desk ratification of that
   same plan tuple. The accountable coordinator/Coach reviews that exact revision
