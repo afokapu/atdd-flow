@@ -187,6 +187,26 @@ test("PLT-128: PLAN cannot advance without Coach review evidence and only one ph
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test("PLT-128: accepted PLAN evidence survives the same driver's RED handoff", async () => {
+  const root=await fixture();
+  try {
+    await submitHandoff(root, "demo", "delivery", [
+      "--by", "driver.delivery@demo", "--phase", "plan", "--evidence", "M-driver-plan",
+    ]);
+    await respondToHandoff(root, "demo", "delivery", [
+      "--by", "coordinator@demo", "--outcome", "accept", "--phase", "red",
+      "--plan-review", "M-coach-reviewed-plan",
+    ]);
+    await submitHandoff(root, "demo", "delivery", [
+      "--by", "driver.delivery@demo", "--phase", "red", "--evidence", "M-red-proof",
+    ]);
+    expect((await task(root)).handoff).toMatchObject({
+      submitted_phase:"red", evidence:"M-red-proof",
+      plan_review:{by:"coordinator@demo",evidence:"M-coach-reviewed-plan"},
+    });
+  }finally{await rm(root,{recursive:true,force:true});}
+});
+
 test("PLT-128: returned PLAN remains PLAN and does not mint Coach approval", async () => {
   const root = await fixture();
   try {
