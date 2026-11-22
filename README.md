@@ -151,6 +151,54 @@ Supersession serializes publication per seat. It stages a byte-identical copy of
 
 For topology normalization, transfer an active task through the narrow durable command, never by editing its YAML: `atdd-flow task transfer <project> <task-id> --to <main-or-named-coordinator> --reason <text> --by <current-coordinator>`; `main@project` must additionally pass `--authorization <operator-message-id>`. That message must be an immutable `task-transfer-authorization/v1` exact tuple for the project, task, current/target coordinator, reason, and target branch/head; only `operator@desk` creates it through `atdd-flow post --task-transfer-authorization <json>`. The command appends immutable source/target/reason/exact-head/effective-time provenance, keeps earlier phase/review/message evidence intact, derives the new governed base from the accepted target head, and never moves a seat, branch, runtime, or worktree. Same-target, duplicate, nested, mismatched, unauthorized, and manually rewritten transitions fail closed.
 
+### Governed planning handoffs (AF8 ATD-42)
+
+Task tracking remains tool-agnostic. An external tracking adapter can enter the
+governed engineering lifecycle at **To Do** by creating the assigned task with
+`--plan-required`. Existing pre-migration task records and unmarked tasks retain
+their established status behavior; the stricter phase gate is **opt-in**, not an
+implicit reinterpretation of old evidence.
+
+```sh
+atdd-flow task add <project> <task> --title 'Scoped delivery' \
+  --coordinator <coordinator> --assignee <driver> \
+  --done-when 'Observable acceptance outcome' --plan-required
+atdd-flow task start <project> <task> --by <driver>
+```
+
+The **same driver** plans and implements. In PLAN, Pi activates existing scoped
+JTBD/ODI/flow/acceptance guidance; the driver commits the plan artifacts and
+records the exact Git commit, the plan-relative source, and declared `acc:`
+acceptance identities. Nothing in Flow fabricates a plan from an issue title.
+
+Before the driver hands off PLAN, `operator@desk` ratifies the precise tuple
+`{schema:"atdd-workflow/plan-ratification/v1",project,task,coordinator,
+assignee,action:"ratify",source,revision,acceptances}` in a typed
+`--plan-ratification-authorization` message to the project's main seat.
+This preserves ATDD-Bun's pinned operator-only deterministic authoring boundary.
+Only the operator may create that typed authorization; a Coach cannot imitate
+the operator or invent product intent.
+
+```sh
+atdd-flow task handoff <project> <task> --by <driver> --phase plan \
+  --evidence <M-driver-evidence> --plan-source plan/<artifact>.yaml \
+  --plan-revision <exact-40-character-commit> --acceptance <acc:declared> \
+  --operator-ratification <M-operator>
+```
+
+The coordinator/Coach inspects that exact plan revision and writes a durable,
+task-linked review message naming the revision. Only the accountable coordinator
+can accept and move **PLAN → RED**, using `task respond ... --outcome accept
+--phase red --plan-review <M-coach>`. A return keeps PLAN. A changed commit,
+unresolvable acceptance, forged operator message, missing Coach review, or
+skipped phase is rejected before writing task state.
+
+The driver then advances via accepted **RED → GREEN → REFACTOR** handoffs.
+Every criterion still needs executable proof and the unchanged independent
+behavioral review before **Done**. Neither CI nor Coach phase acceptance is the
+final behavioral reviewer. A status label in Linear, GitHub, or another tracker
+does not override Flow's verified phase record.
+
 ## Communicate and hand over
 
 Threads are the durable inbox/outbox. Workflow persists a message before a best-effort host notification, so a closed pane, rate limit, or missed prompt cannot lose it.
