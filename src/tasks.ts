@@ -13,7 +13,11 @@ export type TaskPhase = "plan" | "red" | "green" | "refactor";
 export type HandoffState = "executing" | "awaiting_coordinator" | "awaiting_assignee";
 /** A mutable projection of an immutable evidence message/reference, not a second task lifecycle. */
 /** `submitted_phase` is absent on legacy records; it lets a same-phase accept be told apart from a never-submitted phase. */
-export type TaskHandoff = { state: HandoffState; evidence: string; updated_at: string; submitted_phase?: TaskPhase };
+export type TaskHandoff = {
+  state: HandoffState; evidence: string; updated_at: string; submitted_phase?: TaskPhase;
+  /** PLAN review is a coordinator-owned attestation, not a worker's claim of operator authority. */
+  plan_review?: { by: string; evidence: string; reviewed_at: string };
+};
 export type DoneWhen = { text: string; proof?: string };
 export type GovernedBase = { coordinator: string; branch: string; commit: string };
 export type LineageRef = { ref: string; commit: string; reason?: string };
@@ -607,6 +611,8 @@ async function transition(root: string, projectName: string, id: string, next: T
   }
   if (next === "review") {
     if (!task.assignee || actor !== task.assignee) throw new Error(`Only ${task.assignee ?? "the assignee"} may submit task ${id} for review.`);
+    if (task.phase && (task.phase !== "refactor" || task.handoff?.submitted_phase !== "refactor" || task.handoff.state !== "awaiting_assignee"))
+      throw new Error(`Task ${id} must have an accepted REFACTOR handoff before final review.`);
     if (!allProofs(task)) throw new Error(`Task ${id} is missing proof for: ${task.done_when.filter((entry) => !entry.proof).map((entry) => entry.text).join("; ")}`);
   }
   if (next === "done") {
@@ -619,6 +625,8 @@ async function transition(root: string, projectName: string, id: string, next: T
     if (retire) await retireAssignee(root, projectName, id, task);
   }
   recordDispatchStart(task, next, actor);
+  // New tasks start at PLAN; legacy in-progress tasks with no phase remain readable.
+  if (next === "in_progress" && task.status === "todo" && !task.phase) task.phase = "plan";
   task.status = next;
   if (next !== "in_progress") { delete task.blocker; delete task.deferred; }
   await writeTask(root, projectName, id, task);
@@ -670,8 +678,11 @@ export async function submitHandoff(root: string, projectName: string, id: strin
   if (task.status !== "in_progress") throw new Error(`Task ${id} must be in_progress before a handoff is submitted.`);
   if (task.handoff?.state === "awaiting_coordinator") throw new Error(`Task ${id} is already awaiting coordinator handoff response.`);
   const evidence = required(words(args, "--evidence"), "--evidence");
-  task.phase = phase(words(args, "--phase"));
-  task.handoff = { state: "awaiting_coordinator", evidence, updated_at: now(), submitted_phase: task.phase };
+  const submitted = phase(words(args, "--phase"));
+  if (task.phase && task.phase !== submitted)
+    throw new Error(`Task ${id} is in ${task.phase.toUpperCase()}, not ${submitted.toUpperCase()}; complete the current phase first.`);
+  task.phase = submitted;
+  task.handoff = { state: "awaiting_coordinator", evidence, updated_at: now(), submitted_phase: submitted };
   await writeTask(root, projectName, taskId(id), task);
   console.log(`${id}  handoff awaiting_coordinator`);
 }
@@ -687,9 +698,24 @@ export async function respondToHandoff(root: string, projectName: string, id: st
   if (task.status !== "in_progress") throw new Error(`Task ${id} must be in_progress before a handoff is answered.`);
   if (task.handoff?.state !== "awaiting_coordinator") throw new Error(`Task ${id} is not awaiting coordinator handoff response.`);
   const outcome = handoffOutcome(words(args, "--outcome"));
-  task.phase = phase(words(args, "--phase"));
+  const submitted = task.handoff.submitted_phase ?? task.phase ?? "plan";
+  const requested = phase(words(args, "--phase"));
+  const next = phases[phases.indexOf(submitted) + 1] ?? submitted;
+  if (outcome === "accept" && requested !== next)
+    throw new Error(`Accepting ${submitted.toUpperCase()} must advance to ${next.toUpperCase()}.`);
+  if (outcome === "return" && requested !== submitted)
+    throw new Error(`Returning ${submitted.toUpperCase()} must keep that phase for correction.`);
+  let planReview: TaskHandoff["plan_review"];
+  if (outcome === "accept" && submitted === "plan") {
+    const evidence = required(words(args, "--plan-review"), "Coach PLAN review evidence (--plan-review)");
+    if (!/^\\S{4,}$/.test(evidence) || /^(?:TBD|TODO|N\/A)$/i.test(evidence))
+      throw new Error("Coach PLAN review needs a concrete durable evidence reference.");
+    planReview = { by: actor, evidence, reviewed_at: now() };
+  }
+  task.phase = requested;
   task.handoff = {
     ...task.handoff,
+    ...(planReview ? { plan_review: planReview } : {}),
     state: outcome === "accept" ? "awaiting_assignee" : "executing",
     updated_at: now(),
   };
@@ -853,7 +879,8 @@ function coordinatorDirective(projectName: string, id: string, task: Task, addre
   if (task.status === "review") return { ...as, lifecycle: "REVIEW", action: "Review the submitted task; complete it or return it to work.", command: `atdd-flow task open ${projectName} ${id}` };
   if (task.status === "in_progress" && task.handoff?.state === "awaiting_coordinator") {
     const current = task.phase ?? "plan";
-    return { ...as, lifecycle: current.toUpperCase() as TaskDirective["lifecycle"], action: `Accept or return the ${current.toUpperCase()} handoff.`, command: `atdd-flow task respond ${projectName} ${id} --by ${address} --outcome <accept|return> --phase <plan|red|green|refactor>` };
+    const planNote = current === "plan" ? " Inspect the scoped JTBD/ODI plan and acceptance evidence; on accept provide --plan-review <durable-review-ref>. Escalate changed intent or scope to the owner." : "";
+    return { ...as, lifecycle: current.toUpperCase() as TaskDirective["lifecycle"], action: `Accept or return the ${current.toUpperCase()} handoff.${planNote}`, command: `atdd-flow task respond ${projectName} ${id} --by ${address} --outcome <accept|return> --phase <plan|red|green|refactor>${current === "plan" ? " --plan-review <durable-review-ref>" : ""}` };
   }
   return undefined;
 }
