@@ -457,3 +457,33 @@ test("ATD-42: a review issued before the actual PLAN submission cannot advance R
     expect((await task(f.root)).phase).toBe("red");
   }finally{await rm(f.root,{recursive:true,force:true});}
 });
+
+test("ATD-42: dirty scoped plan source is refused before and after PLAN submission", async () => {
+  const f=await plannedFixture();
+  try {
+    const before=await readFile(f.taskFile,"utf8");
+    await writeFile(join(f.worktree,f.source),"urn: "+f.acceptance+"\nmodified: true\n");
+    await expect(submitHandoff(f.root,"demo","delivery",f.submit))
+      .rejects.toThrow(/uncommitted changes/);
+    expect(await readFile(f.taskFile,"utf8")).toBe(before);
+    f.git("checkout","--",f.source);
+    await submitHandoff(f.root,"demo","delivery",f.submit);
+    await f.coach();
+    await writeFile(join(f.worktree,f.source),"urn: "+f.acceptance+"\nmodified: again\n");
+    await expect(respondToHandoff(f.root,"demo","delivery",f.accept))
+      .rejects.toThrow(/uncommitted changes after submission/);
+    expect((await task(f.root)).phase).toBe("plan");
+  }finally{await rm(f.root,{recursive:true,force:true});}
+});
+
+test("ATD-42: acceptance prefix matches are not valid declared identities", async () => {
+  const f=await plannedFixture();
+  try {
+    const args=[...f.submit];
+    args[args.indexOf("--acceptance")+1]="acc:flow:E043-UNIT-00";
+    const before=await readFile(f.taskFile,"utf8");
+    await expect(submitHandoff(f.root,"demo","delivery",args))
+      .rejects.toThrow(/not declared in submitted plan source/);
+    expect(await readFile(f.taskFile,"utf8")).toBe(before);
+  }finally{await rm(f.root,{recursive:true,force:true});}
+});
