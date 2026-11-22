@@ -764,8 +764,18 @@ export async function submitHandoff(root: string, projectName: string, id: strin
   if (task.status !== "in_progress") throw new Error(`Task ${id} must be in_progress before a handoff is submitted.`);
   if (task.handoff?.state === "awaiting_coordinator") throw new Error(`Task ${id} is already awaiting coordinator handoff response.`);
   const evidence = required(words(args, "--evidence"), "--evidence");
-  task.phase = phase(words(args, "--phase"));
-  task.handoff = { state: "awaiting_coordinator", evidence, updated_at: now(), submitted_phase: task.phase };
+  const submitted = phase(words(args, "--phase"));
+  if (task.plan_required && submitted !== task.phase)
+    throw new Error(`Task ${id} is in ${task.phase?.toUpperCase()}, not ${submitted.toUpperCase()}; phase skipping is forbidden.`);
+  const plan = task.plan_required && submitted === "plan"
+    ? await verifiedPlan(root, projectName, task, args)
+    : task.handoff?.plan;
+  task.phase = submitted;
+  task.handoff = {
+    state: "awaiting_coordinator", evidence, updated_at: now(), submitted_phase: submitted,
+    ...(plan ? { plan } : {}),
+    ...(task.handoff?.plan_review ? { plan_review: task.handoff.plan_review } : {}),
+  };
   await writeTask(root, projectName, taskId(id), task);
   console.log(`${id}  handoff awaiting_coordinator`);
 }
@@ -781,9 +791,29 @@ export async function respondToHandoff(root: string, projectName: string, id: st
   if (task.status !== "in_progress") throw new Error(`Task ${id} must be in_progress before a handoff is answered.`);
   if (task.handoff?.state !== "awaiting_coordinator") throw new Error(`Task ${id} is not awaiting coordinator handoff response.`);
   const outcome = handoffOutcome(words(args, "--outcome"));
-  task.phase = phase(words(args, "--phase"));
+  const requested = phase(words(args, "--phase"));
+  const submitted = task.handoff.submitted_phase ?? task.phase ?? "plan";
+  const next = phaseOrder[phaseOrder.indexOf(submitted) + 1] ?? submitted;
+  let planReview: TaskHandoff["plan_review"];
+  if (task.plan_required) {
+    if (outcome === "accept" && requested !== next)
+      throw new Error(`Accepting ${submitted.toUpperCase()} must advance to ${next.toUpperCase()}.`);
+    if (outcome === "return" && requested !== submitted)
+      throw new Error(`Returning ${submitted.toUpperCase()} must retain that phase.`);
+    if (outcome === "accept" && submitted === "plan") {
+      const plan = task.handoff.plan;
+      if (!plan) throw new Error("PLAN is missing a committed plan and its acceptance references.");
+      const proof = required(words(args, "--plan-review"), "Coach PLAN review evidence (--plan-review)");
+      await verifyPlanCurrent(root, projectName, task, plan);
+      await verifyPlanRatification(root, projectName, id, task, plan);
+      await verifyCoachPlanReview(root, projectName, id, task, proof, plan.revision);
+      planReview = { by: actor, evidence: proof, at: now(), ratification: plan.ratification };
+    }
+  }
+  task.phase = requested;
   task.handoff = {
     ...task.handoff,
+    ...(planReview ? { plan_review: planReview } : {}),
     state: outcome === "accept" ? "awaiting_assignee" : "executing",
     updated_at: now(),
   };
