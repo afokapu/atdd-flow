@@ -1,4 +1,7 @@
+// URN: test:flow:plan-handoff:E043-UNIT-001
 // Acceptance: acc:flow:E043-UNIT-001
+// Phase: UNIT
+// Layer: application
 import { expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
