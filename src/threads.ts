@@ -317,12 +317,36 @@ function planRatificationAuthorization(args: string[], from: string) {
   return plan;
 }
 
+/** Delegation is a prior owner-approved task scope, not an unrestricted PLAN
+ * approval. The Coach later has to review each exact revision independently. */
+function planDelegationAuthorization(args: string[], from: string) {
+  const raw = words(args, "--plan-coach-delegation-authorization");
+  if (!raw) return undefined;
+  if (from !== "operator@desk") throw new Error("Only operator@desk may delegate PLAN review authority.");
+  let value: unknown;
+  try { value = JSON.parse(raw); }
+  catch { throw new Error("--plan-coach-delegation-authorization must be valid JSON."); }
+  const plan = value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown> : undefined;
+  const keys = ["schema", "project", "task", "coordinator", "assignee", "action", "title", "criteria"];
+  if (!plan || Object.keys(plan).sort().join(",") !== keys.sort().join(",") ||
+      plan.schema !== "atdd-workflow/plan-coach-delegation/v1" ||
+      plan.action !== "delegate-plan-review" ||
+      ![plan.project, plan.task, plan.coordinator, plan.assignee, plan.title].every(
+        x => typeof x === "string" && x.trim().length > 0) ||
+      !Array.isArray(plan.criteria) || !plan.criteria.length ||
+      !plan.criteria.every(x => typeof x === "string" && x.trim().length > 0))
+    throw new Error("--plan-coach-delegation-authorization requires the exact bounded task and criteria tuple.");
+  return plan;
+}
+
 /** Typed operator approvals are checked at post time; a worker can never
  * create an authorization by attaching an arbitrary approval-shaped body. */
 function typedAuthorization(args: string[], from: string) {
   return transferAuthorization(args, from) ??
     parseSupersedeAuthorization(words(args, "--task-supersede-authorization"), from) ??
-    planRatificationAuthorization(args, from);
+    planRatificationAuthorization(args, from) ??
+    planDelegationAuthorization(args, from);
 }
 
 async function post(root: string, threadId: string, args: string[], overrides: Partial<Message> = {}) {
