@@ -7,7 +7,7 @@ import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { respondToHandoff, submitHandoff, prove, review, done } from "../src/tasks";
+import { respondToHandoff, submitHandoff, prove, review, done, nextDirective } from "../src/tasks";
 
 const cli = join(import.meta.dir, "..", "src", "cli.ts");
 
@@ -377,6 +377,9 @@ test("ATD-42: Coach must cite all plan acceptances and return actionable guidanc
     ]);
     expect(await task(f.root)).toMatchObject({status:"in_progress",phase:"plan",
       handoff:{state:"executing",return_reason:"Acceptance coverage is unverified; revise the scoped plan and resubmit."}});
+    const next=await nextDirective(f.root,"driver.delivery@demo");
+    expect(next?.action).toContain("Acceptance coverage is unverified");
+    expect(next?.command).toContain("--plan-source");
   }finally{await rm(f.root,{recursive:true,force:true});}
 });
 
