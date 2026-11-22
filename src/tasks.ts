@@ -706,8 +706,11 @@ export async function submitHandoff(root: string, projectName: string, id: strin
     plan = { source: committedPath, revision, acceptances };
   }
   task.phase = submitted;
+  // PLAN approval belongs to the task's durable handoff history, not solely to
+  // the transient PLAN→RED decision. Keep it through subsequent phase handoffs.
   task.handoff = { state: "awaiting_coordinator", evidence, updated_at: now(), submitted_phase: submitted,
-    ...(plan ? { plan } : {}) };
+    ...(plan ? { plan } : task.handoff?.plan ? { plan: task.handoff.plan } : {}),
+    ...(task.handoff?.plan_review ? { plan_review: task.handoff.plan_review } : {}) };
   await writeTask(root, projectName, taskId(id), task);
   console.log(`${id}  handoff awaiting_coordinator`);
 }
