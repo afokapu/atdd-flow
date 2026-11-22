@@ -4,7 +4,7 @@
 // Layer: application
 import { expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { respondToHandoff, submitHandoff, prove, review, done, nextDirective } from "../src/tasks";
@@ -537,5 +537,25 @@ test("ATD-42: Coach approval must be routed to the assigned driver, not an unrel
     await expect(respondToHandoff(f.root,"demo","delivery",f.accept))
       .rejects.toThrow(/task-linked message/);
     expect(await readFile(f.taskFile,"utf8")).toBe(before);
+  }finally{await rm(f.root,{recursive:true,force:true});}
+});
+
+test("ATD-42: rejected PLAN evidence reaches the accountable Coach as an actionable thread blocker", async () => {
+  const f=await plannedFixture();
+  try {
+    const before=await readFile(f.taskFile,"utf8");
+    await expect(submitHandoff(f.root,"demo","delivery",[
+      "--by","driver.delivery@demo","--phase","plan","--evidence","M-plan-rejected",
+    ])).rejects.toThrow(/plan-source/);
+    expect(await readFile(f.taskFile,"utf8")).toBe(before);
+    const dir=join(f.root,"threads","T-plan-review");
+    const entries=await readdir(dir);
+    const posts=await Promise.all(entries.filter(name=>name.startsWith("M-")&&name.endsWith(".yaml"))
+      .map(async name=>Bun.YAML.parse(await readFile(join(dir,name),"utf8"))));
+    const blockers=posts.filter(message=>message.from==="driver.delivery@demo" &&
+      message.to?.includes("coordinator@demo") &&
+      message.body?.includes("PLAN BLOCKED demo/delivery"));
+    expect(blockers.length).toBe(1);
+    expect(blockers[0]?.body).toContain("Next action");
   }finally{await rm(f.root,{recursive:true,force:true});}
 });
