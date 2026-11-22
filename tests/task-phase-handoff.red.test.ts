@@ -207,7 +207,7 @@ async function plannedFixture() {
   const owner=(next=authorization,from="operator@desk")=>writeFile(join(dir,ratification+".yaml"),
     Bun.YAML.stringify({schema:"atdd-workflow/message/v1",id:ratification,from,to:["main@demo"],
       kind:"message",body:"Ratified exact plan.",created_at:"2026-11-22T12:00:00Z",authorization:next}));
-  const coach=(body="PLAN APPROVE "+revision+"\nChecked scoped acceptances and expected delivery behavior.",from="coordinator@demo")=>writeFile(join(dir,reviewRef+".yaml"),
+  const coach=(body="PLAN APPROVE "+revision+"\nChecked scoped acceptance "+acceptance+" against expected delivery behavior.",from="coordinator@demo")=>writeFile(join(dir,reviewRef+".yaml"),
     Bun.YAML.stringify({schema:"atdd-workflow/message/v1",id:reviewRef,from,
       to:["driver.delivery@demo"],kind:"message",body,created_at:"2026-11-22T12:01:00Z"}));
   await owner();await coach();
@@ -323,4 +323,50 @@ test("ATD-42: the tracker can explicitly enter governed PLAN without changing le
     expect(old).not.toHaveProperty("plan_required");
     expect(old).not.toHaveProperty("phase");
   }finally{await rm(root,{recursive:true,force:true});}
+});
+
+test("ATD-42: PLAN source must itself declare every ratified acceptance, not another file", async () => {
+  const f=await plannedFixture();
+  try {
+    const before=await readFile(f.taskFile,"utf8");
+    await writeFile(join(f.worktree,f.source),"urn: acc:flow:E999-UNRELATED\n");
+    await writeFile(join(f.worktree,"plan","acceptances","other.yaml"),"urn: "+f.acceptance+"\n");
+    f.git("add",".");f.git("commit","-qm","move acceptance outside scoped source");
+    const revision=f.git("rev-parse","HEAD");
+    const args=[...f.submit];
+    args[args.indexOf("--plan-revision")+1]=revision;
+    await expect(submitHandoff(f.root,"demo","delivery",args))
+      .rejects.toThrow(/not declared in submitted plan source/);
+    expect(await readFile(f.taskFile,"utf8")).toBe(before);
+  }finally{await rm(f.root,{recursive:true,force:true});}
+});
+
+test("ATD-42: forged operator approval fails on PLAN submission before a Coach decision", async () => {
+  const f=await plannedFixture();
+  try {
+    const before=await readFile(f.taskFile,"utf8");
+    await f.owner(undefined,"driver.delivery@demo");
+    await expect(submitHandoff(f.root,"demo","delivery",f.submit))
+      .rejects.toThrow(/operator-authorized|owner-authorized/i);
+    expect(await readFile(f.taskFile,"utf8")).toBe(before);
+  }finally{await rm(f.root,{recursive:true,force:true});}
+});
+
+test("ATD-42: Coach must cite all plan acceptances and return actionable guidance", async () => {
+  const f=await plannedFixture();
+  try {
+    await submitHandoff(f.root,"demo","delivery",f.submit);
+    await f.coach("PLAN APPROVE "+f.revision+"\nReviewed a feature but supplied no acceptance identifiers.");
+    await expect(respondToHandoff(f.root,"demo","delivery",f.accept))
+      .rejects.toThrow(/exact plan revision/i);
+    await expect(respondToHandoff(f.root,"demo","delivery",[
+      "--by","coordinator@demo","--outcome","return","--phase","plan",
+    ])).rejects.toThrow(/return reason/);
+    await respondToHandoff(f.root,"demo","delivery",[
+      "--by","coordinator@demo","--outcome","return","--phase","plan",
+      "--reason","Acceptance coverage is unverified; revise the scoped plan and resubmit.",
+    ]);
+    expect(await task(f.root)).toMatchObject({status:"in_progress",phase:"plan",
+      handoff:{state:"executing",return_reason:"Acceptance coverage is unverified; revise the scoped plan and resubmit."}});
+  }finally{await rm(f.root,{recursive:true,force:true});}
 });
