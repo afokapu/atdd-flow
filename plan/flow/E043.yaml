@@ -3,10 +3,11 @@ phase: UNIT
 description: >-
   For a task explicitly entering the governed PLAN lifecycle at To Do, the driver may submit only its
   current phase with a committed scoped plan artifact, exact source revision,
-  declared acceptance URNs, and an existing operator@desk ratification of that
-  same plan tuple. The accountable coordinator/Coach reviews that exact revision
+  declared acceptance URNs, and either an existing operator@desk ratification of that
+  same plan tuple or prior, immutable owner delegation limited to this exact task and criteria. Each declared acceptance must be in the submitted source file, not a different plan file.
+  The accountable coordinator/Coach reviews that exact revision
   and records a durable task-linked review message before accepting PLAN→RED.
-  Changed plan revisions, unratified plans, forged approvals, absent acceptances,
+  Changed plan revisions, unratified or undelegated plans, forged approvals, missing return reasons, absent acceptances,
   skipped phases and premature review are refused before any task mutation.
   The same assigned driver continues through RED, GREEN and REFACTOR, and
   independent final behavioral review remains mandatory for Done. Legacy
