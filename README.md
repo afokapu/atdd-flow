@@ -187,7 +187,9 @@ atdd-flow task handoff <project> <task> --by <driver> --phase plan \
 ```
 
 The coordinator/Coach inspects that exact plan revision and writes a durable,
-task-linked review message naming the revision. Only the accountable coordinator
+task-linked review message beginning with `PLAN APPROVE <revision>` followed by
+an evidence-backed rationale on the next line. A `PLAN RETURN` message cannot
+be used as acceptance. Only the accountable coordinator
 can accept and move **PLAN → RED**, using `task respond ... --outcome accept
 --phase red --plan-review <M-coach>`. A return keeps PLAN. A changed commit,
 unresolvable acceptance, forged operator message, missing Coach review, or
