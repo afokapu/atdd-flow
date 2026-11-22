@@ -1,5 +1,6 @@
 import { readdir, realpath } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import {
   type Checkpoint, type Seat, atomicYaml, canonicalAddress, exists, now, paths, project, readYaml, required, runOutput, seat, taskId, values, words,
 } from "./core";
@@ -715,7 +716,7 @@ async function verifyPlanRatification(root: string, projectName: string, id: str
     source: plan.source, revision: plan.revision, acceptances: plan.acceptances,
   };
   if (!actual || typeof actual !== "object" || Array.isArray(actual) ||
-      JSON.stringify(actual) !== JSON.stringify(expected))
+      !isDeepStrictEqual(actual, expected))
     throw new Error("PLAN ratification is not an exact operator@desk approval of this scoped plan.");
 }
 
@@ -938,7 +939,8 @@ const phaseActions: Record<TaskPhase, string> = {
 const phaseOrder: TaskPhase[] = ["plan", "red", "green", "refactor"];
 
 const phaseCommand = (projectName: string, id: string, address: string, current: TaskPhase) =>
-  `atdd-flow task handoff ${projectName} ${id} --by ${address} --phase ${current} --evidence <message-or-reference>`;
+  `atdd-flow task handoff ${projectName} ${id} --by ${address} --phase ${current} --evidence <message-or-reference>` +
+    (current === "plan" ? " --plan-source <plan/path.yaml> --plan-revision <commit> --acceptance <acc:urn> --operator-ratification <M-owner>" : "");
 
 /** An assignee whose submitted phase was accepted without naming a later phase is directed forward, never to resubmit. */
 function acceptedDirective(base: Pick<TaskDirective, "project" | "task" | "role">, id: string, address: string, current: TaskPhase): TaskDirective {
