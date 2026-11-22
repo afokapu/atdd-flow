@@ -16,7 +16,7 @@ export type HandoffState = "executing" | "awaiting_coordinator" | "awaiting_assi
 /** `submitted_phase` is absent on legacy records; it lets a same-phase accept be told apart from a never-submitted phase. */
 export type TaskHandoff = {
   state: HandoffState; evidence: string; updated_at: string; submitted_phase?: TaskPhase;
-  plan?: { source: string; revision: string; acceptances: string[]; ratification?: string; delegation?: string };
+  plan?: { source: string; revision: string; acceptances: string[]; worktree?: string; ratification?: string; delegation?: string };
   plan_review?: { by: string; evidence: string; at: string; ratification: string };
   /** A PLAN return is a durable, actionable review disposition. */
   return_reason?: string;
@@ -720,7 +720,7 @@ async function verifiedPlan(root: string, projectName: string, id: string, task:
     if (!exact.test(contents))
       throw new Error(`Acceptance ${urn} is not declared in submitted plan source ${source}.`);
   }
-  const plan = { source, revision, acceptances,
+  const plan = { source, revision, acceptances, worktree: await realpath(assignee.worktree),
     ...(ratification ? { ratification } : { delegation: delegation! }) };
   // Refuse forged or stale approvals at submission, not only once the Coach
   // tries to advance the task. No unratified PLAN reaches a review inbox.
@@ -756,6 +756,8 @@ async function verifyPlanCurrent(root: string, projectName: string, task: Task,
   plan: NonNullable<TaskHandoff["plan"]>) {
   const owner = await seat(root, required(task.assignee, "a PLAN assignee"));
   const config = await project(root, projectName);
+  if (!plan.worktree || await realpath(owner.worktree) !== plan.worktree)
+    throw new Error("PLAN driver worktree changed after handoff; resubmit from the originally assigned worktree.");
   if (await currentCommit(vcsMode(config), owner.worktree) !== plan.revision)
     throw new Error("PLAN changed after submission; resubmit at the current revision.");
   if ((await runOutput(["git", "-C", owner.worktree, "status", "--porcelain", "--", plan.source])).trim())
@@ -833,7 +835,9 @@ export async function respondToHandoff(root: string, projectName: string, id: st
   if (task.handoff?.state !== "awaiting_coordinator") throw new Error(`Task ${id} is not awaiting coordinator handoff response.`);
   const outcome = handoffOutcome(words(args, "--outcome"));
   const requested = phase(words(args, "--phase"));
-  const submitted = task.handoff.submitted_phase ?? task.phase ?? "plan";
+  const submitted = phase(task.handoff.submitted_phase ?? task.phase ?? "plan");
+  if (task.plan_required && task.phase !== submitted)
+    throw new Error("PLAN handoff phase does not match the authoritative task phase.");
   const next = phaseOrder[phaseOrder.indexOf(submitted) + 1] ?? submitted;
   let planReview: TaskHandoff["plan_review"];
   let returnReason: string | undefined;
