@@ -523,3 +523,19 @@ test("ATD-42: corrupted task phase cannot turn a submitted PLAN into an accepted
     expect(await readFile(f.taskFile,"utf8")).toBe(before);
   }finally{await rm(f.root,{recursive:true,force:true});}
 });
+
+test("ATD-42: Coach approval must be routed to the assigned driver, not an unrelated thread recipient", async () => {
+  const f=await plannedFixture();
+  try {
+    await submitHandoff(f.root,"demo","delivery",f.submit);
+    await f.coach();
+    const file=join(f.root,"threads","T-plan-review",f.reviewRef+".yaml");
+    const message=Bun.YAML.parse(await readFile(file,"utf8"));
+    message.to=["main@demo"];
+    await writeFile(file,Bun.YAML.stringify(message));
+    const before=await readFile(f.taskFile,"utf8");
+    await expect(respondToHandoff(f.root,"demo","delivery",f.accept))
+      .rejects.toThrow(/task-linked message/);
+    expect(await readFile(f.taskFile,"utf8")).toBe(before);
+  }finally{await rm(f.root,{recursive:true,force:true});}
+});
