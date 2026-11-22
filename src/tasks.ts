@@ -670,6 +670,88 @@ function handoffOutcome(value: string | undefined): HandoffOutcome {
   return selected as HandoffOutcome;
 }
 
+/** PLAN evidence is bound to one committed repository artifact and declared
+ * acceptances; a dirty working-tree draft cannot impersonate that revision. */
+async function verifiedPlan(root: string, projectName: string, task: Task, args: string[]) {
+  const source = required(words(args, "--plan-source"), "--plan-source");
+  const revision = required(words(args, "--plan-revision"), "--plan-revision");
+  const acceptances = values(args, "--acceptance");
+  const ratification = required(words(args, "--operator-ratification"), "--operator-ratification");
+  if (!/^plan\/[A-Za-z0-9._/-]+\.(?:yaml|yml|md)$/.test(source) ||
+      source.split("/").includes("..") || source.split("/").includes("."))
+    throw new Error("PLAN source must be a canonical repository-relative plan artifact.");
+  if (!/^[a-f0-9]{40}$/.test(revision))
+    throw new Error("PLAN revision must be an exact 40-character Git commit.");
+  if (!acceptances.length || new Set(acceptances).size !== acceptances.length ||
+      acceptances.some(x => !/^acc:[A-Za-z0-9:_-]+$/.test(x)))
+    throw new Error("PLAN requires distinct declared acc: acceptance URNs.");
+  if (!/^M-[A-Za-z0-9._-]+$/.test(ratification))
+    throw new Error("PLAN requires an exact operator@desk ratification message ID.");
+  const assignee = await seat(root, required(task.assignee, "a PLAN assignee"));
+  const config = await project(root, projectName);
+  const actual = await currentCommit(vcsMode(config), assignee.worktree);
+  if (actual !== revision)
+    throw new Error("PLAN source revision does not match the driver's current commit.");
+  const item = (await runOutput(["git", "-C", assignee.worktree, "ls-tree", revision, "--", source])).trim();
+  if (!/^(100644|100755) blob [a-f0-9]{40}\t/.test(item))
+    throw new Error("PLAN source is not a regular committed plan artifact at the supplied revision.");
+  for (const urn of acceptances) {
+    try { await runOutput(["git", "-C", assignee.worktree, "grep", "-F", "-q", "-e", urn,
+      revision, "--", "plan/"]); }
+    catch { throw new Error(`Acceptance ${urn} is not declared in committed plan artifacts.`); }
+  }
+  return { source, revision, acceptances, ratification };
+}
+
+/** The Coach reviews but cannot replace the operator's authoring authority.
+ * The operator's typed message must bind the identical PLAN tuple. */
+async function verifyPlanRatification(root: string, projectName: string, id: string,
+  task: Task, plan: NonNullable<TaskHandoff["plan"]>) {
+  const { operatorAuthorizationPayload } = await import("./task-supersede-authorization");
+  const actual = await operatorAuthorizationPayload(root, plan.ratification, `main@${projectName}`);
+  const expected = {
+    schema: "atdd-workflow/plan-ratification/v1", project: projectName, task: id,
+    coordinator: task.coordinator, assignee: task.assignee, action: "ratify",
+    source: plan.source, revision: plan.revision, acceptances: plan.acceptances,
+  };
+  if (!actual || typeof actual !== "object" || Array.isArray(actual) ||
+      JSON.stringify(actual) !== JSON.stringify(expected))
+    throw new Error("PLAN ratification is not an exact operator@desk approval of this scoped plan.");
+}
+
+/** Reject a stale authoring revision before giving the driver RED guidance. */
+async function verifyPlanCurrent(root: string, projectName: string, task: Task,
+  plan: NonNullable<TaskHandoff["plan"]>) {
+  const owner = await seat(root, required(task.assignee, "a PLAN assignee"));
+  const config = await project(root, projectName);
+  if (await currentCommit(vcsMode(config), owner.worktree) !== plan.revision)
+    throw new Error("PLAN changed after submission; resubmit at the current revision.");
+}
+
+/** Review evidence must be a durable message posted by the accountable Coach
+ * in the task's own thread, not just an arbitrary string supplied at the CLI. */
+async function verifyCoachPlanReview(root: string, projectName: string, id: string,
+  task: Task, reference: string, revision: string) {
+  const { readdir } = await import("node:fs/promises");
+  const dirs = await readdir(paths(root).threads, { withFileTypes: true });
+  const candidates = await Promise.all(dirs.filter(x => x.isDirectory() && x.name.startsWith("T-"))
+    .map(async x => {
+      try {
+        const [thread, message] = await Promise.all([
+          readYaml<{task?:string;participants?:string[]}>(paths(root).threadFile(x.name)),
+          readYaml<{schema?:string;id?:string;from?:string;body?:string}>(paths(root).message(x.name, reference)),
+        ]);
+        return { thread, message };
+      } catch { return undefined; }
+    }));
+  const matches = candidates.filter(x => x?.thread.task === `${projectName}/${id}` &&
+    x.message.schema === "atdd-workflow/message/v1" && x.message.id === reference &&
+    x.message.from === task.coordinator && x.thread.participants?.includes(task.assignee ?? "") &&
+    x.message.body?.includes(revision));
+  if (matches.length !== 1)
+    throw new Error("Coach PLAN review requires a task-linked message naming the exact plan revision.");
+}
+
 /**
  * The assignee records work as ready for a coordinator decision. The evidence
  * value is deliberately opaque: it links an immutable message/reference but
