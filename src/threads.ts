@@ -294,9 +294,35 @@ function transferAuthorization(args: string[], from: string) {
   return value as TransferAuthorization;
 }
 
-/** The one typed owner authorization a post may carry: a transfer tuple or a supersede tuple. */
+/** A scoped PLAN ratification is an exact owner decision, never a Coach claim.
+ * The acceptance list is part of the bound tuple; a later plan edit voids it. */
+function planRatificationAuthorization(args: string[], from: string) {
+  const raw = words(args, "--plan-ratification-authorization");
+  if (!raw) return undefined;
+  if (from !== "operator@desk") throw new Error("Only operator@desk may ratify an ATDD plan.");
+  let value: unknown;
+  try { value = JSON.parse(raw); }
+  catch { throw new Error("--plan-ratification-authorization must be valid JSON."); }
+  const plan = value && typeof value === "object" ? value as Record<string, unknown> : undefined;
+  const acceptances = plan?.acceptances;
+  const keys = ["schema", "project", "task", "coordinator", "assignee", "action", "source", "revision", "acceptances"];
+  if (!plan || Object.keys(plan).sort().join(",") !== keys.sort().join(",") ||
+      plan.schema !== "atdd-workflow/plan-ratification/v1" || plan.action !== "ratify" ||
+      ![plan.project, plan.task, plan.coordinator, plan.assignee, plan.source].every(x => typeof x === "string" && x.length > 0) ||
+      typeof plan.revision !== "string" || !/^[a-f0-9]{40}$/.test(plan.revision) ||
+      !Array.isArray(acceptances) || acceptances.length === 0 ||
+      !acceptances.every(x => typeof x === "string" && /^acc:[A-Za-z0-9:_-]+$/.test(x))) {
+    throw new Error("--plan-ratification-authorization must contain one exact plan-ratification/v1 tuple.");
+  }
+  return plan;
+}
+
+/** Typed operator approvals are checked at post time; a worker can never
+ * create an authorization by attaching an arbitrary approval-shaped body. */
 function typedAuthorization(args: string[], from: string) {
-  return transferAuthorization(args, from) ?? parseSupersedeAuthorization(words(args, "--task-supersede-authorization"), from);
+  return transferAuthorization(args, from) ??
+    parseSupersedeAuthorization(words(args, "--task-supersede-authorization"), from) ??
+    planRatificationAuthorization(args, from);
 }
 
 async function post(root: string, threadId: string, args: string[], overrides: Partial<Message> = {}) {
