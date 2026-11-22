@@ -715,12 +715,8 @@ async function verifiedPlan(root: string, projectName: string, id: string, task:
   // Evaluate the submitted blob, not an unrelated plan/ file or the mutable worktree.
   const contents = await runOutput(["git", "-C", assignee.worktree, "show", revision + ":" + source]);
   for (const urn of acceptances) {
-    const escaped = urn.replace(/[.*+?^${}()|[\]\\]/g, "\\  for (const urn of acceptances) {
-    try { await runOutput(["git", "-C", assignee.worktree, "grep", "-F", "-q", "-e", urn,
-      revision, "--", source]); }
-    catch { throw new Error(`Acceptance ${urn} is not declared in submitted plan source ${source}.`); }
-  }");
-    const exact = new RegExp("(^|[^A-Za-z0-9:_-])" + escaped + "($|[^A-Za-z0-9:_-])", "m");
+    // URNs are restricted to regex-literal-safe [A-Za-z0-9:_-] at input.
+    const exact = new RegExp("(^|[^A-Za-z0-9:_-])" + urn + "($|[^A-Za-z0-9:_-])", "m");
     if (!exact.test(contents))
       throw new Error(`Acceptance ${urn} is not declared in submitted plan source ${source}.`);
   }
