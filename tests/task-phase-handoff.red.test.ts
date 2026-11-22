@@ -7,7 +7,7 @@ import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { respondToHandoff, submitHandoff, prove, review, done, nextDirective } from "../src/tasks";
+import { respondToHandoff, submitHandoff, prove, review, done, nextDirective, disposition } from "../src/tasks";
 
 const cli = join(import.meta.dir, "..", "src", "cli.ts");
 
@@ -557,5 +557,20 @@ test("ATD-42: rejected PLAN evidence reaches the accountable Coach as an actiona
       message.body?.includes("PLAN BLOCKED demo/delivery"));
     expect(blockers.length).toBe(1);
     expect(blockers[0]?.body).toContain("Next action");
+  }finally{await rm(f.root,{recursive:true,force:true});}
+});
+
+test("ATD-42: accountable Coach kill/escalation leaves an immutable rejected task", async () => {
+  const f=await plannedFixture();
+  try {
+    await disposition(f.root,"demo","delivery","rejected",[
+      "--by","coordinator@demo",
+      "--reason","Requested change conflicts with owner-approved delivery; escalate product intent to operator@desk.",
+    ]);
+    expect(await task(f.root)).toMatchObject({
+      status:"rejected",coordinator:"coordinator@demo",assignee:"driver.delivery@demo",
+      disposition:{kind:"rejected",by:"coordinator@demo",reason:"Requested change conflicts with owner-approved delivery; escalate product intent to operator@desk."},
+    });
+    await expect(submitHandoff(f.root,"demo","delivery",f.submit)).rejects.toThrow(/in_progress/);
   }finally{await rm(f.root,{recursive:true,force:true});}
 });
