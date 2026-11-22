@@ -207,7 +207,7 @@ async function plannedFixture() {
   const owner=(next=authorization,from="operator@desk")=>writeFile(join(dir,ratification+".yaml"),
     Bun.YAML.stringify({schema:"atdd-workflow/message/v1",id:ratification,from,to:["main@demo"],
       kind:"message",body:"Ratified exact plan.",created_at:"2026-11-22T12:00:00Z",authorization:next}));
-  const coach=(body="Reviewed plan at "+revision,from="coordinator@demo")=>writeFile(join(dir,reviewRef+".yaml"),
+  const coach=(body="PLAN APPROVE "+revision+"\nChecked scoped acceptances and expected delivery behavior.",from="coordinator@demo")=>writeFile(join(dir,reviewRef+".yaml"),
     Bun.YAML.stringify({schema:"atdd-workflow/message/v1",id:reviewRef,from,
       to:["driver.delivery@demo"],kind:"message",body,created_at:"2026-11-22T12:01:00Z"}));
   await owner();await coach();
@@ -270,6 +270,8 @@ test("ATD-42: stale PLAN, forged ratification or unreviewed Coach verdict cannot
     expect(await readFile(f.taskFile,"utf8")).toBe(before);
     await f.owner();
     await f.coach("Approved but no revision reference.");
+    await expect(respondToHandoff(f.root,"demo","delivery",f.accept)).rejects.toThrow(/exact plan revision/i);
+    await f.coach("PLAN RETURN "+f.revision+"\nCriteria are incomplete; revise before coding.");
     await expect(respondToHandoff(f.root,"demo","delivery",f.accept)).rejects.toThrow(/exact plan revision/i);
     await f.coach();
     await writeFile(join(f.worktree,"README.md"),"Changed after PLAN submission\n");
