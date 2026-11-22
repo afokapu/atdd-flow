@@ -13,7 +13,11 @@ export type TaskPhase = "plan" | "red" | "green" | "refactor";
 export type HandoffState = "executing" | "awaiting_coordinator" | "awaiting_assignee";
 /** A mutable projection of an immutable evidence message/reference, not a second task lifecycle. */
 /** `submitted_phase` is absent on legacy records; it lets a same-phase accept be told apart from a never-submitted phase. */
-export type TaskHandoff = { state: HandoffState; evidence: string; updated_at: string; submitted_phase?: TaskPhase };
+export type TaskHandoff = {
+  state: HandoffState; evidence: string; updated_at: string; submitted_phase?: TaskPhase;
+  plan?: { source: string; revision: string; acceptances: string[]; ratification: string };
+  plan_review?: { by: string; evidence: string; at: string; ratification: string };
+};
 export type DoneWhen = { text: string; proof?: string };
 export type GovernedBase = { coordinator: string; branch: string; commit: string };
 export type LineageRef = { ref: string; commit: string; reason?: string };
@@ -54,8 +58,10 @@ export type Task = {
   source?: string;
   depends_on?: string[];
   blocker?: string;
-  /** Absent on legacy tasks. */
+  /** Absent on legacy tasks. Newly created tasks enter PLAN before implementation. */
   phase?: TaskPhase;
+  /** A new-task marker: legacy imported v1 tasks remain readable without retrospective gates. */
+  plan_required?: true;
   /** Absent on legacy tasks; evidence remains an opaque immutable message/reference. */
   handoff?: TaskHandoff;
   /** Legacy topology evidence is preserved but is not created for role-neutral assignments. */
@@ -370,6 +376,8 @@ export async function add(root: string, projectName: string, id: string, args: s
     schema: "atdd-workflow/task/v1",
     title: required(words(args, "--title"), "--title"),
     status: "todo",
+    phase: "plan",
+    plan_required: true,
     coordinator,
     ...(assignee ? { assignee } : {}),
     ...(base ? { governed_base: base } : {}),
@@ -607,6 +615,10 @@ async function transition(root: string, projectName: string, id: string, next: T
   }
   if (next === "review") {
     if (!task.assignee || actor !== task.assignee) throw new Error(`Only ${task.assignee ?? "the assignee"} may submit task ${id} for review.`);
+    if (task.plan_required && (task.phase !== "refactor" ||
+      task.handoff?.submitted_phase !== "refactor" || task.handoff.state !== "awaiting_assignee" ||
+      !task.handoff.plan_review))
+      throw new Error(`Task ${id} requires accepted PLAN, RED, GREEN and REFACTOR handoffs before review.`);
     if (!allProofs(task)) throw new Error(`Task ${id} is missing proof for: ${task.done_when.filter((entry) => !entry.proof).map((entry) => entry.text).join("; ")}`);
   }
   if (next === "done") {
