@@ -376,7 +376,7 @@ export async function add(root: string, projectName: string, id: string, args: s
   // event opts the new task into governed PLAN; later display labels never
   // mutate Flow's durable phase. Unrecognized entry states cannot skip PLAN.
   const trackerStatus = words(args, "--tracking-status");
-  if (trackerStatus && trackerStatus.replace(/[\\s_-]/g, "").toLowerCase() !== "todo")
+  if (trackerStatus && trackerStatus.replace(/[\s_-]/g, "").toLowerCase() !== "todo")
     throw new Error("Tracked task intake must begin at To Do; external status cannot bypass Flow PLAN.");
   const governedIntake = args.includes("--plan-required") || Boolean(trackerStatus);
   const doneWhen = values(args, "--done-when").map((text) => ({ text }));
