@@ -611,8 +611,6 @@ async function transition(root: string, projectName: string, id: string, next: T
   }
   if (next === "review") {
     if (!task.assignee || actor !== task.assignee) throw new Error(`Only ${task.assignee ?? "the assignee"} may submit task ${id} for review.`);
-    if (task.phase && (task.phase !== "refactor" || task.handoff?.submitted_phase !== "refactor" || task.handoff.state !== "awaiting_assignee"))
-      throw new Error(`Task ${id} must have an accepted REFACTOR handoff before final review.`);
     if (!allProofs(task)) throw new Error(`Task ${id} is missing proof for: ${task.done_when.filter((entry) => !entry.proof).map((entry) => entry.text).join("; ")}`);
   }
   if (next === "done") {
