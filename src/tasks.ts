@@ -699,7 +699,11 @@ export async function submitHandoff(root: string, projectName: string, id: strin
     const rel = relative(home, planPath);
     if (!rel || rel === ".." || rel.startsWith(".." + sep) || rel.startsWith("../") || rel.startsWith("..\\") || resolve(home, rel) !== planPath)
       throw new Error("PLAN source must be a tracked in-worktree artifact.");
-    plan = { source: rel.replaceAll("\\", "/"), revision, acceptances };
+    const committedPath = rel.replaceAll("\\", "/");
+    const fileType = await runOutput(["git", "-C", home, "cat-file", "-t", revision + ":" + committedPath], home)
+      .catch(() => "");
+    if (fileType !== "blob") throw new Error("PLAN source must be a committed file at the submitted revision.");
+    plan = { source: committedPath, revision, acceptances };
   }
   task.phase = submitted;
   task.handoff = { state: "awaiting_coordinator", evidence, updated_at: now(), submitted_phase: submitted,
