@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -200,4 +201,51 @@ test("PLT-128: returned PLAN remains PLAN and does not mint Coach approval", asy
     });
     expect((await task(root)).handoff.plan_review).toBeUndefined();
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+
+test("PLT-128: new PLAN requires a committed source and acceptance refs, then rejects a stale Coach review", async () => {
+  const root = await fixture();
+  try {
+    const home = join(root,"delivery-repository");
+    await mkdir(join(home,"plan"),{recursive:true});
+    const git=(...args:string[])=>execFileSync("git",args,{cwd:home,encoding:"utf8"}).trim();
+    git("init","-q");
+    git("config","user.name","ATDD tester");
+    git("config","user.email","tester@example.invalid");
+    await writeFile(join(home,"plan","delivery.yaml"),"acceptances:\n  - urn: acc:demo:delivery:success\n");
+    git("add",".");git("commit","-qm","ratified plan");
+    const revision=git("rev-parse","HEAD");
+    const seatFile=join(root,"work","demo","seats","driver.delivery","seat.yaml");
+    const seat=Bun.YAML.parse(await readFile(seatFile,"utf8"));
+    seat.worktree=home;
+    await writeFile(seatFile,Bun.YAML.stringify(seat));
+    const taskFile=join(root,"work","demo","tasks","delivery.yaml");
+    const active=Bun.YAML.parse(await readFile(taskFile,"utf8"));
+    active.phase="plan"; // new tasks enter plan when they start
+    await writeFile(taskFile,Bun.YAML.stringify(active));
+
+    await expect(submitHandoff(root,"demo","delivery",[
+      "--by","driver.delivery@demo","--phase","plan","--evidence","M-plan",
+    ])).rejects.toThrow(/PLAN source/);
+    await expect(submitHandoff(root,"demo","delivery",[
+      "--by","driver.delivery@demo","--phase","plan","--evidence","M-plan",
+      "--plan-source","plan/delivery.yaml","--plan-revision",revision,
+    ])).rejects.toThrow(/acceptance references/);
+    await submitHandoff(root,"demo","delivery",[
+      "--by","driver.delivery@demo","--phase","plan","--evidence","M-plan",
+      "--plan-source","plan/delivery.yaml","--plan-revision",revision,
+      "--acceptance","acc:demo:delivery:success",
+    ]);
+    expect((await task(root)).handoff.plan).toEqual({
+      source:"plan/delivery.yaml",revision,acceptances:["acc:demo:delivery:success"],
+    });
+    await writeFile(join(home,"plan","delivery.yaml"),"acceptances:\n  - urn: acc:demo:delivery:changed\n");
+    git("add",".");git("commit","-qm","changed plan after handoff");
+    await expect(respondToHandoff(root,"demo","delivery",[
+      "--by","coordinator@demo","--outcome","accept","--phase","red",
+      "--plan-review","M-coach-approval",
+    ])).rejects.toThrow(/changed after submission/);
+    expect((await task(root)).phase).toBe("plan");
+  } finally {await rm(root,{recursive:true,force:true});}
 });
