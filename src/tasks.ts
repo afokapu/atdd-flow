@@ -979,7 +979,15 @@ function coordinatorDirective(projectName: string, id: string, task: Task, addre
   if (task.status === "review") return { ...as, lifecycle: "REVIEW", action: "Review the submitted task; complete it or return it to work.", command: `atdd-flow task open ${projectName} ${id}` };
   if (task.status === "in_progress" && task.handoff?.state === "awaiting_coordinator") {
     const current = task.phase ?? "plan";
-    return { ...as, lifecycle: current.toUpperCase() as TaskDirective["lifecycle"], action: `Accept or return the ${current.toUpperCase()} handoff.`, command: `atdd-flow task respond ${projectName} ${id} --by ${address} --outcome <accept|return> --phase <plan|red|green|refactor>` };
+    const plan = task.handoff.plan;
+    const suffix = current === "plan" && task.plan_required
+      ? ` Inspect committed ${plan?.source ?? "UNKNOWN"}@${plan?.revision ?? "UNKNOWN"},` +
+        " verify the accepted criteria and operator ratification. On acceptance provide --plan-review <M-coach>."
+      : "";
+    return { ...as, lifecycle: current.toUpperCase() as TaskDirective["lifecycle"],
+      action: `Accept or return the ${current.toUpperCase()} handoff.${suffix}`,
+      command: `atdd-flow task respond ${projectName} ${id} --by ${address} --outcome <accept|return> --phase <plan|red|green|refactor>` +
+        (current === "plan" && task.plan_required ? " --plan-review <M-coach>" : "") };
   }
   return undefined;
 }
