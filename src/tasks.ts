@@ -917,7 +917,12 @@ function coordinatorDirective(projectName: string, id: string, task: Task, addre
   if (task.status === "review") return { ...as, lifecycle: "REVIEW", action: "Review the submitted task; complete it or return it to work.", command: `atdd-flow task open ${projectName} ${id}` };
   if (task.status === "in_progress" && task.handoff?.state === "awaiting_coordinator") {
     const current = task.phase ?? "plan";
-    const planNote = current === "plan" ? " Inspect the scoped JTBD/ODI plan and acceptance evidence; on accept provide --plan-review <durable-review-ref>. Escalate changed intent or scope to the owner." : "";
+    const reviewed = task.handoff.plan;
+    const planRef = reviewed ? " Submitted plan " + reviewed.source.replace(/\\s+/g, " ") +
+      " @ " + reviewed.revision + "; acceptance references: " + reviewed.acceptances.length + "." : " Legacy PLAN handoff has no typed plan source.";
+    const planNote = current === "plan"
+      ? planRef + " Inspect the scoped JTBD/ODI plan and acceptance evidence; on accept provide --plan-review <durable-review-ref>. Escalate changed intent or scope to the owner."
+      : "";
     return { ...as, lifecycle: current.toUpperCase() as TaskDirective["lifecycle"], action: `Accept or return the ${current.toUpperCase()} handoff.${planNote}`, command: `atdd-flow task respond ${projectName} ${id} --by ${address} --outcome <accept|return> --phase <plan|red|green|refactor>${current === "plan" ? " --plan-review <durable-review-ref>" : ""}` };
   }
   return undefined;
