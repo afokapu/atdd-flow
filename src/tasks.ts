@@ -749,7 +749,8 @@ async function verifyCoachPlanReview(root: string, projectName: string, id: stri
   const matches = candidates.filter(x => x?.thread.task === `${projectName}/${id}` &&
     x.message.schema === "atdd-workflow/message/v1" && x.message.id === reference &&
     x.message.from === task.coordinator && x.thread.participants?.includes(task.assignee ?? "") &&
-    x.message.body?.includes(revision));
+    x.message.body?.startsWith("PLAN APPROVE " + revision + "\n") &&
+    x.message.body.slice(("PLAN APPROVE " + revision + "\n").length).trim().length >= 10);
   if (matches.length !== 1)
     throw new Error("Coach PLAN review requires a task-linked message naming the exact plan revision.");
 }
