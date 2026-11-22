@@ -796,6 +796,26 @@ async function verifyCoachPlanReview(root: string, projectName: string, id: stri
     throw new Error("Coach PLAN review requires a task-linked message naming the exact plan revision.");
 }
 
+/** PLAN failures still reach the accountable Coach, but never advance task
+ * state. Notification failure cannot turn invalid evidence into acceptance. */
+async function reportPlanBlocker(root: string, projectName: string, id: string,
+  task: Task, actor: string, reason: string): Promise<void> {
+  const { threadsForSeat, startThread, post } = await import("./threads");
+  const thread = (await threadsForSeat(root, actor).catch(() => []))
+    .find(({record}) => record.task === `${projectName}/${id}` &&
+      record.participants.includes(task.coordinator));
+  const threadId = thread?.threadId ?? await startThread(root, [
+    "--with", actor + "," + task.coordinator,
+    "--subject", "PLAN evidence blocker " + id,
+    "--task", projectName + "/" + id,
+  ]);
+  await post(root, threadId, [
+    "--from", actor, "--to", task.coordinator,
+    "--body", "PLAN BLOCKED " + projectName + "/" + id + ": " + reason +
+      "\\nNext action: correct the scoped plan/evidence or escalate missing intent and authority; do not accept PLAN to RED.",
+  ]);
+}
+
 /**
  * The assignee records work as ready for a coordinator decision. The evidence
  * value is deliberately opaque: it links an immutable message/reference but
@@ -811,9 +831,15 @@ export async function submitHandoff(root: string, projectName: string, id: strin
   const submitted = phase(words(args, "--phase"));
   if (task.plan_required && submitted !== task.phase)
     throw new Error(`Task ${id} is in ${task.phase?.toUpperCase()}, not ${submitted.toUpperCase()}; phase skipping is forbidden.`);
-  const plan = task.plan_required && submitted === "plan"
-    ? await verifiedPlan(root, projectName, id, task, args)
-    : task.handoff?.plan;
+  let plan = task.handoff?.plan;
+  if (task.plan_required && submitted === "plan") {
+    try { plan = await verifiedPlan(root, projectName, id, task, args); }
+    catch (e) {
+      try { await reportPlanBlocker(root, projectName, id, task, actor, String(e)); }
+      catch { /* A notification is never evidence and cannot override refusal. */ }
+      throw e;
+    }
+  }
   task.phase = submitted;
   task.handoff = {
     state: "awaiting_coordinator", evidence, updated_at: now(), submitted_phase: submitted,
