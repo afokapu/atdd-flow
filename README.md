@@ -171,7 +171,9 @@ JTBD/ODI/flow/acceptance guidance; the driver commits the plan artifacts and
 records the exact Git commit, the plan-relative source, and declared `acc:`
 acceptance identities. Nothing in Flow fabricates a plan from an issue title.
 
-Before the driver hands off PLAN, `operator@desk` ratifies the precise tuple
+Before PLAN review, the operator may either ratify the exact plan tuple or delegate PLAN review **once** for an already approved, bounded task. The Coach later approves the exact committed revision without a new operator prompt. Delegation uses `post --plan-coach-delegation-authorization` with the exact `{schema:"atdd-workflow/plan-coach-delegation/v1",project,task,coordinator,assignee,action:"delegate-plan-review",title,criteria}` tuple, where `criteria` is the ordered `done_when` text from task intake; a changed scope, coordinator or assignee voids it. The authorization is an `operator@desk` message to main, never a Coach-authored impersonation.
+
+Alternatively, `operator@desk` ratifies the precise tuple
 `{schema:"atdd-workflow/plan-ratification/v1",project,task,coordinator,
 assignee,action:"ratify",source,revision,acceptances}` in a typed
 `--plan-ratification-authorization` message to the project's main seat.
@@ -183,8 +185,10 @@ the operator or invent product intent.
 atdd-flow task handoff <project> <task> --by <driver> --phase plan \
   --evidence <M-driver-evidence> --plan-source plan/<artifact>.yaml \
   --plan-revision <exact-40-character-commit> --acceptance <acc:declared> \
-  --operator-ratification <M-operator>
+  --operator-ratification <M-operator>  # OR --coach-delegation <M-owner-scope>
 ```
+
+Every declared acceptance URN must appear in the exact committed submitted plan source; a different `plan/` file cannot satisfy that binding. The driver supplies exactly one operator ratification or prior task-scoped Coach delegation. A PLAN return requires a recorded `--reason` with the missing evidence or escalation action.
 
 The coordinator/Coach inspects that exact plan revision and writes a durable,
 task-linked review message beginning with `PLAN APPROVE <revision>` followed by
