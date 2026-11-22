@@ -372,6 +372,13 @@ export async function add(root: string, projectName: string, id: string, args: s
   const assignee = assigneeValue ? await canonicalAddress(root, assigneeValue) : undefined;
   await seat(root, coordinator);
   const base = assignee ? await evidenceBase(root, projectName, coordinator, await eligibleAssignee(root, projectName, assignee)) : undefined;
+  // External tracker adapters provide the display status only at intake. A To Do
+  // event opts the new task into governed PLAN; later display labels never
+  // mutate Flow's durable phase. Unrecognized entry states cannot skip PLAN.
+  const trackerStatus = words(args, "--tracking-status");
+  if (trackerStatus && trackerStatus.replace(/[\\s_-]/g, "").toLowerCase() !== "todo")
+    throw new Error("Tracked task intake must begin at To Do; external status cannot bypass Flow PLAN.");
+  const governedIntake = args.includes("--plan-required") || Boolean(trackerStatus);
   const doneWhen = values(args, "--done-when").map((text) => ({ text }));
   if (!doneWhen.length) throw new Error("A task needs at least one --done-when criterion.");
   const dependsOn = words(args, "--depends-on")?.split(",").filter(Boolean).map(taskId);
@@ -381,7 +388,7 @@ export async function add(root: string, projectName: string, id: string, args: s
     status: "todo",
     // Existing Flow task CLI remains compatible; external tracker adapters
     // deliberately opt into strict engineering transitions at To Do intake.
-    ...(args.includes("--plan-required") ? { phase: "plan" as const, plan_required: true as const } : {}),
+    ...(governedIntake ? { phase: "plan" as const, plan_required: true as const } : {}),
     coordinator,
     ...(assignee ? { assignee } : {}),
     ...(base ? { governed_base: base } : {}),
