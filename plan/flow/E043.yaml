@@ -1,0 +1,13 @@
+urn: acc:flow:E043-UNIT-001
+phase: UNIT
+description: >-
+  For a newly created ATDD task entering PLAN, the driver may submit only its
+  current phase with a committed scoped plan artifact, exact source revision,
+  declared acceptance URNs, and an existing operator@desk ratification of that
+  same plan tuple. The accountable coordinator/Coach reviews that exact revision
+  and records a durable task-linked review message before accepting PLAN→RED.
+  Changed plan revisions, unratified plans, forged approvals, absent acceptances,
+  skipped phases and premature review are refused before any task mutation.
+  The same assigned driver continues through RED, GREEN and REFACTOR, and
+  independent final behavioral review remains mandatory for Done. Legacy
+  tasks without the new planning marker retain their previous behavior.
