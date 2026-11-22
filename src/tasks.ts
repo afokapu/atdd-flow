@@ -18,6 +18,8 @@ export type TaskHandoff = {
   state: HandoffState; evidence: string; updated_at: string; submitted_phase?: TaskPhase;
   plan?: { source: string; revision: string; acceptances: string[]; ratification: string };
   plan_review?: { by: string; evidence: string; at: string; ratification: string };
+  /** A PLAN return is a durable, actionable review disposition. */
+  return_reason?: string;
 };
 export type DoneWhen = { text: string; proof?: string };
 export type GovernedBase = { coordinator: string; branch: string; commit: string };
@@ -674,7 +676,7 @@ function handoffOutcome(value: string | undefined): HandoffOutcome {
 
 /** PLAN evidence is bound to one committed repository artifact and declared
  * acceptances; a dirty working-tree draft cannot impersonate that revision. */
-async function verifiedPlan(root: string, projectName: string, task: Task, args: string[]) {
+async function verifiedPlan(root: string, projectName: string, id: string, task: Task, args: string[]) {
   const source = required(words(args, "--plan-source"), "--plan-source");
   const revision = required(words(args, "--plan-revision"), "--plan-revision");
   const acceptances = values(args, "--acceptance");
@@ -699,10 +701,14 @@ async function verifiedPlan(root: string, projectName: string, task: Task, args:
     throw new Error("PLAN source is not a regular committed plan artifact at the supplied revision.");
   for (const urn of acceptances) {
     try { await runOutput(["git", "-C", assignee.worktree, "grep", "-F", "-q", "-e", urn,
-      revision, "--", "plan/"]); }
-    catch { throw new Error(`Acceptance ${urn} is not declared in committed plan artifacts.`); }
+      revision, "--", source]); }
+    catch { throw new Error(`Acceptance ${urn} is not declared in submitted plan source ${source}.`); }
   }
-  return { source, revision, acceptances, ratification };
+  const plan = { source, revision, acceptances, ratification };
+  // Refuse forged or stale approvals at submission, not only once the Coach
+  // tries to advance the task. No unratified PLAN reaches a review inbox.
+  await verifyPlanRatification(root, projectName, id, task, plan);
+  return plan;
 }
 
 /** The Coach reviews but cannot replace the operator's authoring authority.
@@ -733,7 +739,7 @@ async function verifyPlanCurrent(root: string, projectName: string, task: Task,
 /** Review evidence must be a durable message posted by the accountable Coach
  * in the task's own thread, not just an arbitrary string supplied at the CLI. */
 async function verifyCoachPlanReview(root: string, projectName: string, id: string,
-  task: Task, reference: string, revision: string) {
+  task: Task, reference: string, revision: string, acceptances: string[]) {
   if (!/^M-[A-Za-z0-9._-]+$/.test(reference))
     throw new Error("Coach PLAN review requires one canonical M- message reference.");
   const { readdir } = await import("node:fs/promises");
@@ -752,7 +758,8 @@ async function verifyCoachPlanReview(root: string, projectName: string, id: stri
     x.message.schema === "atdd-workflow/message/v1" && x.message.id === reference &&
     x.message.from === task.coordinator && x.thread.participants?.includes(task.assignee ?? "") &&
     x.message.body?.startsWith("PLAN APPROVE " + revision + "\n") &&
-    x.message.body.slice(("PLAN APPROVE " + revision + "\n").length).trim().length >= 10);
+    x.message.body.slice(("PLAN APPROVE " + revision + "\n").length).trim().length >= 10 &&
+    acceptances.every(urn => x.message.body?.includes(urn)));
   if (matches.length !== 1)
     throw new Error("Coach PLAN review requires a task-linked message naming the exact plan revision.");
 }
@@ -773,7 +780,7 @@ export async function submitHandoff(root: string, projectName: string, id: strin
   if (task.plan_required && submitted !== task.phase)
     throw new Error(`Task ${id} is in ${task.phase?.toUpperCase()}, not ${submitted.toUpperCase()}; phase skipping is forbidden.`);
   const plan = task.plan_required && submitted === "plan"
-    ? await verifiedPlan(root, projectName, task, args)
+    ? await verifiedPlan(root, projectName, id, task, args)
     : task.handoff?.plan;
   task.phase = submitted;
   task.handoff = {
@@ -800,7 +807,14 @@ export async function respondToHandoff(root: string, projectName: string, id: st
   const submitted = task.handoff.submitted_phase ?? task.phase ?? "plan";
   const next = phaseOrder[phaseOrder.indexOf(submitted) + 1] ?? submitted;
   let planReview: TaskHandoff["plan_review"];
+  let returnReason: string | undefined;
   if (task.plan_required) {
+    if (outcome === "return" && submitted === "plan") {
+      returnReason = required(words(args, "--reason"),
+        "a scoped PLAN return reason and next action (--reason)");
+      if (returnReason.trim().length < 10)
+        throw new Error("PLAN return must explain the missing evidence or escalation action.");
+    }
     if (outcome === "accept" && requested !== next)
       throw new Error(`Accepting ${submitted.toUpperCase()} must advance to ${next.toUpperCase()}.`);
     if (outcome === "return" && requested !== submitted)
@@ -811,7 +825,7 @@ export async function respondToHandoff(root: string, projectName: string, id: st
       const proof = required(words(args, "--plan-review"), "Coach PLAN review evidence (--plan-review)");
       await verifyPlanCurrent(root, projectName, task, plan);
       await verifyPlanRatification(root, projectName, id, task, plan);
-      await verifyCoachPlanReview(root, projectName, id, task, proof, plan.revision);
+      await verifyCoachPlanReview(root, projectName, id, task, proof, plan.revision, plan.acceptances);
       planReview = { by: actor, evidence: proof, at: now(), ratification: plan.ratification };
     }
   }
@@ -819,6 +833,7 @@ export async function respondToHandoff(root: string, projectName: string, id: st
   task.handoff = {
     ...task.handoff,
     ...(planReview ? { plan_review: planReview } : {}),
+    ...(returnReason ? { return_reason: returnReason } : {}),
     state: outcome === "accept" ? "awaiting_assignee" : "executing",
     updated_at: now(),
   };
@@ -986,7 +1001,7 @@ function coordinatorDirective(projectName: string, id: string, task: Task, addre
     const plan = task.handoff.plan;
     const suffix = current === "plan" && task.plan_required
       ? ` Inspect committed ${plan?.source ?? "UNKNOWN"}@${plan?.revision ?? "UNKNOWN"},` +
-        " verify the accepted criteria and operator ratification. On acceptance provide --plan-review <M-coach>."
+        " verify the accepted criteria and operator ratification. On acceptance provide --plan-review <M-coach>; on return give --reason <missing-evidence-or-escalation-action>."
       : "";
     return { ...as, lifecycle: current.toUpperCase() as TaskDirective["lifecycle"],
       action: `Accept or return the ${current.toUpperCase()} handoff.${suffix}`,
