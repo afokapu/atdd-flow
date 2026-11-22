@@ -709,10 +709,20 @@ async function verifiedPlan(root: string, projectName: string, id: string, task:
   const item = (await runOutput(["git", "-C", assignee.worktree, "ls-tree", revision, "--", source])).trim();
   if (!/^(100644|100755) blob [a-f0-9]{40}\t/.test(item))
     throw new Error("PLAN source is not a regular committed plan artifact at the supplied revision.");
+  const dirty = (await runOutput(["git", "-C", assignee.worktree, "status", "--porcelain", "--", source])).trim();
+  if (dirty) throw new Error("PLAN source contains uncommitted changes; commit or restore the submitted artifact.");
+  // A substring is not an acceptance declaration (acc:FOO must not match acc:FOOBAR).
+  // Evaluate the submitted blob, not an unrelated plan/ file or the mutable worktree.
+  const contents = await runOutput(["git", "-C", assignee.worktree, "show", revision + ":" + source]);
   for (const urn of acceptances) {
+    const escaped = urn.replace(/[.*+?^${}()|[\]\\]/g, "\\  for (const urn of acceptances) {
     try { await runOutput(["git", "-C", assignee.worktree, "grep", "-F", "-q", "-e", urn,
       revision, "--", source]); }
     catch { throw new Error(`Acceptance ${urn} is not declared in submitted plan source ${source}.`); }
+  }");
+    const exact = new RegExp("(^|[^A-Za-z0-9:_-])" + escaped + "($|[^A-Za-z0-9:_-])", "m");
+    if (!exact.test(contents))
+      throw new Error(`Acceptance ${urn} is not declared in submitted plan source ${source}.`);
   }
   const plan = { source, revision, acceptances,
     ...(ratification ? { ratification } : { delegation: delegation! }) };
@@ -752,6 +762,8 @@ async function verifyPlanCurrent(root: string, projectName: string, task: Task,
   const config = await project(root, projectName);
   if (await currentCommit(vcsMode(config), owner.worktree) !== plan.revision)
     throw new Error("PLAN changed after submission; resubmit at the current revision.");
+  if ((await runOutput(["git", "-C", owner.worktree, "status", "--porcelain", "--", plan.source])).trim())
+    throw new Error("PLAN artifact has uncommitted changes after submission; restore or resubmit.");
 }
 
 /** Review evidence must be a durable message posted by the accountable Coach
