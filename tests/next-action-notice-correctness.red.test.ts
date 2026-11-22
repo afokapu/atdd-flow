@@ -204,7 +204,8 @@ test("RED 3 STALE: an unchanged directive is not enqueued again after it was del
 async function accepted(submitted: string, acceptedAs: string) {
   const root = await desk({});
   await submitHandoff(root, "demo", taskId, ["--by", driver, "--phase", submitted, "--evidence", "M-evidence"]);
-  await respondToHandoff(root, "demo", taskId, ["--by", coordinator, "--outcome", "accept", "--phase", acceptedAs]);
+  await respondToHandoff(root, "demo", taskId, ["--by", coordinator, "--outcome", "accept", "--phase", acceptedAs,
+    ...(submitted === "plan" ? ["--plan-review", "M-coach-reviewed-plan"] : [])]);
   return nextDirective(root, driver);
 }
 
