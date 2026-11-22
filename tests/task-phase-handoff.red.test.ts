@@ -191,7 +191,7 @@ async function plannedFixture() {
   const record=await task(root);
   record.phase="plan";record.plan_required=true;
   await writeFile(taskFile,Bun.YAML.stringify(record));
-  const ratification="M-owner-ratification",reviewRef="M-coach-plan-review";
+  const ratification="M-owner-ratification",delegationRef="M-owner-delegation",reviewRef="M-coach-plan-review";
   const thread="T-plan-review",dir=join(root,"threads",thread);
   await mkdir(dir,{recursive:true});
   await writeFile(join(dir,"thread.yaml"),Bun.YAML.stringify({
@@ -207,6 +207,14 @@ async function plannedFixture() {
   const owner=(next=authorization,from="operator@desk")=>writeFile(join(dir,ratification+".yaml"),
     Bun.YAML.stringify({schema:"atdd-workflow/message/v1",id:ratification,from,to:["main@demo"],
       kind:"message",body:"Ratified exact plan.",created_at:"2026-11-22T12:00:00Z",authorization:next}));
+  const delegation={
+    schema:"atdd-workflow/plan-coach-delegation/v1",project:"demo",task:"delivery",
+    coordinator:"coordinator@demo",assignee:"driver.delivery@demo",
+    action:"delegate-plan-review",title:"Deliver phase handoff",criteria:["Delivery works"],
+  };
+  const delegate=(next=delegation,from="operator@desk")=>writeFile(join(dir,delegationRef+".yaml"),
+    Bun.YAML.stringify({schema:"atdd-workflow/message/v1",id:delegationRef,from,to:["main@demo"],
+      kind:"message",body:"Delegate bounded task review to the Coach.",created_at:"2026-11-22T11:00:00Z",authorization:next}));
   const coach=(body="PLAN APPROVE "+revision+"\nChecked scoped acceptance "+acceptance+" against expected delivery behavior.",from="coordinator@demo")=>writeFile(join(dir,reviewRef+".yaml"),
     Bun.YAML.stringify({schema:"atdd-workflow/message/v1",id:reviewRef,from,
       to:["driver.delivery@demo"],kind:"message",body,created_at:"2026-11-22T12:01:00Z"}));
@@ -215,7 +223,7 @@ async function plannedFixture() {
     "--plan-source",source,"--plan-revision",revision,"--acceptance",acceptance,
     "--operator-ratification",ratification];
   const accept=["--by","coordinator@demo","--outcome","accept","--phase","red","--plan-review",reviewRef];
-  return {root,worktree,git,source,revision,acceptance,ratification,reviewRef,owner,coach,submit,accept,taskFile};
+  return {root,worktree,git,source,revision,acceptance,ratification,delegationRef,delegation,reviewRef,owner,delegate,coach,submit,accept,taskFile};
 }
 
 test("ATD-42: a ratified PLAN and Coach review advance the same driver through RED GREEN REFACTOR", async () => {
@@ -368,5 +376,49 @@ test("ATD-42: Coach must cite all plan acceptances and return actionable guidanc
     ]);
     expect(await task(f.root)).toMatchObject({status:"in_progress",phase:"plan",
       handoff:{state:"executing",return_reason:"Acceptance coverage is unverified; revise the scoped plan and resubmit."}});
+  }finally{await rm(f.root,{recursive:true,force:true});}
+});
+
+test("ATD-42: pre-authorized task scope lets accountable Coach accept without a per-plan owner prompt", async () => {
+  const f=await plannedFixture();
+  try {
+    await f.delegate(); // Owner delegates only this task/title/criteria once, before PLAN.
+    const args=[...f.submit.slice(0,-2),"--coach-delegation",f.delegationRef];
+    await submitHandoff(f.root,"demo","delivery",args);
+    await respondToHandoff(f.root,"demo","delivery",f.accept);
+    expect(await task(f.root)).toMatchObject({
+      phase:"red",handoff:{
+        plan:{delegation:f.delegationRef,acceptances:[f.acceptance]},
+        plan_review:{by:"coordinator@demo",ratification:f.delegationRef},
+      },
+    });
+  }finally{await rm(f.root,{recursive:true,force:true});}
+});
+
+test("ATD-42: delegated Coach authority cannot expand title/criteria or forge owner identity", async () => {
+  const f=await plannedFixture();
+  try {
+    const args=[...f.submit.slice(0,-2),"--coach-delegation",f.delegationRef];
+    const before=await readFile(f.taskFile,"utf8");
+    await f.delegate({...f.delegation,criteria:["A new unapproved product scope"]});
+    await expect(submitHandoff(f.root,"demo","delivery",args)).rejects.toThrow(/exact operator@desk approval/);
+    await f.delegate(undefined,"coordinator@demo");
+    await expect(submitHandoff(f.root,"demo","delivery",args)).rejects.toThrow(/operator-authorized|owner-authorized/i);
+    expect(await readFile(f.taskFile,"utf8")).toBe(before);
+  }finally{await rm(f.root,{recursive:true,force:true});}
+});
+
+test("ATD-42: only operator may create a typed bounded PLAN delegation", async () => {
+  const f=await plannedFixture();
+  try {
+    const invalid=await invoke(f.root,"post","T-plan-review","--from","coordinator@demo",
+      "--to","driver.delivery@demo","--body","Attempt delegation",
+      "--plan-coach-delegation-authorization",JSON.stringify(f.delegation));
+    expect(invalid.exitCode).not.toBe(0);
+    expect(invalid.output).toContain("Only operator@desk");
+    const valid=await invoke(f.root,"post","T-plan-review","--from","operator@desk",
+      "--to","main@demo","--body","Approve fixed scope delegation",
+      "--plan-coach-delegation-authorization",JSON.stringify(f.delegation));
+    expect(valid.exitCode,valid.output).toBe(0);
   }finally{await rm(f.root,{recursive:true,force:true});}
 });
