@@ -377,8 +377,9 @@ export async function add(root: string, projectName: string, id: string, args: s
     schema: "atdd-workflow/task/v1",
     title: required(words(args, "--title"), "--title"),
     status: "todo",
-    phase: "plan",
-    plan_required: true,
+    // Existing Flow task CLI remains compatible; external tracker adapters
+    // deliberately opt into strict engineering transitions at To Do intake.
+    ...(args.includes("--plan-required") ? { phase: "plan" as const, plan_required: true as const } : {}),
     coordinator,
     ...(assignee ? { assignee } : {}),
     ...(base ? { governed_base: base } : {}),
