@@ -288,3 +288,23 @@ test("ATD-42: only operator may post exact ratification authorization in Flow th
     expect(valid.output).toContain("M-");
   }finally{await rm(f.root,{recursive:true,force:true});}
 });
+
+
+test("ATD-42: the tracker can explicitly enter governed PLAN without changing legacy task creation", async () => {
+  const root=await fixture();
+  try {
+    const governed=await invoke(root,"task","add","demo","new-plan",
+      "--title","New scoped job","--coordinator","coordinator@demo",
+      "--done-when","Acceptance checked","--plan-required");
+    expect(governed.exitCode,governed.output).toBe(0);
+    const record=Bun.YAML.parse(await readFile(join(root,"work","demo","tasks","new-plan.yaml"),"utf8"));
+    expect(record).toMatchObject({status:"todo",phase:"plan",plan_required:true});
+    const legacy=await invoke(root,"task","add","demo","legacy-work",
+      "--title","Legacy control","--coordinator","coordinator@demo",
+      "--done-when","Retirement case");
+    expect(legacy.exitCode,legacy.output).toBe(0);
+    const old=Bun.YAML.parse(await readFile(join(root,"work","demo","tasks","legacy-work.yaml"),"utf8"));
+    expect(old).not.toHaveProperty("plan_required");
+    expect(old).not.toHaveProperty("phase");
+  }finally{await rm(root,{recursive:true,force:true});}
+});
